@@ -8,6 +8,7 @@ import type { Workspace } from "../lib/tauri";
 import {
   clipboardKeyAction,
   createBusyTracker,
+  resolvePasteAction,
   sanitizeTerminalTitle,
 } from "../lib/terminal";
 import { TERMINAL_THEME } from "../lib/terminalTheme";
@@ -122,11 +123,32 @@ export default function TerminalView({
         return false;
       }
       if (action === "paste") {
-        void readText()
-          .then((text) => {
-            if (text !== "") term.paste(text);
-          })
-          .catch(() => undefined);
+        // Nel percorso normale xterm annulla l'evento (preventDefault):
+        // ritornare false salta anche quell'annullamento, quindi senza
+        // queste due righe il browser fa partire l'evento `paste` nativo e
+        // il testo viene incollato due volte (evento nativo + term.paste).
+        e.preventDefault();
+        e.stopPropagation();
+        void (async () => {
+          let text = "";
+          try {
+            text = await readText();
+          } catch {
+            // Appunti non testuali (es. sola immagine): text resta "".
+          }
+          if (disposed) return;
+          const resolved = resolvePasteAction(text);
+          if (resolved.kind === "paste") {
+            term.paste(resolved.text);
+            return;
+          }
+          // Nessun testo (es. immagine copiata): inoltra Ctrl+V grezzo al
+          // PTY, come faceva xterm prima della v0.3.1, così la CLI (Muse)
+          // lo gestisce leggendo l'immagine dagli appunti di sistema.
+          const s = sessionRef.current;
+          if (s !== 0)
+            void api.ptyWrite(s, resolved.key).catch(() => undefined);
+        })();
         return false;
       }
       return true;

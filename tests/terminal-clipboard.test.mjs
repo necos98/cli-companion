@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { clipboardKeyAction } from "../src/lib/terminal.ts";
+import { clipboardKeyAction, resolvePasteAction } from "../src/lib/terminal.ts";
 
 const key = (over) => ({ key: "c", ctrlKey: false, shiftKey: false, ...over });
 
@@ -44,5 +44,21 @@ describe("terminale: tasti copia/incolla", () => {
       clipboardKeyAction(key({ key: "x", ctrlKey: true }), true),
       null,
     );
+  });
+});
+
+describe("terminale: risoluzione incolla", () => {
+  it("testo non vuoto = incolla il testo una sola volta", () => {
+    assert.deepEqual(resolvePasteAction("ciao"), {
+      kind: "paste",
+      text: "ciao",
+    });
+  });
+
+  it("testo vuoto (es. immagine) = inoltra Ctrl+V grezzo al PTY", () => {
+    assert.deepEqual(resolvePasteAction(""), {
+      kind: "forward-key",
+      key: "\x16",
+    });
   });
 });

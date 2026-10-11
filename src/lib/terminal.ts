@@ -40,6 +40,29 @@ export function clipboardKeyAction(
   return null;
 }
 
+/**
+ * Ctrl+V grezzo (SYN, U+0016): è il byte che xterm invia al PTY per Ctrl+V
+ * quando il tasto non è intercettato. Le CLI (Muse) lo usano come segnale
+ * per prelevare un'immagine dagli appunti di sistema.
+ */
+export const PASTE_FALLBACK_KEY = "\x16";
+
+/** Decisione presa dopo aver letto gli appunti per un'azione "incolla". */
+export type PasteResolution =
+  | { kind: "paste"; text: string }
+  | { kind: "forward-key"; key: string };
+
+/**
+ * Decide cosa fare con il contenuto testuale degli appunti dopo un gesto
+ * di incolla: testo non vuoto -> incollalo nel terminale; testo vuoto
+ * (appunti con sola immagine, o vuoti) -> inoltra Ctrl+V grezzo al PTY
+ * così la CLI può gestire l'incolla da sola, come prima della v0.3.1.
+ */
+export function resolvePasteAction(clipboardText: string): PasteResolution {
+  if (clipboardText !== "") return { kind: "paste", text: clipboardText };
+  return { kind: "forward-key", key: PASTE_FALLBACK_KEY };
+}
+
 export interface BusyTracker {
   /** Segnala output arrivato dal pty: diventa busy. */
   markOutput: () => void;
