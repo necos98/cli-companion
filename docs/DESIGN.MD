@@ -1,4 +1,4 @@
-# muse-companion — Design
+# cli-companion — Design
 
 App desktop (Windows) per gestire cartelle di lavoro ("workspace") locali e WSL2
 e aprirci dentro terminali integrati a tab.
@@ -97,7 +97,7 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 ### `muse_notify.rs` — segnale di fine lavoro Muse (niente semaforo)
 
 - Il plugin Muse installato negli env dichiara hook `Stop`/`SessionEnd` il cui
-  comando e' questo stesso exe: `muse-companion --notify <evento> <sorgente>`
+  comando e' questo stesso exe: `cli-companion --notify <evento> <sorgente>`
   (ramo con early-return in `main.rs`, come `--check-update`).
 - `--notify` spedisce una riga JSON su TCP `127.0.0.1:17421` all'istanza GUI;
   il listener (thread in `setup`) emette l'evento Tauri `muse-event` e il

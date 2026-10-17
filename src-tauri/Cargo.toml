@@ -1,12 +1,12 @@
 [package]
-name = "muse-companion"
-version = "0.3.2"
-description = "Workspace companion con terminali integrati Windows + WSL"
+name = "cli-companion"
+version = "0.4.0"
+description = "CLI companion con terminali integrati Windows + WSL"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "muse_companion_lib"
+name = "cli_companion_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

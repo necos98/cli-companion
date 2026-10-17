@@ -1,7 +1,7 @@
 {
-  "_comment": "Config updater GitHub Releases: SINGLE SOURCE OF TRUTH per owner/repo. Letto dal backend Rust a compile-time (src-tauri/src/updater.rs via include_str!) ed esposto al frontend tramite comando get_update_config. Se il repository GitHub NON esiste ancora, lascia owner=REPLACE_ME_OWNER: l'updater lo rileva e risponde con un messaggio chiaro invece di fallire (vedi docs/UPDATER.MD). Override runtime (hanno precedenza): MUSE_COMPANION_UPDATE_OWNER, MUSE_COMPANION_UPDATE_REPO, MUSE_COMPANION_UPDATE_API_URL.",
+  "_comment": "Config updater GitHub Releases: SINGLE SOURCE OF TRUTH per owner/repo. Letto dal backend Rust a compile-time (src-tauri/src/updater.rs via include_str!) ed esposto al frontend tramite comando get_update_config. Se il repository GitHub NON esiste ancora, lascia owner=REPLACE_ME_OWNER: l'updater lo rileva e risponde con un messaggio chiaro invece di fallire (vedi docs/UPDATER.MD). Override runtime (hanno precedenza): CLI_COMPANION_UPDATE_OWNER, CLI_COMPANION_UPDATE_REPO, CLI_COMPANION_UPDATE_API_URL.",
   "owner": "necos98",
-  "repo": "muse-companion",
+  "repo": "cli-companion",
   "apiUrl": "https://api.github.com",
   "assetPatterns": [".msi", "setup.exe", "win-x64.exe", "windows-x86_64.exe", ".exe"],
   "assetPatternsNote": "Ordine di preferenza (substring, case-insensitive) per scegliere l'installer dalla release. Se nessun asset matcha, l'updater usa il primo asset disponibile oppure chiede di specificarne il nome.",

@@ -16,17 +16,17 @@ Stato attuale: il progetto **non ha ancora un remote GitHub**
 
 ## 1. Creare la repo GitHub e pushare
 
-Esegui da `F:\altre_robe\muse-companion` (PowerShell).
+Esegui da `F:\altre_robe\cli-companion` (PowerShell).
 Sostituisci `OWNER` con il tuo username GitHub (es. `necos98`):
 
 ```powershell
 # 1a. (solo se non ancora fatto) inizializza il repo locale e committa
 git init
 git add .
-git commit -m "Initial commit: muse-companion v0.1.0"
+git commit -m "Initial commit: cli-companion v0.1.0"
 
 # 1b. crea la repo GitHub e collega il remote (nessun push forzato)
-gh repo create OWNER/muse-companion --public --source=. --remote=origin
+gh repo create OWNER/cli-companion --public --source=. --remote=origin
 
 # 1c. push del branch principale
 git branch -M main
@@ -36,10 +36,10 @@ git push -u origin main
 Variante in un solo comando (se il commit locale esiste gia'):
 
 ```powershell
-gh repo create OWNER/muse-companion --public --source=. --remote=origin --push
+gh repo create OWNER/cli-companion --public --source=. --remote=origin --push
 ```
 
-Verifica: `gh repo view OWNER/muse-companion --web`.
+Verifica: `gh repo view OWNER/cli-companion --web`.
 
 ## 2. Prima release (attiva l'updater)
 
@@ -49,7 +49,7 @@ release deve essere compilato DOPO aver impostato il vero owner.
 
 ```powershell
 # 2a. imposta il vero owner in updater.config.json
-#     ("owner": "OWNER", "repo": "muse-companion"), poi committa e pusha:
+#     ("owner": "OWNER", "repo": "cli-companion"), poi committa e pusha:
 git add updater.config.json
 git commit -m "updater: set GitHub owner"
 git push
@@ -88,9 +88,9 @@ Asset pubblicati in ogni Release:
 
 | Asset | Note |
 |---|---|
-| `muse-companion_<ver>_x64.msi` | Installer MSI (preferito dall'updater) |
-| `muse-companion_<ver>_x64-setup.exe` | Installer NSIS |
-| `muse-companion.exe` | Eseguibile portable (fallback) |
+| `cli-companion_<ver>_x64.msi` | Installer MSI (preferito dall'updater) |
+| `cli-companion_<ver>_x64-setup.exe` | Installer NSIS |
+| `cli-companion.exe` | Eseguibile portable (fallback) |
 | `<asset>.sha256` ciascuno | Checksum verificato dall'updater |
 
 ## 4. Come l'updater consuma le release
@@ -99,7 +99,7 @@ Flusso (backend `src-tauri/src/updater.rs`, GUI `UpdateCheck.tsx`):
 
 1. `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`
    con `owner`/`repo` da `updater.config.json`
-   (override: env `MUSE_COMPANION_UPDATE_OWNER` / `_REPO` / `_API_URL`);
+   (override: env `CLI_COMPANION_UPDATE_OWNER` / `_REPO` / `_API_URL`);
 2. confronta `tag_name` (es. `v0.2.0`) con la versione locale
    (semver tollerante: `1.10 > 1.9`, `1.2 == 1.2.0`);
 3. se il tag e' piu' nuovo, sceglie l'asset via `assetPatterns`
@@ -113,8 +113,8 @@ Flusso (backend `src-tauri/src/updater.rs`, GUI `UpdateCheck.tsx`):
 Comandi utili senza GUI:
 
 ```powershell
-cargo run -p muse-companion -- --check-update   # exit 0 ok / 2 disponibile / 1 errore
-cargo run -p muse-companion -- --check-update --json
+cargo run -p cli-companion -- --check-update   # exit 0 ok / 2 disponibile / 1 errore
+cargo run -p cli-companion -- --check-update --json
 ```
 
 Finche' `owner` resta `REPLACE_ME_OWNER`, check e download rispondono

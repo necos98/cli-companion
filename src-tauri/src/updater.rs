@@ -1,13 +1,13 @@
 //! Updater leggero basato su GitHub Releases (zero nuove dipendenze Cargo).
 //!
 //! - Config: [`../../updater.config.json`](../../../updater.config.json) incluso a
-//!   compile-time; override runtime via env `MUSE_COMPANION_UPDATE_OWNER`,
-//!   `MUSE_COMPANION_UPDATE_REPO`, `MUSE_COMPANION_UPDATE_API_URL`.
+//!   compile-time; override runtime via env `CLI_COMPANION_UPDATE_OWNER`,
+//!   `CLI_COMPANION_UPDATE_REPO`, `CLI_COMPANION_UPDATE_API_URL`.
 //!   Se il repository non esiste ancora, `owner` resta [`PLACEHOLDER_OWNER`] e ogni
 //!   controllo risponde con un messaggio chiaro invece di fallire in modo oscuro.
 //! - Check: `GET {api}/repos/{owner}/{repo}/releases/latest` via `curl`
 //!   (preinstallato su Windows 10+, macOS e quasi tutte le distro Linux).
-//! - Download: `curl --fail` in `%TEMP%/muse-companion-update`; verifica dimensione
+//! - Download: `curl --fail` in `%TEMP%/cli-companion-update`; verifica dimensione
 //!   + SHA256 (implementazione pura qui sotto, nessuna crate) contro il checksum
 //!   pubblicato nella release, se presente.
 //! - Install: NON sostituisce file a caldo (su Windows l'exe in esecuzione e' lockato
@@ -31,7 +31,7 @@ use std::process::Command;
 
 /// Owner placeholder: indica che il repository GitHub non e' stato ancora creato.
 /// Chi legge questo valore negli errori deve impostare `owner`/`repo` in
-/// `updater.config.json` (o le env `MUSE_COMPANION_UPDATE_OWNER` / `_REPO`).
+/// `updater.config.json` (o le env `CLI_COMPANION_UPDATE_OWNER` / `_REPO`).
 pub const PLACEHOLDER_OWNER: &str = "REPLACE_ME_OWNER";
 
 /// Config grezza dal JSON (chiavi camelCase come da convenzione JS).
@@ -82,13 +82,13 @@ fn env_override(name: &str) -> Option<String> {
 pub fn load_config() -> UpdateConfig {
     let file: FileConfig = serde_json::from_str(EMBEDDED_CONFIG).unwrap_or(FileConfig {
         owner: PLACEHOLDER_OWNER.to_string(),
-        repo: "muse-companion".to_string(),
+        repo: "cli-companion".to_string(),
         api_url: None,
         asset_patterns: Vec::new(),
     });
-    let owner = env_override("MUSE_COMPANION_UPDATE_OWNER").unwrap_or(file.owner);
-    let repo = env_override("MUSE_COMPANION_UPDATE_REPO").unwrap_or(file.repo);
-    let api_url = env_override("MUSE_COMPANION_UPDATE_API_URL")
+    let owner = env_override("CLI_COMPANION_UPDATE_OWNER").unwrap_or(file.owner);
+    let repo = env_override("CLI_COMPANION_UPDATE_REPO").unwrap_or(file.repo);
+    let api_url = env_override("CLI_COMPANION_UPDATE_API_URL")
         .or(file.api_url)
         .unwrap_or_else(|| "https://api.github.com".to_string());
     let mut asset_patterns = file.asset_patterns;
@@ -117,7 +117,7 @@ fn not_configured_message_raw(owner: &str, repo: &str) -> String {
     format!(
         "Repository GitHub non ancora configurato (owner='{owner}', repo='{repo}'). \
          L'updater è in attesa: crea il repository e imposta \"owner\"/\"repo\" in \
-         updater.config.json (oppure le variabili MUSE_COMPANION_UPDATE_OWNER/_REPO). \
+         updater.config.json (oppure le variabili CLI_COMPANION_UPDATE_OWNER/_REPO). \
          Nessun controllo effettuato."
     )
 }
@@ -247,7 +247,7 @@ pub struct UpdateStatus {
 }
 
 fn curl_bin() -> String {
-    if let Some(custom) = env_override("MUSE_COMPANION_UPDATER_CURL") {
+    if let Some(custom) = env_override("CLI_COMPANION_UPDATER_CURL") {
         return custom;
     }
     if cfg!(windows) {
@@ -259,7 +259,7 @@ fn curl_bin() -> String {
 
 fn latest_release_url(cfg: &UpdateConfig) -> String {
     // Hook per test/mock: punta direttamente a un JSON di release (anche file://).
-    if let Some(custom) = env_override("MUSE_COMPANION_UPDATE_LATEST_URL") {
+    if let Some(custom) = env_override("CLI_COMPANION_UPDATE_LATEST_URL") {
         return custom;
     }
     format!(
@@ -270,9 +270,21 @@ fn latest_release_url(cfg: &UpdateConfig) -> String {
     )
 }
 
+/// Niente finestra console per i processi figli: la build release e' una app
+/// GUI (windows_subsystem) e curl/cmd aprirebbero un terminale lampeggiante.
+fn quiet(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn run_curl(args: &[String]) -> Result<Vec<u8>, String> {
     let bin = curl_bin();
-    let out = Command::new(&bin).args(args).output().map_err(|e| {
+    let out = quiet(&mut Command::new(&bin)).args(args).output().map_err(|e| {
         format!("Impossibile eseguire '{bin}' (curl non trovato nel PATH?): {e}. Su Windows 10+ curl.exe è preinstallato.")
     })?;
     if !out.status.success() {
@@ -300,7 +312,7 @@ pub fn fetch_latest_release(cfg: &UpdateConfig) -> Result<GithubRelease, String>
         "-H".to_string(),
         "Accept: application/vnd.github+json".to_string(),
         "-H".to_string(),
-        "User-Agent: muse-companion-updater".to_string(),
+        "User-Agent: cli-companion-updater".to_string(),
         url.clone(),
     ];
     let body = run_curl(&args).map_err(|e| {
@@ -399,7 +411,7 @@ pub struct InstallResult {
 
 /// Cartella temporanea dei download (creata se manca).
 pub fn update_temp_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("muse-companion-update");
+    let dir = std::env::temp_dir().join("cli-companion-update");
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Impossibile creare {}: {e}", dir.display()))?;
     Ok(dir)
@@ -413,7 +425,7 @@ fn download_file(url: &str, dest: &Path) -> Result<u64, String> {
         "--max-time".to_string(),
         "600".to_string(),
         "-H".to_string(),
-        "User-Agent: muse-companion-updater".to_string(),
+        "User-Agent: cli-companion-updater".to_string(),
         "-o".to_string(),
         dest.to_string_lossy().to_string(),
         url.to_string(),
@@ -609,7 +621,7 @@ pub fn install_update_blocking(file_path: String, launch: bool) -> Result<Instal
 
 #[cfg(target_os = "windows")]
 fn launch_detached(path: &Path) -> Result<(), String> {
-    Command::new("cmd")
+    quiet(&mut Command::new("cmd"))
         .args(["/C", "start", "", &path.to_string_lossy()])
         .spawn()
         .map(|_| ())
@@ -741,19 +753,21 @@ pub fn get_update_config() -> UpdateConfig {
     load_config()
 }
 
+// Async + spawn_blocking: curl puo' durare fino a 25 s (check) o 600 s
+// (download); sul main thread congelava la finestra, anche all'avvio.
 #[tauri::command]
-pub fn check_update() -> Result<UpdateStatus, String> {
-    check_blocking()
+pub async fn check_update() -> Result<UpdateStatus, String> {
+    crate::blocking(check_blocking).await
 }
 
 #[tauri::command]
-pub fn download_update(asset_name: Option<String>) -> Result<DownloadResult, String> {
-    download_update_blocking(asset_name)
+pub async fn download_update(asset_name: Option<String>) -> Result<DownloadResult, String> {
+    crate::blocking(move || download_update_blocking(asset_name)).await
 }
 
 #[tauri::command]
-pub fn install_update(file_path: String, launch: bool) -> Result<InstallResult, String> {
-    install_update_blocking(file_path, launch)
+pub async fn install_update(file_path: String, launch: bool) -> Result<InstallResult, String> {
+    crate::blocking(move || install_update_blocking(file_path, launch)).await
 }
 
 #[cfg(test)]
@@ -761,7 +775,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // I test che leggono/scrivono le env MUSE_COMPANION_UPDATE_* devono girare
+    // I test che leggono/scrivono le env CLI_COMPANION_UPDATE_* devono girare
     // in mutua esclusione (cargo test è parallelo per default).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -856,10 +870,10 @@ mod tests {
     fn config_embedded_si_legge_e_placeholder_rilevato() {
         let _guard = ENV_LOCK.lock().unwrap();
         // Assicura che nessun override d'ambiente sporchi questo test.
-        std::env::remove_var("MUSE_COMPANION_UPDATE_OWNER");
-        std::env::remove_var("MUSE_COMPANION_UPDATE_REPO");
+        std::env::remove_var("CLI_COMPANION_UPDATE_OWNER");
+        std::env::remove_var("CLI_COMPANION_UPDATE_REPO");
         let cfg = load_config();
-        assert_eq!(cfg.repo, "muse-companion");
+        assert_eq!(cfg.repo, "cli-companion");
         assert!(!cfg.asset_patterns.is_empty());
         assert_eq!(cfg.configured, cfg.owner != PLACEHOLDER_OWNER);
         if !cfg.configured {
@@ -875,9 +889,9 @@ mod tests {
     #[test]
     fn config_override_env() {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("MUSE_COMPANION_UPDATE_OWNER", "acme-test");
+        std::env::set_var("CLI_COMPANION_UPDATE_OWNER", "acme-test");
         let cfg = load_config();
-        std::env::remove_var("MUSE_COMPANION_UPDATE_OWNER");
+        std::env::remove_var("CLI_COMPANION_UPDATE_OWNER");
         assert_eq!(cfg.owner, "acme-test");
         assert!(cfg.configured);
     }
@@ -895,7 +909,7 @@ mod tests {
     #[test]
     fn download_verifica_checksum_e_rollback_su_file_locali() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join("muse-companion-updater-test");
+        let dir = std::env::temp_dir().join("cli-companion-updater-test");
         std::fs::create_dir_all(&dir).unwrap();
         let file_url = |p: &std::path::Path| {
             format!(
@@ -928,7 +942,7 @@ mod tests {
             rel
         };
 
-        std::env::set_var("MUSE_COMPANION_UPDATE_OWNER", "acme-test");
+        std::env::set_var("CLI_COMPANION_UPDATE_OWNER", "acme-test");
 
         // Caso OK: checksum valida -> verified=true, file presente.
         let payload = dir.join("ok-payload-t1.msi");
@@ -940,7 +954,7 @@ mod tests {
             "v9.9.9-ok",
             &[(&payload, "ok-payload-t1.msi"), (&sum, "ok-payload-t1.msi.sha256")],
         );
-        std::env::set_var("MUSE_COMPANION_UPDATE_LATEST_URL", file_url(&rel_ok));
+        std::env::set_var("CLI_COMPANION_UPDATE_LATEST_URL", file_url(&rel_ok));
         let res = download_update_blocking(None).expect("download ok");
         assert!(res.verified, "checksum valida non riconosciuta");
         assert_eq!(res.sha256, digest);
@@ -959,14 +973,14 @@ mod tests {
                 (&sum2, "bad-payload-t1.exe.sha256"),
             ],
         );
-        std::env::set_var("MUSE_COMPANION_UPDATE_LATEST_URL", file_url(&rel_bad));
+        std::env::set_var("CLI_COMPANION_UPDATE_LATEST_URL", file_url(&rel_bad));
         let err = download_update_blocking(None).unwrap_err();
         assert!(err.contains("NON valida"), "{err}");
         let dest = update_temp_dir().unwrap().join("bad-payload-t1.exe");
         assert!(!dest.exists(), "rollback mancato: {dest:?} ancora presente");
 
-        std::env::remove_var("MUSE_COMPANION_UPDATE_OWNER");
-        std::env::remove_var("MUSE_COMPANION_UPDATE_LATEST_URL");
+        std::env::remove_var("CLI_COMPANION_UPDATE_OWNER");
+        std::env::remove_var("CLI_COMPANION_UPDATE_LATEST_URL");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

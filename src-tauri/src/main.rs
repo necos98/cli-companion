@@ -2,16 +2,16 @@
 
 fn print_help() {
     println!(
-        "muse-companion {}\n\
+        "cli-companion {}\n\
          \n\
          Uso:\n  \
-           muse-companion                 Avvia l'interfaccia grafica\n  \
-           muse-companion --check-update  Controlla le release su GitHub ed esce\n  \
-           muse-companion --check-update --json  Come sopra, output JSON\n  \
-           muse-companion --notify <evento> [sorgente]  Segnala fine lavoro\n  \
+           cli-companion                 Avvia l'interfaccia grafica\n  \
+           cli-companion --check-update  Controlla le release su GitHub ed esce\n  \
+           cli-companion --check-update --json  Come sopra, output JSON\n  \
+           cli-companion --notify <evento> [sorgente]  Segnala fine lavoro\n  \
              all'istanza in esecuzione ed esce (eventi: stop, session-end, test)\n  \
-           muse-companion --version       Stampa la versione ed esce\n  \
-           muse-companion --help          Questo aiuto\n\
+           cli-companion --version       Stampa la versione ed esce\n  \
+           cli-companion --help          Questo aiuto\n\
          \n\
          Exit code di --check-update: 0 = aggiornato, 2 = aggiornamento disponibile,\n  \
          1 = errore (repo non configurato, rete, ...).\n\
@@ -20,7 +20,7 @@ fn print_help() {
          --check-update/--version sono pensati per le build debug o per script;\n  \
          --notify invece non stampa nulla e funziona anche in release: e' il\n  \
          comando usato dagli hook del plugin Muse.",
-        muse_companion_lib::updater::current_version()
+        cli_companion_lib::updater::current_version()
     );
 }
 
@@ -31,13 +31,13 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("muse-companion {}", muse_companion_lib::updater::current_version());
+        println!("cli-companion {}", cli_companion_lib::updater::current_version());
         return;
     }
     if let Some(pos) = args.iter().position(|a| a == "--notify") {
         let event = args.get(pos + 1).cloned().unwrap_or_default();
         let source = args.get(pos + 2).cloned().unwrap_or("local".to_string());
-        match muse_companion_lib::muse_notify::send_notify(&event, &source) {
+        match cli_companion_lib::muse_notify::send_notify(&event, &source) {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("notify fallita: {e}");
@@ -47,7 +47,7 @@ fn main() {
     }
     if args.iter().any(|a| a == "--check-update") {
         let as_json = args.iter().any(|a| a == "--json");
-        match muse_companion_lib::updater::check_blocking() {
+        match cli_companion_lib::updater::check_blocking() {
             Ok(st) => {
                 if as_json {
                     println!("{}", serde_json::to_string_pretty(&st).unwrap_or_default());
@@ -57,7 +57,7 @@ fn main() {
                         st.current_version, st.latest_version, st.release_url
                     );
                 } else {
-                    println!("muse-companion aggiornato ({}).", st.current_version);
+                    println!("cli-companion aggiornato ({}).", st.current_version);
                 }
                 std::process::exit(if st.update_available { 2 } else { 0 });
             }
@@ -67,5 +67,5 @@ fn main() {
             }
         }
     }
-    muse_companion_lib::run();
+    cli_companion_lib::run();
 }

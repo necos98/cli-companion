@@ -25,7 +25,7 @@ function rustCommands() {
   const out = new Map();
   for (const file of ["pty.rs", "workspaces.rs", "wsl.rs", "updater.rs", "settings.rs", "muse_notify.rs"]) {
     const src = readFileSync(path.join(RS, file), "utf8");
-    const re = /#\[tauri::command\]\s*pub fn (\w+)\s*\(([^)]*)\)/g;
+    const re = /#\[tauri::command\]\s*pub (?:async )?fn (\w+)\s*\(([^)]*)\)/g;
     for (const m of src.matchAll(re)) {
       const args = [];
       for (const param of m[2].split(",")) {

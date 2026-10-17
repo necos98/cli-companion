@@ -2,7 +2,7 @@
 //!
 //! Il plugin Muse installato negli ambienti (Windows + distro WSL) dichiara
 //! hook `Stop`/`SessionEnd` il cui comando e' questo stesso eseguibile:
-//! `muse-companion --notify <evento> <sorgente>`.
+//! `cli-companion --notify <evento> <sorgente>`.
 //! La modalita' --notify spedisce una riga JSON su TCP 127.0.0.1:NOTIFY_PORT
 //! all'istanza GUI, che emette l'evento Tauri `muse-event` verso il frontend.
 //!
@@ -26,7 +26,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// Porta del listener locale. Solo 127.0.0.1: nessun prompt del firewall.
 pub const NOTIFY_PORT: u16 = 17421;
 /// ID del plugin Muse generato da questa app.
-pub const PLUGIN_ID: &str = "muse-companion-notify";
+pub const PLUGIN_ID: &str = "cli-companion-notify";
+/// ID del plugin generato dalla vecchia app (muse-companion), rimosso a ogni
+/// installazione: i suoi hook puntano a un exe che non esiste piu'.
+const LEGACY_PLUGIN_ID: &str = "muse-companion-notify";
 /// Eventi accettati sul socket e in --notify.
 const KNOWN_EVENTS: [&str; 3] = ["stop", "session-end", "test"];
 /// Nome evento Tauri verso il frontend.
@@ -70,7 +73,7 @@ pub fn send_to(port: u16, event: &str, source: &str) -> Result<(), String> {
         &format!("127.0.0.1:{port}").parse().unwrap(),
         Duration::from_millis(1500),
     )
-    .map_err(|_| "app non in ascolto (avvia muse-companion)".to_string())?;
+    .map_err(|_| "app non in ascolto (avvia cli-companion)".to_string())?;
     stream
         .write_all(format!("{line}\n").as_bytes())
         .map_err(|e| format!("invio fallito: {e}"))?;
@@ -104,8 +107,13 @@ pub fn start_listener(app: &AppHandle) {
         };
         for stream in listener.incoming() {
             match stream {
+                // Un thread per connessione: un client che non scrive nulla
+                // non blocca gli altri per tutto il read timeout.
                 Ok(mut s) => {
-                    let _ = handle_conn(&mut s, &app);
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let _ = handle_conn(&mut s, &app);
+                    });
                 }
                 Err(_) => continue,
             }
@@ -144,9 +152,9 @@ pub fn build_manifest_json(exe_path: &str, env_key: &str) -> String {
     let manifest = serde_json::json!({
         "schemaVersion": 1,
         "name": PLUGIN_ID,
-        "displayName": "muse-companion: segnale di fine lavoro",
+        "displayName": "cli-companion: segnale di fine lavoro",
         "version": "0.1.0",
-        "description": "Avvisa muse-companion quando una sessione Muse finisce (ding).",
+        "description": "Avvisa cli-companion quando una sessione Muse finisce (ding).",
         "compat": { "source": "native", "manifestDir": ".muse-plugin" },
         "capabilities": {
             "skills": [],
@@ -316,15 +324,26 @@ fn status_for(key: &str, label: &str, kind: &str, distro: Option<&str>) -> MuseE
     }
 }
 
+/// Ogni env costa 2 processi (`muse --version` + `plugins list`) e su WSL
+/// anche l'avvio della VM: gli env vengono sondati in parallelo.
+fn collect_env_status() -> Vec<MuseEnvStatus> {
+    let distros = installed_distros().unwrap_or_default();
+    std::thread::scope(|s| {
+        let win = s.spawn(|| status_for("windows", "Windows", "windows", None));
+        let wsl: Vec<_> = distros
+            .iter()
+            .map(|d| s.spawn(move || status_for(d, d, "wsl", Some(d))))
+            .collect();
+        std::iter::once(win)
+            .chain(wsl)
+            .filter_map(|h| h.join().ok())
+            .collect()
+    })
+}
+
 #[tauri::command]
-pub fn muse_env_status() -> Result<Vec<MuseEnvStatus>, String> {
-    let mut envs = vec![status_for("windows", "Windows", "windows", None)];
-    if let Ok(distros) = installed_distros() {
-        for d in distros {
-            envs.push(status_for(&d, &d, "wsl", Some(&d)));
-        }
-    }
-    Ok(envs)
+pub async fn muse_env_status() -> Result<Vec<MuseEnvStatus>, String> {
+    crate::blocking(|| Ok(collect_env_status())).await
 }
 
 fn resolve_env(env_key: &str) -> Result<(String, Option<String>), String> {
@@ -340,13 +359,17 @@ fn resolve_env(env_key: &str) -> Result<(String, Option<String>), String> {
 }
 
 #[tauri::command]
-pub fn install_muse_plugin(app: AppHandle, env_key: String) -> Result<String, String> {
-    let (key, distro) = resolve_env(&env_key)?;
+pub async fn install_muse_plugin(app: AppHandle, env_key: String) -> Result<String, String> {
+    crate::blocking(move || install_plugin_blocking(&app, &env_key)).await
+}
+
+fn install_plugin_blocking(app: &AppHandle, env_key: &str) -> Result<String, String> {
+    let (key, distro) = resolve_env(env_key)?;
     let distro_ref = distro.as_deref();
     if !muse_found(distro_ref) {
         return Err("muse non trovato in questo env: installalo prima".to_string());
     }
-    let (_win_dir, muse_dir) = write_plugin(&app, &key, distro_ref)?;
+    let (_win_dir, muse_dir) = write_plugin(app, &key, distro_ref)?;
     let mut log = vec![format!("plugin scritto per env '{key}'")];
 
     // Valida prima di installare: errori nostri, non dell'utente.
@@ -356,6 +379,7 @@ pub fn install_muse_plugin(app: AppHandle, env_key: String) -> Result<String, St
     log.push("validazione ok".to_string());
 
     // Reinstalla deterministica: rimuovi (ignora errori) poi installa.
+    let _ = run_muse(distro_ref, &["plugins", "remove", LEGACY_PLUGIN_ID]);
     let _ = run_muse(distro_ref, &["plugins", "remove", PLUGIN_ID]);
     run_muse(distro_ref, &["plugins", "install", &muse_dir])
         .map_err(|e| format!("install fallita: {e}\n{}", log.join("\n")))?;
@@ -384,21 +408,27 @@ pub fn install_muse_plugin(app: AppHandle, env_key: String) -> Result<String, St
 }
 
 #[tauri::command]
-pub fn remove_muse_plugin(app: AppHandle, env_key: String) -> Result<String, String> {
-    let (key, distro) = resolve_env(&env_key)?;
-    let out = run_muse(
-        distro.as_deref(),
-        &["plugins", "remove", PLUGIN_ID],
-    )?;
-    let _ = std::fs::remove_dir_all(plugin_dir(&app, &key).unwrap_or_default());
-    Ok(out.trim().to_string())
+pub async fn remove_muse_plugin(app: AppHandle, env_key: String) -> Result<String, String> {
+    crate::blocking(move || {
+        let (key, distro) = resolve_env(&env_key)?;
+        let out = run_muse(distro.as_deref(), &["plugins", "remove", PLUGIN_ID])?;
+        if let Ok(dir) = plugin_dir(&app, &key) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        Ok(out.trim().to_string())
+    })
+    .await
 }
 
 /// Self-test del canale: lancia questo stesso exe in modalita' --notify
 /// (stesso percorso degli hook) e verifica l'exit code. Il ding arriva
 /// poi via evento al frontend come prova udibile.
 #[tauri::command]
-pub fn test_muse_notify() -> Result<String, String> {
+pub async fn test_muse_notify() -> Result<String, String> {
+    crate::blocking(self_test_blocking).await
+}
+
+fn self_test_blocking() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("percorso exe: {e}"))?;
     let mut cmd = Command::new(&exe);
     let status = spawn_quiet(&mut cmd)
@@ -421,7 +451,7 @@ mod tests {
 
     #[test]
     fn manifest_is_valid_json_with_forward_slashes() {
-        let raw = build_manifest_json("C:/app/muse-companion.exe", "windows");
+        let raw = build_manifest_json("C:/app/cli-companion.exe", "windows");
         assert!(!raw.is_empty());
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["schemaVersion"], 1);
@@ -432,7 +462,7 @@ mod tests {
         assert_eq!(hooks[1]["event"], "SessionEnd");
         for h in hooks {
             let cmd = h["command"].as_array().unwrap();
-            assert_eq!(cmd[0], "C:/app/muse-companion.exe");
+            assert_eq!(cmd[0], "C:/app/cli-companion.exe");
             assert!(!cmd[0].as_str().unwrap().contains('\\'));
             assert!(h["timeoutMs"].as_u64().unwrap() > 0);
         }
@@ -442,10 +472,10 @@ mod tests {
 
     #[test]
     fn manifest_supports_wsl_paths() {
-        let raw = build_manifest_json("/mnt/c/app/muse-companion.exe", "Ubuntu-24.04");
+        let raw = build_manifest_json("/mnt/c/app/cli-companion.exe", "Ubuntu-24.04");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let cmd = v["capabilities"]["hooks"][0]["command"].as_array().unwrap();
-        assert_eq!(cmd[0], "/mnt/c/app/muse-companion.exe");
+        assert_eq!(cmd[0], "/mnt/c/app/cli-companion.exe");
         assert_eq!(cmd[3], "Ubuntu-24.04");
     }
 
@@ -455,16 +485,16 @@ mod tests {
         assert!(!plugin_listed("non json", PLUGIN_ID));
         assert!(!plugin_listed(r#"{}"#, PLUGIN_ID));
         assert!(plugin_listed(
-            r#"{"plugins":[{"id":"muse-companion-notify"}]}"#,
+            r#"{"plugins":[{"id":"cli-companion-notify"}]}"#,
             PLUGIN_ID
         ));
         assert!(plugin_listed(
-            r#"{"plugins":[{"name":"muse-companion-notify"}]}"#,
+            r#"{"plugins":[{"name":"cli-companion-notify"}]}"#,
             PLUGIN_ID
         ));
         // Sottostringa di un altro id: non deve matchare.
         assert!(!plugin_listed(
-            r#"{"plugins":[{"id":"muse-companion-notify-extra"}]}"#,
+            r#"{"plugins":[{"id":"cli-companion-notify-extra"}]}"#,
             PLUGIN_ID
         ));
     }
@@ -474,14 +504,14 @@ mod tests {
         // Forma reale di `muse plugins list --json` (ridotta): id annidato.
         let real = r#"{
             "plugins": [{
-                "record": {"id": "muse-companion-notify", "enabled": true},
+                "record": {"id": "cli-companion-notify", "enabled": true},
                 "warning": "third-party plugin: hooks require review before activation",
-                "plugin": {"id": "muse-companion-notify"},
+                "plugin": {"id": "cli-companion-notify"},
                 "valid": true, "active": true, "diagnostics": []
             }]
         }"#;
         assert!(plugin_listed(real, PLUGIN_ID));
-        let other = real.replace("muse-companion-notify", "altro-plugin");
+        let other = real.replace("cli-companion-notify", "altro-plugin");
         assert!(!plugin_listed(&other, PLUGIN_ID));
     }
 

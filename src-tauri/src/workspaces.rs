@@ -72,7 +72,7 @@ fn save_to_disk(app: &AppHandle, workspaces: &[Workspace]) -> Result<(), String>
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("impossibile creare cartella dati: {e}"))?;
     let raw = serde_json::to_string_pretty(workspaces).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(STORE_FILE), raw).map_err(|e| format!("impossibile salvare: {e}"))?;
+    crate::write_atomic(&dir.join(STORE_FILE), &raw).map_err(|e| format!("impossibile salvare: {e}"))?;
     Ok(())
 }
 
@@ -97,16 +97,29 @@ pub fn list_workspaces(state: State<WorkspaceStore>) -> Vec<Workspace> {
     state.inner.lock().unwrap().workspaces.clone()
 }
 
+/// Async: la verifica della cartella WSL avvia `wsl.exe`, che a VM spenta
+/// puo' impiegare secondi (sul main thread congelerebbe la finestra).
 #[tauri::command]
-pub fn add_workspace(
+pub async fn add_workspace(
     app: AppHandle,
-    state: State<WorkspaceStore>,
     name: String,
     kind: String,
     path: String,
     distro: Option<String>,
     shell: Option<String>,
 ) -> Result<Workspace, String> {
+    crate::blocking(move || add_workspace_blocking(&app, name, kind, path, distro, shell)).await
+}
+
+fn add_workspace_blocking(
+    app: &AppHandle,
+    name: String,
+    kind: String,
+    path: String,
+    distro: Option<String>,
+    shell: Option<String>,
+) -> Result<Workspace, String> {
+    let state = app.state::<WorkspaceStore>();
     let kind = kind.trim().to_lowercase();
     if kind != "windows" && kind != "wsl" {
         return Err("kind non valido (usa \"windows\" o \"wsl\")".to_string());
@@ -164,7 +177,7 @@ pub fn add_workspace(
         created_at: now_millis(),
     };
     data.workspaces.push(ws.clone());
-    save_to_disk(&app, &data.workspaces)?;
+    save_to_disk(app, &data.workspaces)?;
     Ok(ws)
 }
 

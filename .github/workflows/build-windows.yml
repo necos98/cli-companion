@@ -65,7 +65,7 @@ jobs:
         # L'updater verifica '<asset>.sha256' (singolo hash, vedi docs/UPDATER.MD).
         run: |
           $files = @(
-            "src-tauri/target/release/muse-companion.exe",
+            "src-tauri/target/release/cli-companion.exe",
             "src-tauri/target/release/bundle/msi/*.msi",
             "src-tauri/target/release/bundle/nsis/*-setup.exe"
           ) | ForEach-Object { Get-Item $_ -ErrorAction SilentlyContinue } | Where-Object { $_ -is [System.IO.FileInfo] }
@@ -80,10 +80,10 @@ jobs:
       - name: Upload artifacts (CI)
         uses: actions/upload-artifact@v4
         with:
-          name: muse-companion-windows
+          name: cli-companion-windows
           path: |
-            src-tauri/target/release/muse-companion.exe
-            src-tauri/target/release/muse-companion.exe.sha256
+            src-tauri/target/release/cli-companion.exe
+            src-tauri/target/release/cli-companion.exe.sha256
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/msi/*.sha256
             src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -101,8 +101,8 @@ jobs:
             "src-tauri/target/release/bundle/msi/*.sha256",
             "src-tauri/target/release/bundle/nsis/*-setup.exe",
             "src-tauri/target/release/bundle/nsis/*.sha256",
-            "src-tauri/target/release/muse-companion.exe",
-            "src-tauri/target/release/muse-companion.exe.sha256"
+            "src-tauri/target/release/cli-companion.exe",
+            "src-tauri/target/release/cli-companion.exe.sha256"
           ) | ForEach-Object { Get-Item $_ -ErrorAction SilentlyContinue } | Where-Object { $_ -is [System.IO.FileInfo] } | Select-Object -ExpandProperty FullName
           if (-not $assets) { throw "Nessun asset da pubblicare" }
           gh release create "$tag" $assets --title "$tag" --generate-notes

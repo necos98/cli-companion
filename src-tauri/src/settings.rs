@@ -46,7 +46,7 @@ fn save_to_disk(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("impossibile creare cartella dati: {e}"))?;
     let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(STORE_FILE), raw).map_err(|e| format!("impossibile salvare: {e}"))?;
+    crate::write_atomic(&dir.join(STORE_FILE), &raw).map_err(|e| format!("impossibile salvare: {e}"))?;
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::workspaces::WorkspaceStore;
 
@@ -23,7 +23,9 @@ struct PtyExit {
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Arc: pty_write lo clona e scrive senza tenere il lock della mappa,
+    /// cosi' una shell che non legge non blocca le altre sessioni.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
 }
 
@@ -223,15 +225,26 @@ fn is_powershell(shell: &str) -> bool {
 /// Il `prompt` preesistente (profilo utente, oh-my-posh, ...) e' preservato.
 const POWERSHELL_TITLE_HOOK: &str = r#"$__mcInitTitle = ''; try { $__mcInitTitle = $Host.UI.RawUI.WindowTitle } catch { }; $__mcPrevPrompt = $null; try { $__mcPrevPrompt = (Get-Command prompt -CommandType Function -ErrorAction Stop).ScriptBlock } catch { }; function global:prompt { $__mcTitle = ''; try { $__mcTitle = $Host.UI.RawUI.WindowTitle; if ([string]::IsNullOrWhiteSpace($__mcTitle) -or $__mcTitle -eq $__mcInitTitle) { $__mcTitle = Split-Path -Leaf -Path (Get-Location).Path }; if ([string]::IsNullOrWhiteSpace($__mcTitle)) { $__mcTitle = 'PS' } } catch { $__mcTitle = 'PS' }; $__mcText = ''; try { if ($__mcPrevPrompt) { $__mcText = (@(& $__mcPrevPrompt) -join '') } else { $__mcText = "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " } } catch { $__mcText = 'PS> ' }; "$([char]27)]0;$__mcTitle`a$__mcText" }"#;
 
+/// Async: lo spawn verifica la cartella WSL con `wsl.exe` (secondi a VM
+/// spenta) e avvia la shell; sul main thread congelerebbe la finestra.
 #[tauri::command]
-pub fn pty_spawn(
+pub async fn pty_spawn(
     app: AppHandle,
-    pty: State<PtyState>,
-    store: State<WorkspaceStore>,
     workspace_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<u32, String> {
+    crate::blocking(move || spawn_blocking_session(&app, &workspace_id, cols, rows)).await
+}
+
+fn spawn_blocking_session(
+    app: &AppHandle,
+    workspace_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<u32, String> {
+    let pty = app.state::<PtyState>();
+    let store = app.state::<WorkspaceStore>();
     let ws = store
         .find(&workspace_id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
@@ -308,7 +321,7 @@ pub fn pty_spawn(
         session_id,
         PtySession {
             master: pair.master,
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             child: Mutex::new(child),
         },
     );
@@ -362,11 +375,14 @@ pub fn pty_spawn(
 
 #[tauri::command]
 pub fn pty_write(pty: State<PtyState>, session_id: u32, data: String) -> Result<(), String> {
-    let sessions = pty.sessions.lock().unwrap();
-    let sess = sessions
+    let writer = pty
+        .sessions
+        .lock()
+        .unwrap()
         .get(&session_id)
+        .map(|sess| sess.writer.clone())
         .ok_or_else(|| "sessione non trovata".to_string())?;
-    let mut writer = sess.writer.lock().unwrap();
+    let mut writer = writer.lock().unwrap();
     writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())?;
     Ok(())

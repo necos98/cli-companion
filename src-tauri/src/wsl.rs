@@ -91,12 +91,12 @@ pub fn windows_to_wsl_path(win: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn list_wsl_distros() -> Result<Vec<String>, String> {
-    installed_distros()
+pub async fn list_wsl_distros() -> Result<Vec<String>, String> {
+    crate::blocking(installed_distros).await
 }
 
 #[tauri::command]
-pub fn check_wsl_path(distro: String, path: String) -> Result<bool, String> {
+pub async fn check_wsl_path(distro: String, path: String) -> Result<bool, String> {
     if distro.trim().is_empty() || path.trim().is_empty() {
         return Ok(false);
     }
@@ -108,5 +108,5 @@ pub fn check_wsl_path(distro: String, path: String) -> Result<bool, String> {
     } else {
         return Ok(false);
     };
-    Ok(wsl_dir_exists(distro.trim(), &linux_path))
+    crate::blocking(move || Ok(wsl_dir_exists(distro.trim(), &linux_path))).await
 }

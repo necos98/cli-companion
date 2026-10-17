@@ -29,8 +29,8 @@ Finché `owner` vale `REPLACE_ME_OWNER` l'updater è in attesa:
   «Controlla aggiornamenti».
 
 Per attivare: creare il repo GitHub, impostare `owner`/`repo` in
-`updater.config.json` (o le env `MUSE_COMPANION_UPDATE_OWNER` /
-`MUSE_COMPANION_UPDATE_REPO`), pubblicare una release con `tag_name` tipo
+`updater.config.json` (o le env `CLI_COMPANION_UPDATE_OWNER` /
+`CLI_COMPANION_UPDATE_REPO`), pubblicare una release con `tag_name` tipo
 `v0.2.0` e allegare l'installer (`.msi` / `setup.exe` consigliati su Windows).
 
 ## Convenzioni release
@@ -52,8 +52,8 @@ Per attivare: creare il repo GitHub, impostare `owner`/`repo` in
   prima di distribuire pubblicamente valutare `tauri-plugin-updater` con chiavi
   di firma (updater firmato). Vedi note scout in `docs/DESIGN.MD` se presenti.
 - Richiede `curl` nel PATH (`curl.exe` preinstallato su Windows 10+);
-  override via `MUSE_COMPANION_UPDATER_CURL`.
-- Hook per test/mock: `MUSE_COMPANION_UPDATE_LATEST_URL` punta a un JSON di
+  override via `CLI_COMPANION_UPDATER_CURL`.
+- Hook per test/mock: `CLI_COMPANION_UPDATE_LATEST_URL` punta a un JSON di
   release arbitrario (anche `file://`).
 - CLI `--check-update`: exit `0` aggiornato, `2` update disponibile, `1` errore.
   Le build release Windows non hanno console: usare `cargo run -- --check-update`
