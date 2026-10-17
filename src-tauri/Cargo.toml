@@ -7,7 +7,9 @@ edition = "2021"
 
 [lib]
 name = "cli_companion_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Solo rlib: staticlib/cdylib servono ai target mobile (non usati) e
+# allungano la build (con LTO il cdylib viene linkato a parte).
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

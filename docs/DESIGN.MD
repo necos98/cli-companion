@@ -20,8 +20,8 @@ e aprirci dentro terminali integrati a tab.
 ```text
 +------------------+  invoke (comandi)   +------------------+
 |  React (WebView) | ------------------> |  Rust (Tauri)    |
-|  - Sidebar       | <-- eventi ---------|  - workspaces.rs |
-|  - Tab terminali |  pty-output/pTy-exit |  - wsl.rs        |
+|  - Sidebar       | <-- canali ---------|  - workspaces.rs |
+|  - Tab terminali |  uno per sessione pty|  - wsl.rs        |
 |  - xterm.js      |                      |  - pty.rs        |
 +------------------+                      +---------+--------+
                                                     |
@@ -76,14 +76,15 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     non ne eredita alcuno); niente `FORCE_COLOR`, per rispettare
     `NO_COLOR`/`--no-color`;
   - ricontrolla che la cartella esista al momento dello spawn.
-- Un thread di lettura per sessione inoltra i chunk al frontend con l'evento
-  `pty-output { session_id, data }`; alla chiusura emette `pty-exit { session_id }`.
+- Un thread di lettura per sessione inoltra i chunk al frontend sul `Channel`
+  passato a `pty_spawn` (`{kind:"output",data}`; alla chiusura `{kind:"exit"}`):
+  ogni tab riceve solo il proprio output, anche quello prima del ritorno dello spawn.
 - Decodifica UTF-8 **incrementale**: i chunk possono spezzare un carattere
   multibyte, quindi i byte incompleti restano in coda fino al chunk dopo
   (niente `�` su accenti/box-drawing).
 - Comandi: `pty_spawn`, `pty_write`, `pty_resize`, `pty_close`.
-  `pty_close` uccide il processo figlio; il thread di lettura emette comunque
-  `pty-exit`, così frontend e backend non divergono.
+  `pty_close` uccide il processo figlio; il thread di lettura invia comunque
+  `exit`, così frontend e backend non divergono.
 
 ### `settings.rs` — impostazioni globali
 

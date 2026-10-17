@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   DownloadResult,
@@ -17,14 +17,8 @@ export interface Workspace {
   created_at: number;
 }
 
-export interface PtyOutputEvent {
-  session_id: number;
-  data: string;
-}
-
-export interface PtyExitEvent {
-  session_id: number;
-}
+/** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */
+export type PtyEvent = { kind: "output"; data: string } | { kind: "exit" };
 
 export interface MuseEnvStatus {
   key: string;
@@ -80,8 +74,12 @@ export const api = {
 
   // Nota: Tauri v2 converte i nomi degli argomenti in camelCase
   // (workspace_id -> workspaceId): le chiavi qui devono esserlo già.
-  ptySpawn: (workspaceId: string, cols: number, rows: number) =>
-    invoke<number>("pty_spawn", { workspaceId, cols, rows }),
+  ptySpawn: (
+    workspaceId: string,
+    cols: number,
+    rows: number,
+    onEvent: Channel<PtyEvent>,
+  ) => invoke<number>("pty_spawn", { workspaceId, cols, rows, onEvent }),
 
   ptyWrite: (sessionId: number, data: string) =>
     invoke<void>("pty_write", { sessionId, data }),
@@ -112,14 +110,6 @@ export const api = {
   installUpdate: (filePath: string, launch: boolean) =>
     invoke<InstallResult>("install_update", { filePath, launch }),
 };
-
-export function onPtyOutput(cb: (e: PtyOutputEvent) => void) {
-  return listen<PtyOutputEvent>("pty-output", (event) => cb(event.payload));
-}
-
-export function onPtyExit(cb: (e: PtyExitEvent) => void) {
-  return listen<PtyExitEvent>("pty-exit", (event) => cb(event.payload));
-}
 
 export function onMuseEvent(cb: (e: MuseEvent) => void) {
   return listen<MuseEvent>("muse-event", (event) => cb(event.payload));

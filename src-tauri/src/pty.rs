@@ -4,21 +4,21 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Manager, State};
 
 use crate::workspaces::WorkspaceStore;
 
 const MAX_SESSIONS: usize = 32;
 
+/// Messaggi sul canale dedicato di una sessione: `{kind:"output",data}` o
+/// `{kind:"exit"}`. Un canale per terminale (invece di un evento globale)
+/// evita che ogni tab riceva e scarti l'output di tutti gli altri.
 #[derive(Debug, Clone, Serialize)]
-struct PtyOutput {
-    session_id: u32,
-    data: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct PtyExit {
-    session_id: u32,
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PtyEvent {
+    Output { data: String },
+    Exit,
 }
 
 struct PtySession {
@@ -233,8 +233,10 @@ pub async fn pty_spawn(
     workspace_id: String,
     cols: u16,
     rows: u16,
+    on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
-    crate::blocking(move || spawn_blocking_session(&app, &workspace_id, cols, rows)).await
+    crate::blocking(move || spawn_blocking_session(&app, &workspace_id, cols, rows, on_event))
+        .await
 }
 
 fn spawn_blocking_session(
@@ -242,6 +244,7 @@ fn spawn_blocking_session(
     workspace_id: &str,
     cols: u16,
     rows: u16,
+    on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
     let pty = app.state::<PtyState>();
     let store = app.state::<WorkspaceStore>();
@@ -326,9 +329,8 @@ fn spawn_blocking_session(
         },
     );
 
-    // Thread di lettura: inoltra l'output al frontend via eventi.
+    // Thread di lettura: inoltra l'output al frontend sul canale della sessione.
     let sessions = pty.sessions.clone();
-    let app_out = app.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 8192];
@@ -340,13 +342,7 @@ fn spawn_blocking_session(
                     pending.extend_from_slice(&buf[..n]);
                     let text = decode_incremental(&mut pending);
                     if !text.is_empty() {
-                        let _ = app_out.emit(
-                            "pty-output",
-                            PtyOutput {
-                                session_id,
-                                data: text,
-                            },
-                        );
+                        let _ = on_event.send(PtyEvent::Output { data: text });
                     }
                 }
                 Err(_) => break,
@@ -354,20 +350,14 @@ fn spawn_blocking_session(
         }
         if !pending.is_empty() {
             let text = String::from_utf8_lossy(&pending).into_owned();
-            let _ = app_out.emit(
-                "pty-output",
-                PtyOutput {
-                    session_id,
-                    data: text,
-                },
-            );
+            let _ = on_event.send(PtyEvent::Output { data: text });
         }
         let session = sessions.lock().unwrap().remove(&session_id);
         if let Some(sess) = session {
             let mut child = sess.child.lock().unwrap();
             let _ = child.wait();
         }
-        let _ = app_out.emit("pty-exit", PtyExit { session_id });
+        let _ = on_event.send(PtyEvent::Exit);
     });
 
     Ok(session_id)

@@ -3,8 +3,9 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { api, onPtyExit, onPtyOutput } from "../lib/tauri";
-import type { Workspace } from "../lib/tauri";
+import { Channel } from "@tauri-apps/api/core";
+import { api } from "../lib/tauri";
+import type { PtyEvent, Workspace } from "../lib/tauri";
 import {
   clipboardKeyAction,
   createBusyTracker,
@@ -72,8 +73,6 @@ export default function TerminalView({
     fitRef.current = fit;
 
     let disposed = false;
-    let unlistenOut: (() => void) | undefined;
-    let unlistenExit: (() => void) | undefined;
 
     const status = createBusyTracker({
       idleMs: 2000,
@@ -178,29 +177,35 @@ export default function TerminalView({
 
     void (async () => {
       try {
-        unlistenOut = await onPtyOutput((e) => {
-          if (e.session_id === sessionRef.current) {
-            term.write(e.data);
-            status.markOutput();
-            if (
-              !injected &&
-              injectTimer === undefined &&
-              shouldInjectDefaultCommand(wantedCommand)
-            ) {
-              injectTimer = setTimeout(
-                injectDefaultCommand,
-                DEFAULT_COMMAND_AFTER_OUTPUT_MS,
-              );
-            }
-          }
-        });
-        unlistenExit = await onPtyExit((e) => {
-          if (e.session_id === sessionRef.current) {
+        // Canale dedicato a questa sessione: riceve solo il suo output, anche
+        // quello emesso prima che ptySpawn ritorni (prompt iniziale).
+        const channel = new Channel<PtyEvent>();
+        channel.onmessage = (e) => {
+          if (disposed) return;
+          if (e.kind === "exit") {
             status.markIdle();
             onExitRef.current();
+            return;
           }
-        });
-        const id = await api.ptySpawn(workspace.id, initialCols, initialRows);
+          term.write(e.data);
+          status.markOutput();
+          if (
+            !injected &&
+            injectTimer === undefined &&
+            shouldInjectDefaultCommand(wantedCommand)
+          ) {
+            injectTimer = setTimeout(
+              injectDefaultCommand,
+              DEFAULT_COMMAND_AFTER_OUTPUT_MS,
+            );
+          }
+        };
+        const id = await api.ptySpawn(
+          workspace.id,
+          initialCols,
+          initialRows,
+          channel,
+        );
         if (disposed) {
           void api.ptyClose(id).catch(() => undefined);
           return;
@@ -246,8 +251,6 @@ export default function TerminalView({
     return () => {
       disposed = true;
       ro.disconnect();
-      unlistenOut?.();
-      unlistenExit?.();
       if (injectTimer !== undefined) clearTimeout(injectTimer);
       if (fallbackTimer !== undefined) clearTimeout(fallbackTimer);
       titleDisp.dispose();

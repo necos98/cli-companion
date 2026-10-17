@@ -16,7 +16,6 @@ const INJECTED = new Set([
   "Webview",
   "State",
   "EventId",
-  "Channel",
 ]);
 
 const toCamel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
