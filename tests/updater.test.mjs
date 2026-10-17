@@ -83,7 +83,7 @@ describe("updater: modulo backend e integrazione", () => {
     for (const c of ["get_update_config", "check_update", "download_update", "install_update"]) {
       assert.ok(ts.includes(`"${c}"`), `invoke "${c}" mancante in tauri.ts`);
     }
-    assert.match(read("src/App.tsx"), /UpdateCheck/);
+    assert.match(read("src/components/SettingsDialog.tsx"), /UpdateCheck/);
   });
 });
 

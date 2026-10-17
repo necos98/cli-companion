@@ -48,11 +48,14 @@ interface Props {
   label: string;
   status: TabStatus;
   maximized: boolean;
+  /** Fissato nella vista globale. */
+  pinned: boolean;
   /** Evidenzia il pannello come bersaglio di un trascinamento. */
   dropTarget: boolean;
   onActivate: () => void;
   onClose: () => void;
   onToggleMaximize: () => void;
+  onTogglePin: () => void;
   onPaneDragStart: () => void;
   onPaneDragOver: () => void;
   onPaneDragLeave: () => void;
@@ -65,6 +68,12 @@ interface Props {
   onStatus?: (busy: boolean) => void;
   /** Input dell'utente nel terminale (`enter` = contiene Invio). */
   onInput?: (enter: boolean) => void;
+  /**
+   * Sequenza da inviare al pty al posto di Ctrl+V quando gli appunti non
+   * hanno testo (profilo di input dell'agente del tab, già risolto per
+   * l'ambiente del workspace); null = Ctrl+V grezzo.
+   */
+  imagePasteSeq?: string | null;
 }
 
 export default function TerminalView({
@@ -78,10 +87,12 @@ export default function TerminalView({
   label,
   status: paneStatus,
   maximized,
+  pinned,
   dropTarget,
   onActivate,
   onClose,
   onToggleMaximize,
+  onTogglePin,
   onPaneDragStart,
   onPaneDragOver,
   onPaneDragLeave,
@@ -92,6 +103,7 @@ export default function TerminalView({
   onTitle,
   onStatus,
   onInput,
+  imagePasteSeq = null,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -102,6 +114,8 @@ export default function TerminalView({
   onStatusRef.current = onStatus;
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
+  const imagePasteSeqRef = useRef(imagePasteSeq);
+  imagePasteSeqRef.current = imagePasteSeq;
   const registerFlushRef = useRef(registerFlush);
   registerFlushRef.current = registerFlush;
   const restoreRef = useRef(restore);
@@ -233,10 +247,14 @@ export default function TerminalView({
           }
           // Nessun testo (es. immagine copiata): inoltra Ctrl+V grezzo al
           // PTY, come faceva xterm prima della v0.3.1, così la CLI (Claude Code ecc.)
-          // lo gestisce leggendo l'immagine dagli appunti di sistema.
+          // lo gestisce leggendo l'immagine dagli appunti di sistema. Se
+          // l'agente del tab ha un tasto proprio (profilo di input, es.
+          // Alt+V di Claude Code su Windows) si invia quello.
           const s = sessionRef.current;
           if (s !== 0)
-            void api.ptyWrite(s, resolved.key).catch(() => undefined);
+            void api
+              .ptyWrite(s, imagePasteSeqRef.current ?? resolved.key)
+              .catch(() => undefined);
         })();
         return false;
       }
@@ -436,6 +454,7 @@ export default function TerminalView({
           focused ? "border-primary" : "border-border",
           dropTarget && "ring-2 ring-primary ring-offset-0",
         )}
+        data-focused={focused}
         onMouseDown={() => {
           onActivate();
           termRef.current?.focus();
@@ -445,6 +464,8 @@ export default function TerminalView({
           label={label}
           status={paneStatus}
           maximized={maximized}
+          pinned={pinned}
+          onTogglePin={onTogglePin}
           onToggleMaximize={onToggleMaximize}
           onClose={onClose}
           onDragStart={(e) => {

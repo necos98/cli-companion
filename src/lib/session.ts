@@ -55,10 +55,20 @@ export interface SessionGroup {
   maximizedTabId: string | null;
 }
 
+/** Vista globale (tab fissati). Assente nelle sessioni scritte prima della 0.5.1. */
+export interface SessionGlobal {
+  order: string[];
+  activeTabId: string | null;
+  maximizedTabId: string | null;
+}
+
 export interface SessionData {
   version: number;
   activeWorkspaceId: string | null;
+  /** "global" solo se la vista globale ha almeno un tab. */
+  activeView: "workspace" | "global";
   groups: SessionGroup[];
+  global: SessionGlobal;
   tabs: SessionTab[];
 }
 
@@ -181,7 +191,27 @@ export function parseSession(
     groups.some((g) => g.workspaceId === doc.activeWorkspaceId)
       ? doc.activeWorkspaceId
       : groups[0].workspaceId;
-  return { version: SESSION_VERSION, activeWorkspaceId: active, groups, tabs };
+
+  // Vista globale (campi opzionali: le sessioni v1 precedenti non li hanno,
+  // quindi la versione resta 1). Si tengono solo i tab sopravvissuti.
+  const rawGlobal = isObj(doc.global) ? doc.global : {};
+  const pinned: string[] = [];
+  for (const id of Array.isArray(rawGlobal.order) ? rawGlobal.order : []) {
+    if (typeof id === "string" && byId.has(id) && !pinned.includes(id)) pinned.push(id);
+  }
+  const global: SessionGlobal = {
+    order: pinned,
+    activeTabId:
+      typeof rawGlobal.activeTabId === "string" && pinned.includes(rawGlobal.activeTabId)
+        ? rawGlobal.activeTabId
+        : (pinned[0] ?? null),
+    maximizedTabId:
+      typeof rawGlobal.maximizedTabId === "string" && pinned.includes(rawGlobal.maximizedTabId)
+        ? rawGlobal.maximizedTabId
+        : null,
+  };
+  const activeView = doc.activeView === "global" && pinned.length > 0 ? "global" : "workspace";
+  return { version: SESSION_VERSION, activeWorkspaceId: active, activeView, groups, global, tabs };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,10 +219,10 @@ export function parseSession(
 // ---------------------------------------------------------------------------
 
 /** Provider di Claude Code (vedi `AGENT_ID` in agents/claude_code.rs). */
-const CLAUDE_AGENT_ID = "claude-code";
+export const CLAUDE_AGENT_ID = "claude-code";
 
 /** `true` se il primo token del comando e' `claude` o `claude.exe`. */
-function isClaudeCommand(command: string): boolean {
+export function isClaudeCommand(command: string): boolean {
   const first = command.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
   return first === "claude" || first === "claude.exe";
 }

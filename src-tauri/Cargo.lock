@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "cli-companion"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "portable-pty",
  "serde",
@@ -518,6 +518,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "tauri-winrt-notification",
 ]
 
 [[package]]

@@ -1,36 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Loader2, Settings } from "lucide-react";
+import { Loader2, Settings, Star } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import AddWorkspaceDialog from "./components/AddWorkspaceDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import type { SettingsTab } from "./components/SettingsDialog";
 import StatusIcon from "./components/StatusIcon";
 import TerminalView from "./components/TerminalView";
-import UpdateCheck from "./components/UpdateCheck";
 import { Button } from "./components/ui/button";
-import { api, onAgentEvent } from "./lib/tauri";
-import type { Launch, Workspace } from "./lib/tauri";
+import { api, onAgentEvent, onNotificationActivated } from "./lib/tauri";
+import type { AgentProfile, Launch, Workspace } from "./lib/tauri";
 import { defaultLaunch } from "./lib/launch";
 import {
   applyAgentEvent,
   applyUserInput,
   notificationBody,
+  resolveInputOverride,
   shouldSystemNotify,
   soundForEvent,
+  tabAgentId,
   tabStatus,
 } from "./lib/agents";
 import type { AgentTabState, TabStatus } from "./lib/agents";
 import {
   EMPTY_LAYOUT,
+  GLOBAL_ID,
+  activePaneId,
   closeTabIn,
   computePaneLayouts,
+  focusTab,
   groupIndicator,
   openTab,
   reorderTabs,
+  selectGlobal,
   selectGroup,
   setActivePane,
   toggleMaximize,
+  togglePin,
 } from "./lib/layout";
 import type { LayoutState } from "./lib/layout";
 import {
@@ -109,6 +115,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("launches");
   const [settingsWorkspaceId, setSettingsWorkspaceId] = useState<string | undefined>();
   // `tabs` resta nell'ordine di creazione ed è l'ordine di render dei
@@ -121,10 +128,19 @@ export default function App() {
     from: null,
     over: null,
   });
+  // Profili di input degli agenti (statici): letti una volta all'avvio.
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [sessionReady, setSessionReady] = useState(false);
   // Salvataggio abilitato solo se la lettura della sessione e' riuscita (file
   // assente compreso): dopo un errore di I/O non si sovrascrive session.json.
   const [saveEnabled, setSaveEnabled] = useState(false);
+
+  useEffect(() => {
+    api
+      .agentProfiles()
+      .then(setAgentProfiles)
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     api
@@ -186,7 +202,12 @@ export default function App() {
             }),
           ),
         );
-        setLayout({ groups: data.groups, activeWorkspaceId: data.activeWorkspaceId });
+        setLayout({
+          groups: data.groups,
+          activeWorkspaceId: data.activeWorkspaceId,
+          global: data.global,
+          activeView: data.activeView,
+        });
       }
       // Via lo scrollback dei tab che non esistono più (solo se la lettura è riuscita).
       if (loaded) {
@@ -204,7 +225,9 @@ export default function App() {
     () =>
       serializeSession({
         activeWorkspaceId: layout.activeWorkspaceId,
+        activeView: layout.activeView,
         groups: layout.groups,
+        global: layout.global,
         tabs: tabs.map(toSessionTab),
       }),
     [tabs, layout],
@@ -286,7 +309,7 @@ export default function App() {
     };
   }, []);
 
-  // Ctrl+Maiusc+M: massimizza/ripristina il pannello attivo del gruppo attivo.
+  // Ctrl+Maiusc+M: massimizza/ripristina il pannello attivo della vista mostrata.
   // In fase di cattura, così xterm non vede il tasto. Niente Esc: serve alle CLI.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -295,8 +318,8 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
       setLayout((l) => {
-        const g = l.groups.find((x) => x.workspaceId === l.activeWorkspaceId);
-        return g?.activeTabId ? toggleMaximize(l, g.activeTabId) : l;
+        const id = activePaneId(l);
+        return id ? toggleMaximize(l, id) : l;
       });
     };
     window.addEventListener("keydown", onKey, true);
@@ -326,6 +349,7 @@ export default function App() {
       else if (sound === "ding") playDing();
       if (shouldSystemNotify(ev.event)) {
         void notifyIfUnfocused(
+          tab.key,
           tab.workspace.name,
           notificationBody(ev.event, tabLabel(tab), ev.message),
         );
@@ -333,6 +357,24 @@ export default function App() {
     })
       .then((u) => {
         // Cleanup gia' eseguito (StrictMode): niente listener orfano.
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Click su una notifica di sistema: la finestra e' gia' in primo piano
+  // (backend); qui si seleziona workspace e pannello. Solo stato del layout:
+  // i TerminalView non si smontano ne' cambiano genitore. Tab chiuso: niente.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    onNotificationActivated((tabId) => setLayout((l) => focusTab(l, tabId)))
+      .then((u) => {
         if (cancelled) u();
         else unlisten = u;
       })
@@ -354,6 +396,21 @@ export default function App() {
       { key, workspace: ws, launchId: chosen?.id, command, startCommand: command },
     ]);
     setLayout((l) => openTab(l, ws.id, key));
+  }, []);
+
+  // Controllo silenzioso all'avvio: se c'e' un update compare il pallino su
+  // "Impostazioni". Errori e repo non configurato non fanno rumore.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const cfg = await api.getUpdateConfig();
+        if (!cfg.configured) return;
+        const st = await api.checkUpdate();
+        setUpdateAvailable(st.update_available);
+      } catch {
+        /* silenzioso */
+      }
+    })();
   }, []);
 
   const openLaunchSettings = useCallback((ws: Workspace) => {
@@ -480,7 +537,13 @@ export default function App() {
     setLayout((l) => selectGroup(l, id));
   }, []);
 
+  const globalActive = layout.activeView === "global";
+  const globalCount = layout.global.order.length;
+
   const statusOf = (t: Tab): TabStatus => tabStatus(t.agent, busyByKey[t.key] === true);
+  const globalIndicator = groupIndicator(
+    tabs.filter((t) => layout.global.order.includes(t.key)).map(statusOf),
+  );
 
   return (
     <div className="flex h-screen">
@@ -497,7 +560,7 @@ export default function App() {
         ) : (
           <Sidebar
             workspaces={workspaces}
-            activeWorkspaceId={layout.activeWorkspaceId}
+            activeWorkspaceId={globalActive ? null : layout.activeWorkspaceId}
             onSelect={handleSelectWorkspace}
             onSpawn={spawnTab}
             onManageLaunches={openLaunchSettings}
@@ -511,7 +574,7 @@ export default function App() {
             size="sm"
             variant="outline"
             onClick={() => {
-              setSettingsTab("launches");
+              setSettingsTab(updateAvailable ? "updates" : "launches");
               setSettingsWorkspaceId(undefined);
               setSettingsOpen(true);
             }}
@@ -519,8 +582,14 @@ export default function App() {
           >
             <Settings className="h-3.5 w-3.5" />
             Impostazioni
+            {updateAvailable && (
+              <span
+                className="ml-auto h-2 w-2 rounded-full bg-primary"
+                title="Aggiornamento disponibile"
+                aria-label="Aggiornamento disponibile"
+              />
+            )}
           </Button>
-          <UpdateCheck />
         </div>
       </aside>
 
@@ -532,8 +601,32 @@ export default function App() {
               Nessun terminale aperto
             </span>
           )}
+          {/* Vista globale: sempre prima, mostrata solo con almeno un tab fissato. */}
+          {globalCount > 0 && (
+            <div
+              key={GLOBAL_ID}
+              onClick={() => setLayout(selectGlobal)}
+              title="Vista globale: terminali fissati di tutti i workspace"
+              aria-label={`Vista globale: ${globalCount} terminali`}
+              className={cn(
+                "flex cursor-pointer select-none items-center gap-2 rounded-md border px-2.5 py-1.5",
+                globalActive ? "border-border bg-muted" : "border-transparent hover:bg-accent",
+              )}
+            >
+              {globalIndicator !== "none" && <StatusIcon status={GROUP_STATUS[globalIndicator]} />}
+              <Star className="h-3 w-3 text-primary" />
+              <span
+                className={cn(
+                  "whitespace-nowrap text-xs",
+                  globalActive ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                Vista globale ({globalCount})
+              </span>
+            </div>
+          )}
           {layout.groups.map((g) => {
-            const isActive = g.workspaceId === layout.activeWorkspaceId;
+            const isActive = !globalActive && g.workspaceId === layout.activeWorkspaceId;
             const members = tabs.filter((t) => g.order.includes(t.key));
             const name = members[0]?.workspace.name ?? g.workspaceId;
             const indicator = groupIndicator(members.map(statusOf));
@@ -588,17 +681,29 @@ export default function App() {
                 tabId={t.key}
                 workspace={t.workspace}
                 initialCommand={t.startCommand}
+                imagePasteSeq={resolveInputOverride(
+                  agentProfiles,
+                  tabAgentId(t),
+                  t.workspace.kind,
+                  "image-paste",
+                )}
                 restore={t.restored}
                 rect={pl?.rect ?? null}
                 active={pl?.visible ?? false}
                 focused={pl?.focused ?? false}
-                label={tabLabel(t)}
+                label={
+                  pl?.groupWorkspaceId === GLOBAL_ID
+                    ? `${t.workspace.name} · ${tabLabel(t)}`
+                    : tabLabel(t)
+                }
                 status={statusOf(t)}
                 maximized={pl?.maximized ?? false}
+                pinned={pl?.pinned ?? false}
                 dropTarget={drag.over === t.key}
                 onActivate={() => setLayout((l) => setActivePane(l, t.key))}
                 onClose={() => closeTab(t.key)}
                 onToggleMaximize={() => setLayout((l) => toggleMaximize(l, t.key))}
+                onTogglePin={() => setLayout((l) => togglePin(l, t.key))}
                 onPaneDragStart={() => handlePaneDragStart(t.key)}
                 onPaneDragOver={() => handlePaneDragOver(t.key)}
                 onPaneDragLeave={() =>
@@ -629,6 +734,7 @@ export default function App() {
         workspaces={workspaces}
         onClose={() => setSettingsOpen(false)}
         onWorkspaceUpdated={handleWorkspaceUpdated}
+        onUpdateAvailable={setUpdateAvailable}
       />
     </div>
   );

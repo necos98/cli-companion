@@ -1,3 +1,5 @@
+import { CLAUDE_AGENT_ID, isClaudeCommand } from "./session.ts";
+
 // Coding agent: stato per ambiente (Impostazioni) e stato per tab (macchina
 // a stati degli eventi degli hook). File volutamente a zero dipendenze:
 // importabile sia dall'app sia dai test `node --test` (type-stripping).
@@ -222,4 +224,57 @@ export function notificationBody(
     return `${tabLabel}: ${m ? m : "aspetta una risposta"}`;
   }
   return `${tabLabel}: ha finito`;
+}
+
+// ---------------------------------------------------------------------------
+// Profili di input (vedi `InputProfile` in agents/mod.rs)
+// ---------------------------------------------------------------------------
+
+/** Evento di input con override per agente (kebab-case, come `InputEvent`). */
+export type InputEventName = "image-paste";
+
+/** Campi di `AgentProfile` (agents/mod.rs) usati dal resolver. */
+export interface AgentProfileLike {
+  agent_id: string;
+  input_profile: {
+    rules: { event: string; env_kind: string | null; send: string }[];
+  };
+}
+
+/**
+ * Sequenza da inviare al pty al posto del comportamento standard per
+ * `event`, o `null` se l'agente non ha una regola per questo ambiente
+ * (`env_kind` assente nella regola = qualunque ambiente).
+ */
+export function resolveInputOverride(
+  profiles: AgentProfileLike[],
+  agentId: string | null | undefined,
+  envKind: string,
+  event: InputEventName,
+): string | null {
+  if (!agentId) return null;
+  const rules = profiles.find((p) => p.agent_id === agentId)?.input_profile.rules ?? [];
+  const rule = rules.find(
+    (r) => r.event === event && (r.env_kind === null || r.env_kind === envKind),
+  );
+  return rule ? rule.send : null;
+}
+
+/** Agente riconosciuto dal primo token di un comando di avvio (senza plugin). */
+export function agentIdForCommand(command: string | null | undefined): string | null {
+  return isClaudeCommand(command ?? "") ? CLAUDE_AGENT_ID : null;
+}
+
+/**
+ * Agente in esecuzione in un tab. Prima lo stato del plugin (da
+ * `session-start` a `session-end`: dopo la fine l'agente e' uscito e il tab
+ * e' una shell); senza plugin si ripiega sul comando con cui il tab e' stato
+ * aperto/ripristinato.
+ */
+export function tabAgentId(tab: {
+  agent?: Pick<AgentTabState, "agentId" | "ended">;
+  startCommand?: string;
+}): string | null {
+  if (tab.agent?.ended) return null;
+  return tab.agent?.agentId ?? agentIdForCommand(tab.startCommand);
 }

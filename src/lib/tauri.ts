@@ -52,6 +52,20 @@ export interface AgentEnvStatus {
   installed: boolean;
 }
 
+/** Regola del profilo di input (vedi `InputRule` in agents/mod.rs). */
+export interface InputRule {
+  event: string;
+  env_kind: "windows" | "wsl" | null;
+  send: string;
+}
+
+/** Profilo di input di un agente (vedi `AgentProfile` in agents/mod.rs). */
+export interface AgentProfile {
+  agent_id: string;
+  agent_name: string;
+  input_profile: { rules: InputRule[] };
+}
+
 export interface NewWorkspace {
   name: string;
   kind: "windows" | "wsl";
@@ -125,6 +139,12 @@ export const api = {
 
   testAgentNotify: () => invoke<string>("test_agent_notify"),
 
+  /** Toast cliccabile (solo Windows): al click focus + `notification-activated`. */
+  showAgentNotification: (tabId: string, title: string, body: string) =>
+    invoke<void>("show_agent_notification", { tabId, title, body }),
+
+  agentProfiles: () => invoke<AgentProfile[]>("agent_profiles"),
+
   agentEnvStatus: () => invoke<AgentEnvStatus[]>("agent_env_status"),
 
   installAgentPlugin: (agentId: string, envKey: string) =>
@@ -158,6 +178,12 @@ export const api = {
   installUpdate: (filePath: string, launch: boolean) =>
     invoke<InstallResult>("install_update", { filePath, launch }),
 };
+
+export function onNotificationActivated(cb: (tabId: string) => void) {
+  return listen<{ tab_id: string }>("notification-activated", (event) =>
+    cb(event.payload.tab_id),
+  );
+}
 
 export function onAgentEvent(cb: (e: AgentEvent) => void) {
   return listen<AgentEvent>("agent-event", (event) => cb(event.payload));

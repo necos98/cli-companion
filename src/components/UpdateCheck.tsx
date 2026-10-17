@@ -20,7 +20,12 @@ function shortNotes(notes: string, max = 220): string {
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 }
 
-export default function UpdateCheck() {
+interface Props {
+  /** Esito dell'ultimo controllo: serve al pallino sul pulsante Impostazioni. */
+  onAvailable?: (available: boolean) => void;
+}
+
+export default function UpdateCheck({ onAvailable }: Props) {
   const [config, setConfig] = useState<UpdateConfig | null>(null);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -47,13 +52,14 @@ export default function UpdateCheck() {
       const st = await api.checkUpdate();
       setStatus(st);
       setPhase(st.update_available ? "available" : "uptodate");
+      onAvailable?.(st.update_available);
     } catch (e) {
       if (!silent) {
         setPhase("error");
         setError(String(e));
       }
     }
-  }, []);
+  }, [onAvailable]);
 
   // Controllo silenzioso all'avvio: mostra il badge solo se c'è un update.
   useEffect(() => {

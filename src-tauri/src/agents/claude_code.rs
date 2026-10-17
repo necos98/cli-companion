@@ -11,7 +11,7 @@
 //! disco finche' il plugin e' installato.
 
 use super::{
-    parse_version, resolve_wsl_command, AgentProvider, Detection, Env, InstallCtx,
+    parse_version, resolve_wsl_command, AgentProvider, Detection, Env, InputEvent, InputProfile, InputRule, InstallCtx,
 };
 
 pub struct ClaudeCode;
@@ -149,6 +149,20 @@ impl AgentProvider for ClaudeCode {
 
     fn display_name(&self) -> &'static str {
         "Claude Code"
+    }
+
+    /// Il tasto per incollare un'immagine e' Alt+V su Windows nativo
+    /// ("Ctrl+V (Alt+V su Windows e WSL)"; su WSL valgono entrambi): xterm
+    /// lo invia come ESC v.
+    fn input_profile(&self) -> InputProfile {
+        let rule = |env_kind| InputRule {
+            event: InputEvent::ImagePaste,
+            env_kind: Some(env_kind),
+            send: "\x1bv".to_string(),
+        };
+        InputProfile {
+            rules: vec![rule("windows"), rule("wsl")],
+        }
     }
 
     fn detect(&self, env: &Env) -> Detection {

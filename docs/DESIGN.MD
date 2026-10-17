@@ -123,6 +123,20 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   networking cross-VM.
 - Comando: `test_agent_notify` (self-test via --notify).
 
+### `toast.rs` — notifica cliccabile (Windows)
+
+- `show_agent_notification(tab_id, title, body)`: toast con
+  `tauri-winrt-notification` (il plugin notification non espone il click su
+  desktop). `tab_id` validato con `is_valid_tab_id`; audio della toast
+  disattivato (suona gia' l'app).
+- AUMID: l'`identifier` quando installata; da `target\debug|release` ripiega
+  su `Toast::POWERSHELL_APP_ID` (come tauri-plugin-notification), quindi in dev
+  la toast risulta di PowerShell ma il click funziona.
+- `on_activated`: `unminimize` + `show` + `set_focus` sulla finestra `main`,
+  poi evento `notification-activated` `{tab_id}`. Il frontend applica
+  `focusTab` (layout.ts): workspace, pannello attivo, de-massimizzazione.
+  Fuori da Windows il comando da' errore e `systemNotify.ts` usa il plugin.
+
 ### `agents/` — plugin dei coding agent
 
 - `mod.rs`: `Env` (Windows | distro WSL; `command()` = `cmd /c prog` su Windows,
@@ -135,6 +149,17 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 - Aggiungere un agente: un file in `agents/` che implementa `AgentProvider` + una
   riga in `PROVIDERS`. La UI (Impostazioni -> Coding agent) raggruppa per agente
   da sola.
+- Profili di input: `AgentProvider::input_profile() -> InputProfile` (default vuoto)
+  con regole dichiarative `InputRule { event: InputEvent, env_kind: Option<"windows"|"wsl">,
+  send }`. `InputEvent` (kebab-case) e' il punto di estensione; oggi solo
+  `ImagePaste`. Claude Code: `ESC v` (Alt+V) per windows e wsl. Il comando
+  `agent_profiles` li espone (nessun processo); l'App li carica all'avvio e
+  `resolveInputOverride(profiles, agentId, envKind, event)` (`lib/agents.ts`) sceglie
+  la sequenza. L'agente del tab e' `tabAgentId`: stato del plugin (`session-start`..
+  `session-end`), altrimenti il primo token del comando di avvio/ripristino
+  (`claude`/`claude.exe`). `TerminalView` riceve la sequenza gia' risolta
+  (`imagePasteSeq`, via ref) e la invia al posto di `` quando gli appunti non
+  hanno testo; senza regola il comportamento resta invariato.
 - `claude_code.rs`:
   - rilevamento: Windows `cmd /c claude --version`; WSL: path assoluto via
     `bash -lc 'command -v claude'` (ripiego `bash -ic`, ultima riga che inizia con
@@ -194,6 +219,16 @@ dello store in `setup` e tutti i comandi. Capability minime in
   Maximize: bottone, doppio click sull'intestazione o Ctrl+Maiusc+M (listener in
   cattura su `window`; niente Esc, serve alle CLI); per gruppo, gli altri pannelli
   restano vivi e nascosti.
+- **Vista globale**: il 📌 nell'intestazione fissa un terminale; i fissati compaiono nel
+  tab "Vista globale (N)" (primo della barra, visibile solo con N ≥ 1, con l'indicatore
+  aggregato ❗/✓/in corso). È un gruppo speciale in `layout` (`GLOBAL_ID`, `global`:
+  `order`/`activeTabId`/`maximizedTabId`, più `activeView`) con griglia, riordino,
+  maximize e Ctrl+Maiusc+M propri; le intestazioni mostrano "workspace · etichetta". Il
+  tab resta anche nel suo gruppo: ha un solo rettangolo, preso dalla vista mostrata
+  (`computePaneLayouts`), le altre viste lo nascondono (`active`/`rect`, come al cambio
+  gruppo, quindi fit + `pty_resize` automatici). Chiudere un tab lo toglie dalla vista.
+  `focusTab` (click su notifica) e il click sulla Sidebar vanno sempre al gruppo del
+  workspace. Sessione: `global` e `activeView` opzionali in v1 (nessun bump di versione).
 - **Nessun rimontaggio**: tutti i `TerminalView` di tutti i gruppi sono figli diretti di un
   solo contenitore, con `key` = tabId e nell'ordine di creazione. Riordino, cambio
   gruppo, maximize e ripristino cambiano solo lo stile (rettangolo in % /

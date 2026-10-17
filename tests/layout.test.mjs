@@ -2,13 +2,20 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   EMPTY_LAYOUT,
+  GLOBAL_ID,
+  activePaneId,
   closeTabIn,
   computePaneLayouts,
   gridDims,
   gridRects,
+  focusTab,
   groupIndicator,
   openTab,
   paneRects,
+  pinTab,
+  selectGlobal,
+  togglePin,
+  unpinTab,
   reorderIds,
   reorderTabs,
   selectGroup,
@@ -208,5 +215,164 @@ describe("indicatore di gruppo", () => {
     assert.equal(groupIndicator([dot("idle"), dot("busy")]), "busy");
     assert.equal(groupIndicator([dot("idle")]), "none");
     assert.equal(groupIndicator([]), "none");
+  });
+});
+
+describe("focusTab (click su notifica)", () => {
+  const base = () => {
+    let s = openTab(EMPTY_LAYOUT, "w1", "a");
+    s = openTab(s, "w1", "b");
+    s = openTab(s, "w2", "c");
+    return s; // gruppo attivo w2
+  };
+  it("seleziona workspace e pannello", () => {
+    const s = focusTab(base(), "a");
+    assert.equal(s.activeWorkspaceId, "w1");
+    assert.equal(s.groups[0].activeTabId, "a");
+  });
+  it("toglie il maximize di un altro pannello", () => {
+    let s = toggleMaximize(base(), "b");
+    s = focusTab(s, "a");
+    assert.equal(s.groups[0].maximizedTabId, null);
+    assert.equal(s.groups[0].activeTabId, "a");
+  });
+  it("mantiene il maximize dello stesso pannello", () => {
+    let s = toggleMaximize(base(), "b");
+    s = focusTab(s, "b");
+    assert.equal(s.groups[0].maximizedTabId, "b");
+    assert.equal(s.activeWorkspaceId, "w1");
+  });
+  it("tab inesistente o gia' a fuoco: stessa istanza", () => {
+    const s = base();
+    assert.equal(focusTab(s, "zzz"), s);
+    assert.equal(focusTab(s, "c"), s);
+  });
+  it("non tocca l'ordine ne' gli altri gruppi", () => {
+    const s = focusTab(base(), "a");
+    assert.deepEqual(s.groups[0].order, ["a", "b"]);
+    assert.deepEqual(s.groups[1], base().groups[1]);
+  });
+});
+
+describe("vista globale", () => {
+  // w1: a, b ; w2: c, d. Fissati: c, a (in questo ordine).
+  const base = () => {
+    let s = openTab(EMPTY_LAYOUT, "w1", "a");
+    s = openTab(s, "w1", "b");
+    s = openTab(s, "w2", "c");
+    s = openTab(s, "w2", "d");
+    s = pinTab(s, "c");
+    return pinTab(s, "a");
+  };
+
+  it("pin accoda; doppio pin o tab sconosciuto: stessa istanza", () => {
+    const s = base();
+    assert.deepEqual(s.global.order, ["c", "a"]);
+    assert.equal(s.global.activeTabId, "c");
+    assert.equal(pinTab(s, "a"), s);
+    assert.equal(pinTab(s, "zzz"), s);
+    assert.equal(s.groups[0].order.includes("a"), true); // resta anche nel suo gruppo
+  });
+
+  it("unpin toglie, sceglie il vicino e azzera il maximize; vuota = torna ai workspace", () => {
+    let s = selectGlobal(base());
+    assert.equal(s.activeView, "global");
+    s = toggleMaximize(s, "c");
+    s = unpinTab(s, "c");
+    assert.deepEqual(s.global, { order: ["a"], activeTabId: "a", maximizedTabId: null });
+    assert.equal(unpinTab(s, "c"), s);
+    s = unpinTab(s, "a");
+    assert.deepEqual(s.global.order, []);
+    assert.equal(s.activeView, "workspace");
+    assert.equal(togglePin(s, "b").global.order[0], "b");
+    assert.deepEqual(togglePin(togglePin(s, "b"), "b").global.order, []);
+  });
+
+  it("selectGlobal solo con tab fissati", () => {
+    assert.equal(selectGlobal(openTab(EMPTY_LAYOUT, "w1", "a")).activeView, "workspace");
+    const s = selectGlobal(base());
+    assert.equal(selectGlobal(s), s);
+  });
+
+  it("selectGroup torna ai workspace anche sul gruppo gia' attivo", () => {
+    const s = selectGroup(selectGlobal(base()), "w2");
+    assert.equal(s.activeView, "workspace");
+    assert.equal(s.activeWorkspaceId, "w2");
+  });
+
+  it("chiudere un tab lo toglie dalla vista globale (anche se mostrata)", () => {
+    let s = selectGlobal(base());
+    s = closeTabIn(s, "c");
+    assert.deepEqual(s.global.order, ["a"]);
+    assert.equal(s.global.activeTabId, "a");
+    s = closeTabIn(s, "a");
+    assert.deepEqual(s.global.order, []);
+    assert.equal(s.activeView, "workspace");
+    assert.equal(closeTabIn(s, "zzz"), s);
+  });
+
+  it("chiudere tutti i tab riporta a EMPTY_LAYOUT", () => {
+    let s = base();
+    for (const id of ["a", "b", "c", "d"]) s = closeTabIn(s, id);
+    assert.deepEqual(s, EMPTY_LAYOUT);
+  });
+
+  it("computePaneLayouts: un solo rettangolo per tab, dalla vista mostrata", () => {
+    let s = base(); // vista workspace, gruppo attivo w2 (c, d)
+    let l = computePaneLayouts(s);
+    assert.deepEqual([l.c.visible, l.d.visible, l.a.visible], [true, true, false]);
+    assert.deepEqual([l.a.pinned, l.b.pinned, l.c.pinned], [true, false, true]);
+    assert.equal(l.c.groupWorkspaceId, "w2");
+
+    s = selectGlobal(s);
+    l = computePaneLayouts(s);
+    assert.deepEqual([l.c.visible, l.a.visible, l.b.visible, l.d.visible], [true, true, false, false]);
+    assert.equal(l.c.groupWorkspaceId, GLOBAL_ID);
+    assert.deepEqual(l.c.rect, { left: 0, top: 0, width: 50, height: 100 });
+    assert.deepEqual(l.a.rect, { left: 50, top: 0, width: 50, height: 100 });
+    assert.equal(l.c.focused, true);
+    assert.equal(l.a.focused, false);
+    assert.equal(l.d.rect, null);
+  });
+
+  it("riordino, attivo e maximize agiscono sulla vista globale, non sui gruppi", () => {
+    let s = selectGlobal(base());
+    s = reorderTabs(s, "c", "a");
+    assert.deepEqual(s.global.order, ["a", "c"]);
+    assert.deepEqual(s.groups[1].order, ["c", "d"]);
+    assert.equal(reorderTabs(s, "a", "b"), s); // b non fissato
+    s = setActivePane(s, "c");
+    assert.equal(s.global.activeTabId, "c");
+    assert.equal(s.activeView, "global");
+    assert.equal(setActivePane(s, "c"), s);
+    s = toggleMaximize(s, "a");
+    assert.equal(s.global.maximizedTabId, "a");
+    assert.equal(s.groups[0].maximizedTabId, null);
+    assert.equal(activePaneId(s), "a");
+    const l = computePaneLayouts(s);
+    assert.deepEqual([l.a.visible, l.c.visible], [true, false]);
+    assert.equal(l.a.maximized, true);
+    s = toggleMaximize(s, "a");
+    assert.equal(s.global.maximizedTabId, null);
+  });
+
+  it("activePaneId segue la vista mostrata", () => {
+    const s = base();
+    assert.equal(activePaneId(s), "d");
+    assert.equal(activePaneId(selectGlobal(s)), "c");
+    assert.equal(activePaneId(EMPTY_LAYOUT), null);
+  });
+
+  it("focusTab va al gruppo del workspace anche se il tab e' fissato", () => {
+    const s = focusTab(selectGlobal(base()), "a");
+    assert.equal(s.activeView, "workspace");
+    assert.equal(s.activeWorkspaceId, "w1");
+    assert.equal(s.groups[0].activeTabId, "a");
+    assert.deepEqual(s.global.order, ["c", "a"]);
+  });
+
+  it("aprire un tab o attivare un pannello di workspace lascia la vista globale", () => {
+    assert.equal(openTab(selectGlobal(base()), "w1", "e").activeView, "workspace");
+    assert.equal(setActivePane(selectGlobal(base()), "b").activeView, "workspace");
   });
 });

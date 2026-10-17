@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
 import StatusIcon from "./StatusIcon";
 
@@ -6,6 +6,9 @@ interface Props {
   label: string;
   status: TabStatus;
   maximized: boolean;
+  /** Fissato nella vista globale. */
+  pinned: boolean;
+  onTogglePin: () => void;
   onToggleMaximize: () => void;
   onClose: () => void;
   onDragStart: (e: React.DragEvent) => void;
@@ -17,6 +20,8 @@ export default function PaneHeader({
   label,
   status,
   maximized,
+  pinned,
+  onTogglePin,
   onToggleMaximize,
   onClose,
   onDragStart,
@@ -35,6 +40,16 @@ export default function PaneHeader({
     >
       <StatusIcon status={status} />
       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{label}</span>
+      <button
+        onClick={onTogglePin}
+        onDoubleClick={(e) => e.stopPropagation()}
+        className={btn}
+        title={pinned ? "Togli dalla vista globale" : "Aggiungi alla vista globale"}
+        aria-label={pinned ? "Togli dalla vista globale" : "Aggiungi alla vista globale"}
+        aria-pressed={pinned}
+      >
+        {pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+      </button>
       <button
         onClick={onToggleMaximize}
         onDoubleClick={(e) => e.stopPropagation()}

@@ -161,7 +161,9 @@ export default function Sidebar({
                   >
                     <FolderOpen />
                   </Button>
-                  <DropdownMenu>
+                  {/* Non modale: un menu modale che apre un Dialog dal suo
+                      onSelect lascia `pointer-events: none` bloccato sul body. */}
+                  <DropdownMenu modal={false}>
                     <DropdownMenuTrigger asChild>
                       <Button
                         size="icon"
@@ -199,7 +201,11 @@ export default function Sidebar({
                         ))
                       )}
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem onSelect={() => onManageLaunches(ws)}>
+                      <DropdownMenuItem
+                        // Il dialog si apre solo a menu chiuso, cosi' i due
+                        // layer Radix non si sovrappongono.
+                        onSelect={() => setTimeout(() => onManageLaunches(ws), 0)}
+                      >
                         Gestisci avvii…
                       </DropdownMenuItem>
                       <DropdownMenuItem onSelect={() => startEdit(ws)}>

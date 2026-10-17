@@ -7,7 +7,10 @@ import {
   agentInstallLabel,
   agentRowKey,
   applyAgentEvent,
+  agentIdForCommand,
   applyUserInput,
+  resolveInputOverride,
+  tabAgentId,
   groupByAgent,
   isTerminalReply,
   notificationBody,
@@ -191,5 +194,64 @@ describe("session-end", () => {
     const ended = { phase: "idle", agentSessionId: "abc", ended: true };
     const s = applyAgentEvent(ended, { event: "session-start", agent_session_id: "def" });
     assert.deepEqual(s, { phase: "idle", agentSessionId: "def" });
+  });
+});
+
+describe("profili di input", () => {
+  const profiles = [
+    {
+      agent_id: "claude-code",
+      input_profile: {
+        rules: [
+          { event: "image-paste", env_kind: "windows", send: "\x1bv" },
+          { event: "image-paste", env_kind: "wsl", send: "\x1bv" },
+        ],
+      },
+    },
+    {
+      agent_id: "any",
+      input_profile: { rules: [{ event: "image-paste", env_kind: null, send: "X" }] },
+    },
+    { agent_id: "empty", input_profile: { rules: [] } },
+  ];
+
+  it("resolveInputOverride: regola per agente e ambiente", () => {
+    assert.equal(resolveInputOverride(profiles, "claude-code", "windows", "image-paste"), "\x1bv");
+    assert.equal(resolveInputOverride(profiles, "claude-code", "wsl", "image-paste"), "\x1bv");
+    assert.equal(resolveInputOverride(profiles, "claude-code", "mac", "image-paste"), null);
+  });
+
+  it("resolveInputOverride: env_kind null vale per tutti", () => {
+    assert.equal(resolveInputOverride(profiles, "any", "wsl", "image-paste"), "X");
+  });
+
+  it("resolveInputOverride: agente ignoto, assente o senza regole", () => {
+    assert.equal(resolveInputOverride(profiles, "nope", "windows", "image-paste"), null);
+    assert.equal(resolveInputOverride(profiles, "empty", "windows", "image-paste"), null);
+    assert.equal(resolveInputOverride(profiles, null, "windows", "image-paste"), null);
+    assert.equal(resolveInputOverride(profiles, undefined, "windows", "image-paste"), null);
+    assert.equal(resolveInputOverride([], "claude-code", "windows", "image-paste"), null);
+  });
+
+  it("agentIdForCommand: solo claude / claude.exe", () => {
+    assert.equal(agentIdForCommand("claude"), "claude-code");
+    assert.equal(agentIdForCommand("  Claude.exe --resume abc"), "claude-code");
+    assert.equal(agentIdForCommand("claude-foo"), null);
+    assert.equal(agentIdForCommand("npm run dev"), null);
+    assert.equal(agentIdForCommand(""), null);
+    assert.equal(agentIdForCommand(undefined), null);
+  });
+
+  it("tabAgentId: plugin > comando; finito = null", () => {
+    assert.equal(tabAgentId({ agent: { agentId: "claude-code" }, startCommand: "" }), "claude-code");
+    assert.equal(tabAgentId({ startCommand: "claude --resume x" }), "claude-code");
+    assert.equal(tabAgentId({ startCommand: "" }), null);
+    assert.equal(tabAgentId({}), null);
+    assert.equal(
+      tabAgentId({ agent: { agentId: "claude-code", ended: true }, startCommand: "claude" }),
+      null,
+    );
+    // Stato agente senza id (evento senza agente): ripiega sul comando.
+    assert.equal(tabAgentId({ agent: {}, startCommand: "claude" }), "claude-code");
   });
 });

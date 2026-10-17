@@ -242,11 +242,44 @@ pub fn sanitize_env_key(key: &str) -> String {
         .collect()
 }
 
+/// Evento di input del terminale che un agente puo' voler gestire in modo
+/// diverso dal comportamento standard. PUNTO DI ESTENSIONE: per un nuovo
+/// evento si aggiunge una variante (serializzata in kebab-case) e il
+/// frontend la richiede con lo stesso nome (`resolveInputOverride`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputEvent {
+    /// Incolla con appunti senza testo (es. sola immagine): al posto del
+    /// Ctrl+V grezzo si invia la sequenza della regola.
+    ImagePaste,
+}
+
+/// Regola: per `event`, nell'ambiente `env_kind` (`None` = qualunque), il
+/// terminale scrive `send` nel pty.
+#[derive(Debug, Clone, Serialize)]
+pub struct InputRule {
+    pub event: InputEvent,
+    /// "windows" | "wsl" (vedi `Env::kind`); `None` = tutti gli ambienti.
+    pub env_kind: Option<&'static str>,
+    pub send: String,
+}
+
+/// Profilo di input dichiarativo di un agente.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct InputProfile {
+    pub rules: Vec<InputRule>,
+}
+
 /// Un coding agent supportato.
 pub trait AgentProvider: Sync {
     /// Id stabile (usato in `--notify`, nelle cartelle e nell'API).
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
+    /// Profilo di input (default: nessuna regola, comportamento standard).
+    /// Dichiarativo e senza processi: l'app lo legge una volta all'avvio.
+    fn input_profile(&self) -> InputProfile {
+        InputProfile::default()
+    }
     fn detect(&self, env: &Env) -> Detection;
     /// Solo se `det.found`: il plugin e' gia' installato?
     fn is_installed(&self, env: &Env, det: &Detection) -> bool;
@@ -322,6 +355,30 @@ fn collect_status() -> Vec<AgentEnvStatus> {
 #[tauri::command]
 pub async fn agent_env_status() -> Result<Vec<AgentEnvStatus>, String> {
     crate::blocking(|| Ok(collect_status())).await
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentProfile {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub input_profile: InputProfile,
+}
+
+fn collect_profiles() -> Vec<AgentProfile> {
+    PROVIDERS
+        .iter()
+        .map(|p| AgentProfile {
+            agent_id: p.id().to_string(),
+            agent_name: p.display_name().to_string(),
+            input_profile: p.input_profile(),
+        })
+        .collect()
+}
+
+/// Profili di input di tutti gli agenti: economico, nessun processo.
+#[tauri::command]
+pub fn agent_profiles() -> Vec<AgentProfile> {
+    collect_profiles()
 }
 
 /// Risolve agente + ambiente (la distro deve esistere) e rileva l'agente.
@@ -453,6 +510,26 @@ mod tests {
         assert_eq!(ids.len(), PROVIDERS.len());
         assert!(find_provider("claude-code").is_ok());
         assert!(find_provider("nope").is_err());
+    }
+
+    #[test]
+    fn profiles_cover_all_providers_and_serialize_kebab_case() {
+        let profiles = collect_profiles();
+        assert_eq!(profiles.len(), PROVIDERS.len());
+        let cc = profiles.iter().find(|p| p.agent_id == "claude-code").unwrap();
+        assert_eq!(cc.agent_name, "Claude Code");
+        let v = serde_json::to_value(cc).unwrap();
+        let rules = v["input_profile"]["rules"].as_array().unwrap();
+        for kind in ["windows", "wsl"] {
+            assert!(rules.iter().any(|r| r["event"] == "image-paste"
+                && r["env_kind"] == kind
+                && r["send"] == "\u{1b}v"));
+        }
+    }
+
+    #[test]
+    fn default_input_profile_is_empty() {
+        assert!(InputProfile::default().rules.is_empty());
     }
 
     #[test]

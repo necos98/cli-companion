@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.5.0**.
+Versione corrente: **0.5.1**.
 
 ## Release e aggiornamenti
 
@@ -75,6 +75,15 @@ struct che implementa `AgentProvider` (`detect`, `is_installed`, `install`,
 `uninstall`; gli hook devono eseguire `cli-companion --notify <evento> <agente>`
 con eventi `session-start`, `finished`, `needs-input`) e registrala in `PROVIDERS`
 in `agents/mod.rs`. La UI non cambia.
+
+Profilo di input (facoltativo): se l'agente vuole tasti propri nel terminale,
+implementa `input_profile()` con regole dichiarative `InputRule { event, env_kind,
+send }` (`env_kind` = `windows` | `wsl` | nessuno per tutti). Oggi l'unico evento è
+`image-paste` (incolla con appunti senza testo): al posto di Ctrl+V il terminale
+invia `send` (Claude Code: Alt+V = `ESC v`, su Windows e WSL). Nuovi eventi: una
+variante di `InputEvent` e la sua gestione in `TerminalView`. Il frontend legge i
+profili all'avvio (`agent_profiles`) e li risolve con `resolveInputOverride`
+(`src/lib/agents.ts`).
 
 ## Migrazione da muse-companion (v0.4.0)
 

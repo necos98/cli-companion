@@ -10,6 +10,7 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import AgentSettingsTab from "./AgentSettingsTab";
+import UpdateCheck from "./UpdateCheck";
 import { api } from "../lib/tauri";
 import type { Launch, Workspace } from "../lib/tauri";
 import {
@@ -19,7 +20,7 @@ import {
 } from "../lib/launch";
 import { cn } from "../lib/utils";
 
-export type SettingsTab = "launches" | "agents";
+export type SettingsTab = "launches" | "agents" | "updates";
 
 interface Props {
   isOpen: boolean;
@@ -29,6 +30,8 @@ interface Props {
   workspaces: Workspace[];
   onClose: () => void;
   onWorkspaceUpdated: (ws: Workspace) => void;
+  /** Esito del controllo aggiornamenti fatto nel tab "Aggiornamenti". */
+  onUpdateAvailable?: (available: boolean) => void;
 }
 
 const selectClass =
@@ -41,6 +44,7 @@ export default function SettingsDialog({
   workspaces,
   onClose,
   onWorkspaceUpdated,
+  onUpdateAvailable,
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -143,7 +147,24 @@ export default function SettingsDialog({
         if (!o) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-[560px]">
+      <DialogContent
+        className="sm:max-w-[560px]"
+        onCloseAutoFocus={(e) => {
+          // Nessun trigger a cui tornare: il focus va al terminale attivo.
+          e.preventDefault();
+          document
+            .querySelector<HTMLElement>('[data-focused="true"] .xterm-helper-textarea')
+            ?.focus();
+          // Rete di sicurezza: se nessun layer Radix e' aperto ma il body e'
+          // rimasto con pointer-events bloccato, lo ripristina.
+          if (
+            document.body.style.pointerEvents === "none" &&
+            !document.querySelector("[data-radix-popper-content-wrapper], [role='dialog'], [role='menu']")
+          ) {
+            document.body.style.pointerEvents = "";
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Impostazioni</DialogTitle>
         </DialogHeader>
@@ -153,6 +174,7 @@ export default function SettingsDialog({
             [
               { id: "launches", label: "Avvii personalizzati" },
               { id: "agents", label: "Coding agent" },
+              { id: "updates", label: "Aggiornamenti" },
             ] as const
           ).map((t) => (
             <button
@@ -172,6 +194,8 @@ export default function SettingsDialog({
 
         {tab === "agents" ? (
           <AgentSettingsTab />
+        ) : tab === "updates" ? (
+          <UpdateCheck onAvailable={onUpdateAvailable} />
         ) : workspaces.length === 0 || !selected ? (
           <p className="text-[13px] text-muted-foreground">
             Nessun workspace. Aggiungi una cartella per definire i suoi avvii.

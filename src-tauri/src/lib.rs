@@ -2,6 +2,7 @@ pub mod agent_notify;
 mod agents;
 mod pty;
 mod session;
+mod toast;
 pub mod updater;
 mod workspaces;
 mod wsl;
@@ -98,7 +99,9 @@ pub fn run() {
             updater::download_update,
             updater::install_update,
             agent_notify::test_agent_notify,
+            toast::show_agent_notification,
             agents::agent_env_status,
+            agents::agent_profiles,
             agents::install_agent_plugin,
             agents::remove_agent_plugin,
             session::load_session,

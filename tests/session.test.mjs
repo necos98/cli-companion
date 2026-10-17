@@ -16,6 +16,8 @@ describe("sessione: serializzazione e lettura", () => {
   it("roundtrip", () => {
     const data = {
       activeWorkspaceId: "w2",
+      activeView: "global",
+      global: { order: ["c", "a"], activeTabId: "a", maximizedTabId: "c" },
       groups: [
         { workspaceId: "w1", order: ["a", "b"], activeTabId: "b", maximizedTabId: "a" },
         { workspaceId: "w2", order: ["c"], activeTabId: "c", maximizedTabId: null },
@@ -57,6 +59,8 @@ describe("sessione: serializzazione e lettura", () => {
   it("ripara gruppi incoerenti: attivo/massimizzato fuori ordine, tab orfani", () => {
     const raw = doc({
       activeWorkspaceId: "w2",
+      activeView: "global",
+      global: { order: ["c", "a"], activeTabId: "a", maximizedTabId: "c" },
       groups: [{ workspaceId: "w1", order: ["a"], activeTabId: "zzz", maximizedTabId: "qqq" }],
       tabs: [tab("a", "w1"), tab("b", "w1"), tab("c", "w2")],
     });
@@ -178,5 +182,44 @@ describe("debounceDelay", () => {
     assert.equal(debounceDelay(1000, 1000, 500, 2000), 500);
     assert.equal(debounceDelay(2800, 1000, 500, 2000), 200);
     assert.equal(debounceDelay(3500, 1000, 500, 2000), 0);
+  });
+});
+
+describe("sessione: vista globale", () => {
+  const tabs = [tab("a", "w1"), tab("b", "w1"), tab("c", "w2")];
+
+  it("sessione v1 senza campi globali: vista vuota, workspace", () => {
+    const p = parseSession(doc({ tabs }), ["w1", "w2"]);
+    assert.deepEqual(p.global, { order: [], activeTabId: null, maximizedTabId: null });
+    assert.equal(p.activeView, "workspace");
+    assert.equal(p.version, 1);
+  });
+
+  it("scarta tab ignoti, duplicati e non stringa; ripara attivo/massimizzato", () => {
+    const p = parseSession(
+      doc({
+        tabs,
+        activeView: "global",
+        global: { order: ["c", "zzz", "c", 5, "a"], activeTabId: "b", maximizedTabId: "qqq" },
+      }),
+      ["w1", "w2"],
+    );
+    assert.deepEqual(p.global, { order: ["c", "a"], activeTabId: "c", maximizedTabId: null });
+    assert.equal(p.activeView, "global");
+  });
+
+  it("tab di un workspace rimosso esce anche dalla vista globale", () => {
+    const p = parseSession(
+      doc({ tabs, activeView: "global", global: { order: ["c", "a"], activeTabId: "c" } }),
+      ["w1"],
+    );
+    assert.deepEqual(p.global.order, ["a"]);
+    assert.equal(p.global.activeTabId, "a");
+  });
+
+  it("activeView global senza tab fissati: workspace; valori strani ignorati", () => {
+    assert.equal(parseSession(doc({ tabs, activeView: "global", global: { order: [] } }), ["w1", "w2"]).activeView, "workspace");
+    assert.equal(parseSession(doc({ tabs, activeView: "boh", global: "x" }), ["w1", "w2"]).activeView, "workspace");
+    assert.equal(parseSession(doc({ tabs, global: [1] }), ["w1", "w2"]).global.order.length, 0);
   });
 });
