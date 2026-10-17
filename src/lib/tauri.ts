@@ -7,6 +7,14 @@ import type {
   UpdateStatus,
 } from "./updater";
 
+/** Avvio personalizzato di un workspace (vedi `Launch` in workspaces.rs). */
+export interface Launch {
+  id: string;
+  name: string;
+  command: string;
+  is_default: boolean;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -15,22 +23,33 @@ export interface Workspace {
   distro?: string | null;
   shell?: string | null;
   created_at: number;
+  launches: Launch[];
 }
 
 /** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */
 export type PtyEvent = { kind: "output"; data: string } | { kind: "exit" };
 
-export interface MuseEnvStatus {
-  key: string;
-  label: string;
-  kind: "windows" | "wsl";
-  muse_found: boolean;
-  installed: boolean;
+/** Evento di un coding agent (vedi `NotifyPayload` in agent_notify.rs). */
+export interface AgentEvent {
+  event: "test" | "session-start" | "finished" | "needs-input" | string;
+  agent: string;
+  /** Id del tab (`CLI_COMPANION_SESSION`); assente per `test`. */
+  tab_id?: string | null;
+  agent_session_id?: string | null;
+  notification_type?: string | null;
+  message?: string | null;
 }
 
-export interface MuseEvent {
-  event: string;
-  source: string;
+/** Stato di un agente in un ambiente (vedi `AgentEnvStatus` in agents/mod.rs). */
+export interface AgentEnvStatus {
+  agent_id: string;
+  agent_name: string;
+  env_key: string;
+  env_label: string;
+  env_kind: "windows" | "wsl";
+  found: boolean;
+  version?: string | null;
+  installed: boolean;
 }
 
 export interface NewWorkspace {
@@ -39,10 +58,6 @@ export interface NewWorkspace {
   path: string;
   distro?: string;
   shell?: string;
-}
-
-export interface Settings {
-  default_command: string;
 }
 
 export const api = {
@@ -62,24 +77,43 @@ export const api = {
 
   removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
 
+  addLaunch: (workspaceId: string, name: string, command: string, isDefault: boolean) =>
+    invoke<Workspace>("add_launch", { workspaceId, name, command, isDefault }),
+
+  updateLaunch: (
+    workspaceId: string,
+    launchId: string,
+    name: string,
+    command: string,
+    isDefault: boolean,
+  ) =>
+    invoke<Workspace>("update_launch", {
+      workspaceId,
+      launchId,
+      name,
+      command,
+      isDefault,
+    }),
+
+  removeLaunch: (workspaceId: string, launchId: string) =>
+    invoke<Workspace>("remove_launch", { workspaceId, launchId }),
+
+  openWorkspaceFolder: (id: string) => invoke<void>("open_workspace_folder", { id }),
+
   listWslDistros: () => invoke<string[]>("list_wsl_distros"),
 
   checkWslPath: (distro: string, path: string) =>
     invoke<boolean>("check_wsl_path", { distro, path }),
 
-  getSettings: () => invoke<Settings>("get_settings"),
-
-  setDefaultCommand: (command: string) =>
-    invoke<Settings>("set_default_command", { command }),
-
   // Nota: Tauri v2 converte i nomi degli argomenti in camelCase
   // (workspace_id -> workspaceId): le chiavi qui devono esserlo già.
   ptySpawn: (
     workspaceId: string,
+    tabId: string,
     cols: number,
     rows: number,
     onEvent: Channel<PtyEvent>,
-  ) => invoke<number>("pty_spawn", { workspaceId, cols, rows, onEvent }),
+  ) => invoke<number>("pty_spawn", { workspaceId, tabId, cols, rows, onEvent }),
 
   ptyWrite: (sessionId: number, data: string) =>
     invoke<void>("pty_write", { sessionId, data }),
@@ -89,15 +123,29 @@ export const api = {
 
   ptyClose: (sessionId: number) => invoke<void>("pty_close", { sessionId }),
 
-  museEnvStatus: () => invoke<MuseEnvStatus[]>("muse_env_status"),
+  testAgentNotify: () => invoke<string>("test_agent_notify"),
 
-  installMusePlugin: (envKey: string) =>
-    invoke<string>("install_muse_plugin", { envKey }),
+  agentEnvStatus: () => invoke<AgentEnvStatus[]>("agent_env_status"),
 
-  removeMusePlugin: (envKey: string) =>
-    invoke<string>("remove_muse_plugin", { envKey }),
+  installAgentPlugin: (agentId: string, envKey: string) =>
+    invoke<string>("install_agent_plugin", { agentId, envKey }),
 
-  testMuseNotify: () => invoke<string>("test_muse_notify"),
+  removeAgentPlugin: (agentId: string, envKey: string) =>
+    invoke<string>("remove_agent_plugin", { agentId, envKey }),
+
+  // Persistenza della sessione (backend: src-tauri/src/session.rs).
+  loadSession: () => invoke<string | null>("load_session"),
+
+  saveSession: (data: string) => invoke<void>("save_session", { data }),
+
+  saveScrollback: (tabId: string, data: string) =>
+    invoke<void>("save_scrollback", { tabId, data }),
+
+  loadScrollback: (tabId: string) => invoke<string | null>("load_scrollback", { tabId }),
+
+  deleteScrollback: (tabId: string) => invoke<void>("delete_scrollback", { tabId }),
+
+  pruneScrollback: (keep: string[]) => invoke<void>("prune_scrollback", { keep }),
 
   // Updater GitHub Releases (backend: src-tauri/src/updater.rs).
   getUpdateConfig: () => invoke<UpdateConfig>("get_update_config"),
@@ -111,6 +159,6 @@ export const api = {
     invoke<InstallResult>("install_update", { filePath, launch }),
 };
 
-export function onMuseEvent(cb: (e: MuseEvent) => void) {
-  return listen<MuseEvent>("muse-event", (event) => cb(event.payload));
+export function onAgentEvent(cb: (e: AgentEvent) => void) {
+  return listen<AgentEvent>("agent-event", (event) => cb(event.payload));
 }

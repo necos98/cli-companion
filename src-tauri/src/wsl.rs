@@ -55,7 +55,7 @@ pub fn installed_distros() -> Result<Vec<String>, String> {
 
 pub fn wsl_dir_exists(distro: &str, path: &str) -> bool {
     wsl_command()
-        .args(["-d", distro, "--", "test", "-d", path])
+        .args(["-d", distro, "-e", "test", "-d", path])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

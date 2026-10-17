@@ -1,4 +1,5 @@
-// Segnale acustico di fine lavoro (Web Audio, zero dipendenze).
+// Segnali acustici degli agenti (Web Audio, zero dipendenze): ding di fine
+// lavoro e richiamo quando serve una risposta.
 // File volutamente senza import da Tauri: importabile dai test `node --test`.
 
 export interface DingNote {
@@ -16,13 +17,29 @@ export const DING_SEQUENCE: DingNote[] = [
   { freq: 660, at: 0.17, dur: 0.26 },
 ];
 
+/** Due toni ascendenti e piu' acuti (1047 -> 1319 Hz): "serve una risposta". */
+export const ATTENTION_SEQUENCE: DingNote[] = [
+  { freq: 1047, at: 0, dur: 0.1 },
+  { freq: 1319, at: 0.14, dur: 0.16 },
+];
+
 let ctx: AudioContext | null = null;
 
-/**
- * Suona il ding di fine lavoro. Sicuro da chiamare ovunque: se l'audio
- * non e' disponibile (SSR, permessi) non fa nulla invece di lanciare.
- */
+/** Suona il ding di fine lavoro. */
 export function playDing(): void {
+  playSequence(DING_SEQUENCE);
+}
+
+/** Suona il richiamo "serve una risposta" (distinto dal ding). */
+export function playAttention(): void {
+  playSequence(ATTENTION_SEQUENCE);
+}
+
+/**
+ * Sicuro da chiamare ovunque: se l'audio non e' disponibile (SSR, permessi)
+ * non fa nulla invece di lanciare.
+ */
+function playSequence(sequence: DingNote[]): void {
   try {
     if (typeof window === "undefined") return;
     const AC =
@@ -33,7 +50,7 @@ export function playDing(): void {
     if (!ctx) ctx = new AC();
     if (ctx.state === "suspended") void ctx.resume();
     const t0 = ctx.currentTime;
-    for (const note of DING_SEQUENCE) {
+    for (const note of sequence) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = "sine";

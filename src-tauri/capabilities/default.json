@@ -5,7 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-destroy",
     "opener:default",
+    "notification:default",
     "dialog:allow-open",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text"

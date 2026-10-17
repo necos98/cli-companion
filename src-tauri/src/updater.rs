@@ -9,7 +9,7 @@
 //!   (preinstallato su Windows 10+, macOS e quasi tutte le distro Linux).
 //! - Download: `curl --fail` in `%TEMP%/cli-companion-update`; verifica dimensione
 //!   + SHA256 (implementazione pura qui sotto, nessuna crate) contro il checksum
-//!   pubblicato nella release, se presente.
+//!     pubblicato nella release, se presente.
 //! - Install: NON sostituisce file a caldo (su Windows l'exe in esecuzione e' lockato
 //!   dal sistema). Scarica l'installer verificato e lo avvia (o ne restituisce il
 //!   percorso per l'avvio manuale).

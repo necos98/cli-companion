@@ -42,7 +42,7 @@ export function clipboardKeyAction(
 
 /**
  * Ctrl+V grezzo (SYN, U+0016): è il byte che xterm invia al PTY per Ctrl+V
- * quando il tasto non è intercettato. Le CLI (Muse) lo usano come segnale
+ * quando il tasto non è intercettato. Le CLI (Claude Code ecc.) lo usano come segnale
  * per prelevare un'immagine dagli appunti di sistema.
  */
 export const PASTE_FALLBACK_KEY = "\x16";

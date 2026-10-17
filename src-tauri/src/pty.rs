@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
+use crate::agent_notify::SESSION_ENV;
 use crate::workspaces::WorkspaceStore;
 
 const MAX_SESSIONS: usize = 32;
@@ -172,6 +173,41 @@ mod tests {
   }
 
   #[test]
+  fn wslenv_merge_appends_without_duplicates() {
+    let v = "CLI_COMPANION_SESSION";
+    assert_eq!(merge_wslenv(None, v), "CLI_COMPANION_SESSION/u");
+    assert_eq!(merge_wslenv(Some(""), v), "CLI_COMPANION_SESSION/u");
+    assert_eq!(merge_wslenv(Some("PATH/l"), v), "PATH/l:CLI_COMPANION_SESSION/u");
+    assert_eq!(
+      merge_wslenv(Some("A:B/p:"), v),
+      "A:B/p:CLI_COMPANION_SESSION/u"
+    );
+    // Gia' presente (con o senza flag): invariato.
+    assert_eq!(
+      merge_wslenv(Some("A:CLI_COMPANION_SESSION/u"), v),
+      "A:CLI_COMPANION_SESSION/u"
+    );
+    assert_eq!(merge_wslenv(Some("CLI_COMPANION_SESSION"), v), "CLI_COMPANION_SESSION");
+    // Nome che contiene solo la variabile come prefisso: non conta.
+    assert_eq!(
+      merge_wslenv(Some("CLI_COMPANION_SESSION_X"), v),
+      "CLI_COMPANION_SESSION_X:CLI_COMPANION_SESSION/u"
+    );
+  }
+
+  #[test]
+  fn session_env_is_set_and_wsl_adds_wslenv() {
+    let mut c = CommandBuilder::new("dummy");
+    apply_session_env(&mut c, "tab-1", false);
+    assert_eq!(c.get_env("CLI_COMPANION_SESSION"), Some(std::ffi::OsStr::new("tab-1")));
+    assert!(c.get_env("WSLENV").is_none());
+    let mut w = CommandBuilder::new("dummy");
+    apply_session_env(&mut w, "tab-1", true);
+    let wslenv = w.get_env("WSLENV").unwrap().to_string_lossy().into_owned();
+    assert!(wslenv.split(':').any(|e| e == "CLI_COMPANION_SESSION/u"), "{wslenv}");
+  }
+
+  #[test]
   fn size_is_clamped() {
     let s = pty_size(0, 1000);
     assert_eq!((s.cols, s.rows), (2, 300));
@@ -204,9 +240,37 @@ fn apply_color_env(cmd: &mut CommandBuilder) {
     cmd.env("COLORTERM", "truecolor");
 }
 
+/// Aggiunge `var` a un valore di WSLENV (`A/p:B`), separato da `:`, senza
+/// duplicarla se c'e' gia' (con o senza flag). Il flag `/u` la fa passare da
+/// Windows alla distro; i processi Windows lanciati da li' (l'exe degli hook,
+/// via interop) la ricevono ancora dall'ambiente d'origine.
+fn merge_wslenv(existing: Option<&str>, var: &str) -> String {
+  let current = existing.unwrap_or("").trim_matches(':');
+  let present = current
+    .split(':')
+    .any(|e| e.split('/').next() == Some(var));
+  if present {
+    current.to_string()
+  } else if current.is_empty() {
+    format!("{var}/u")
+  } else {
+    format!("{current}:{var}/u")
+  }
+}
+
+/// Imposta `CLI_COMPANION_SESSION` (id del tab) per gli hook degli agenti;
+/// su WSL la fa attraversare il confine con WSLENV.
+fn apply_session_env(cmd: &mut CommandBuilder, tab_id: &str, wsl: bool) {
+  cmd.env(SESSION_ENV, tab_id);
+  if wsl {
+    let parent = std::env::var("WSLENV").ok();
+    cmd.env("WSLENV", merge_wslenv(parent.as_deref(), SESSION_ENV));
+  }
+}
+
 fn is_powershell(shell: &str) -> bool {
     let file = shell
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(shell)
         .trim()
@@ -231,17 +295,24 @@ const POWERSHELL_TITLE_HOOK: &str = r#"$__mcInitTitle = ''; try { $__mcInitTitle
 pub async fn pty_spawn(
     app: AppHandle,
     workspace_id: String,
+    tab_id: String,
     cols: u16,
     rows: u16,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
-    crate::blocking(move || spawn_blocking_session(&app, &workspace_id, cols, rows, on_event))
-        .await
+    if !crate::agent_notify::is_valid_tab_id(&tab_id) {
+        return Err("id tab non valido".to_string());
+    }
+    crate::blocking(move || {
+        spawn_blocking_session(&app, &workspace_id, &tab_id, cols, rows, on_event)
+    })
+    .await
 }
 
 fn spawn_blocking_session(
     app: &AppHandle,
     workspace_id: &str,
+    tab_id: &str,
     cols: u16,
     rows: u16,
     on_event: Channel<PtyEvent>,
@@ -249,7 +320,7 @@ fn spawn_blocking_session(
     let pty = app.state::<PtyState>();
     let store = app.state::<WorkspaceStore>();
     let ws = store
-        .find(&workspace_id)
+        .find(workspace_id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
 
     {
@@ -277,6 +348,7 @@ fn spawn_blocking_session(
             c.arg(&shell);
         }
         apply_color_env(&mut c);
+        apply_session_env(&mut c, tab_id, true);
         c
     } else {
         let meta =
@@ -298,6 +370,7 @@ fn spawn_blocking_session(
         }
         c.cwd(&ws.path);
         apply_color_env(&mut c);
+        apply_session_env(&mut c, tab_id, false);
         c
     };
 

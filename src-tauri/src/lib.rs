@@ -1,19 +1,19 @@
-pub mod muse_notify;
+pub mod agent_notify;
+mod agents;
 mod pty;
-mod settings;
+mod session;
 pub mod updater;
 mod workspaces;
 mod wsl;
 
 use pty::PtyState;
-use settings::SettingsStore;
 use tauri::Manager;
 use workspaces::WorkspaceStore;
 
 /// Identifier della vecchia app (muse-companion): la cartella dati dipende
 /// dall'identifier, quindi al primo avvio se ne copiano i file.
 const LEGACY_IDENTIFIER: &str = "com.jmagarelli.muse-companion";
-const DATA_FILES: [&str; 2] = ["workspaces.json", "settings.json"];
+const DATA_FILES: [&str; 1] = ["workspaces.json"];
 
 /// Esegue lavoro bloccante (processi esterni, rete, filesystem) fuori dal
 /// main thread. I comandi Tauri sincroni girano sul main thread: un comando
@@ -32,9 +32,15 @@ where
 /// Scrittura atomica: file temporaneo + rename, cosi' un crash a meta'
 /// salvataggio non lascia un JSON troncato (che al riavvio verrebbe scartato).
 pub(crate) fn write_atomic(path: &std::path::Path, data: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
+    // Nome unico per scrittura: due salvataggi concorrenti dello stesso file
+    // (debounce + chiusura) non devono pestarsi il temporaneo.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{n}.tmp"));
     std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// Copia i dati della vecchia installazione (muse-companion) se la cartella
@@ -63,14 +69,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(WorkspaceStore::default())
         .manage(PtyState::default())
-        .manage(SettingsStore::default())
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
-            settings::load_from_disk(app);
-            muse_notify::start_listener(app.handle());
+            agent_notify::start_listener(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -78,10 +83,12 @@ pub fn run() {
             workspaces::add_workspace,
             workspaces::rename_workspace,
             workspaces::remove_workspace,
+            workspaces::add_launch,
+            workspaces::update_launch,
+            workspaces::remove_launch,
+            workspaces::open_workspace_folder,
             wsl::list_wsl_distros,
             wsl::check_wsl_path,
-            settings::get_settings,
-            settings::set_default_command,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
@@ -90,10 +97,16 @@ pub fn run() {
             updater::check_update,
             updater::download_update,
             updater::install_update,
-            muse_notify::muse_env_status,
-            muse_notify::install_muse_plugin,
-            muse_notify::remove_muse_plugin,
-            muse_notify::test_muse_notify,
+            agent_notify::test_agent_notify,
+            agents::agent_env_status,
+            agents::install_agent_plugin,
+            agents::remove_agent_plugin,
+            session::load_session,
+            session::save_session,
+            session::save_scrollback,
+            session::load_scrollback,
+            session::delete_scrollback,
+            session::prune_scrollback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

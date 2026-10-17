@@ -8,8 +8,10 @@ fn print_help() {
            cli-companion                 Avvia l'interfaccia grafica\n  \
            cli-companion --check-update  Controlla le release su GitHub ed esce\n  \
            cli-companion --check-update --json  Come sopra, output JSON\n  \
-           cli-companion --notify <evento> [sorgente]  Segnala fine lavoro\n  \
-             all'istanza in esecuzione ed esce (eventi: stop, session-end, test)\n  \
+           cli-companion --notify <evento> [agente]  Segnala un evento di un coding\n  \
+             agent (session-start|session-end|finished|needs-input|test) all'istanza in esecuzione ed\n  \
+             esce; legge il JSON dell'hook da stdin e l'id tab da CLI_COMPANION_SESSION\n  \
+             (eventi non riconosciuti o senza tab: ignorati, exit 0)\n  \
            cli-companion --version       Stampa la versione ed esce\n  \
            cli-companion --help          Questo aiuto\n\
          \n\
@@ -19,7 +21,7 @@ fn print_help() {
          Nota Windows: le build release non hanno console (windows_subsystem), quindi\n  \
          --check-update/--version sono pensati per le build debug o per script;\n  \
          --notify invece non stampa nulla e funziona anche in release: e' il\n  \
-         comando usato dagli hook del plugin Muse.",
+         comando usato dagli hook dei coding agent.",
         cli_companion_lib::updater::current_version()
     );
 }
@@ -36,8 +38,8 @@ fn main() {
     }
     if let Some(pos) = args.iter().position(|a| a == "--notify") {
         let event = args.get(pos + 1).cloned().unwrap_or_default();
-        let source = args.get(pos + 2).cloned().unwrap_or("local".to_string());
-        match cli_companion_lib::muse_notify::send_notify(&event, &source) {
+        let agent = args.get(pos + 2).cloned().unwrap_or("local".to_string());
+        match cli_companion_lib::agent_notify::run_notify(&event, &agent) {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("notify fallita: {e}");

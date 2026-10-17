@@ -1,10 +1,21 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import "@xterm/xterm/css/xterm.css";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Channel } from "@tauri-apps/api/core";
 import { api } from "../lib/tauri";
+import { isTerminalReply } from "../lib/agents";
+import type { TabStatus } from "../lib/agents";
+import type { Rect } from "../lib/layout";
+import {
+  RESTORE_SEPARATOR,
+  SCROLLBACK_LINES,
+  SCROLLBACK_SAVE_MS,
+} from "../lib/session";
+import { cn } from "../lib/utils";
+import PaneHeader from "./PaneHeader";
 import type { PtyEvent, Workspace } from "../lib/tauri";
 import {
   clipboardKeyAction,
@@ -14,30 +25,73 @@ import {
 } from "../lib/terminal";
 import { TERMINAL_THEME } from "../lib/terminalTheme";
 import {
-  DEFAULT_COMMAND_AFTER_OUTPUT_MS,
-  DEFAULT_COMMAND_FALLBACK_MS,
-  buildDefaultCommandInput,
-  sanitizeDefaultCommand,
-  shouldInjectDefaultCommand,
-} from "../lib/settings";
+  LAUNCH_AFTER_OUTPUT_MS,
+  LAUNCH_FALLBACK_MS,
+  buildLaunchInput,
+  shouldInjectLaunch,
+} from "../lib/launch";
 
 interface Props {
+  /** Chiave del tab: diventa `CLI_COMPANION_SESSION` per gli hook degli agenti. */
+  tabId: string;
   workspace: Workspace;
-  /** Comando di default da eseguire all'apertura ("" = nessuno). */
+  /** Comando dell'avvio da eseguire all'apertura ("" = shell semplice). */
   initialCommand: string;
+  /** Tab ripristinato da una sessione precedente: mostra prima la cronologia salvata. */
+  restore?: boolean;
+  /** Posizione e dimensione nell'area del gruppo, in percentuale. */
+  rect: Rect | null;
+  /** Visibile: gruppo attivo e non nascosto da un pannello massimizzato. */
   active: boolean;
+  /** Riceve la tastiera (pannello attivo del gruppo attivo). */
+  focused: boolean;
+  label: string;
+  status: TabStatus;
+  maximized: boolean;
+  /** Evidenzia il pannello come bersaglio di un trascinamento. */
+  dropTarget: boolean;
+  onActivate: () => void;
+  onClose: () => void;
+  onToggleMaximize: () => void;
+  onPaneDragStart: () => void;
+  onPaneDragOver: () => void;
+  onPaneDragLeave: () => void;
+  onPaneDrop: () => void;
+  onPaneDragEnd: () => void;
+  /** Registra (o rimuove, con null) il salvataggio dello scrollback di questo tab. */
+  registerFlush?: (tabId: string, flush: (() => Promise<void>) | null) => void;
   onExit: () => void;
   onTitle?: (title: string) => void;
   onStatus?: (busy: boolean) => void;
+  /** Input dell'utente nel terminale (`enter` = contiene Invio). */
+  onInput?: (enter: boolean) => void;
 }
 
 export default function TerminalView({
+  tabId,
   workspace,
   initialCommand,
+  restore = false,
+  rect,
   active,
+  focused,
+  label,
+  status: paneStatus,
+  maximized,
+  dropTarget,
+  onActivate,
+  onClose,
+  onToggleMaximize,
+  onPaneDragStart,
+  onPaneDragOver,
+  onPaneDragLeave,
+  onPaneDrop,
+  onPaneDragEnd,
+  registerFlush,
   onExit,
   onTitle,
   onStatus,
+  onInput,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -46,12 +100,17 @@ export default function TerminalView({
   onTitleRef.current = onTitle;
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  const onInputRef = useRef(onInput);
+  onInputRef.current = onInput;
+  const registerFlushRef = useRef(registerFlush);
+  registerFlushRef.current = registerFlush;
+  const restoreRef = useRef(restore);
   const activeRef = useRef(active);
   activeRef.current = active;
   const sessionRef = useRef(0);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  // Catturato al mount: modifiche successive alle impostazioni valgono
+  // Catturato al mount: modifiche successive agli avvii valgono
   // solo per i terminali aperti dopo.
   const pendingCommandRef = useRef(initialCommand);
 
@@ -67,6 +126,8 @@ export default function TerminalView({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const serialize = new SerializeAddon();
+    term.loadAddon(serialize);
     term.open(el);
     fit.fit();
     termRef.current = term;
@@ -74,26 +135,52 @@ export default function TerminalView({
 
     let disposed = false;
 
+    // Scrollback: salvato ~5 s dopo l'output (e alla chiusura dell'app, via
+    // registerFlush) cosi' un riavvio ripristina la cronologia.
+    let dirty = false;
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    const flush = async () => {
+      if (saveTimer !== undefined) {
+        clearTimeout(saveTimer);
+        saveTimer = undefined;
+      }
+      if (disposed || !dirty) return;
+      dirty = false;
+      try {
+        const data = serialize.serialize({
+          scrollback: SCROLLBACK_LINES,
+          excludeAltBuffer: true,
+          excludeModes: true,
+        });
+        if (data.trim() !== "" && !disposed) await api.saveScrollback(tabId, data);
+      } catch {
+        dirty = true;
+      }
+    };
+    registerFlushRef.current?.(tabId, flush);
+
     const status = createBusyTracker({
       idleMs: 2000,
       onChange: (busy) => onStatusRef.current?.(busy),
     });
 
-    // Iniezione del comando di default: al primo output della shell
+    // Iniezione del comando di avvio: al primo output della shell
     // (prompt pronto) + breve attesa, con fallback temporizzato per gli
     // avvii freddi che tardano a stampare. Una sola iniezione per tab.
     let injectTimer: ReturnType<typeof setTimeout> | undefined;
     let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     let injected = false;
-    const wantedCommand = sanitizeDefaultCommand(pendingCommandRef.current);
+    // Solo trim: il comando e' gia' limitato alla fonte e quello di ripristino
+    // (`--resume <id>`) puo' superare il tetto senza dover essere troncato.
+    const wantedCommand = pendingCommandRef.current.trim();
 
-    const injectDefaultCommand = () => {
+    const injectLaunch = () => {
       if (injected || disposed) return;
       const s = sessionRef.current;
-      if (s === 0 || !shouldInjectDefaultCommand(wantedCommand)) return;
+      if (s === 0 || !shouldInjectLaunch(wantedCommand)) return;
       injected = true;
       void api
-        .ptyWrite(s, buildDefaultCommandInput(wantedCommand))
+        .ptyWrite(s, buildLaunchInput(wantedCommand))
         .catch(() => undefined);
       status.markEnter();
     };
@@ -106,7 +193,10 @@ export default function TerminalView({
     term.onData((data) => {
       const s = sessionRef.current;
       if (s !== 0) void api.ptyWrite(s, data).catch(() => undefined);
-      if (data.includes("\r") || data.includes("\n")) status.markEnter();
+      const enter = data.includes("\r") || data.includes("\n");
+      if (enter) status.markEnter();
+      // Le risposte automatiche del terminale (focus, CPR...) non sono input.
+      if (!isTerminalReply(data)) onInputRef.current?.(enter);
     });
 
     // Copia/incolla da tastiera: xterm non li gestisce da solo (senza
@@ -142,7 +232,7 @@ export default function TerminalView({
             return;
           }
           // Nessun testo (es. immagine copiata): inoltra Ctrl+V grezzo al
-          // PTY, come faceva xterm prima della v0.3.1, così la CLI (Muse)
+          // PTY, come faceva xterm prima della v0.3.1, così la CLI (Claude Code ecc.)
           // lo gestisce leggendo l'immagine dagli appunti di sistema.
           const s = sessionRef.current;
           if (s !== 0)
@@ -177,6 +267,20 @@ export default function TerminalView({
 
     void (async () => {
       try {
+        // Ripristino: cronologia salvata + separatore PRIMA dello spawn, cosi'
+        // l'output della nuova shell le segue.
+        if (restoreRef.current) {
+          let saved: string | null = null;
+          try {
+            saved = await api.loadScrollback(tabId);
+          } catch {
+            // nessuna cronologia: resta il solo separatore
+          }
+          if (disposed) return;
+          const text = `${saved ? saved + "\r\n" : ""}\x1b[2m${RESTORE_SEPARATOR}\x1b[0m\r\n`;
+          await new Promise<void>((resolve) => term.write(text, resolve));
+          if (disposed) return;
+        }
         // Canale dedicato a questa sessione: riceve solo il suo output, anche
         // quello emesso prima che ptySpawn ritorni (prompt iniziale).
         const channel = new Channel<PtyEvent>();
@@ -189,19 +293,27 @@ export default function TerminalView({
           }
           term.write(e.data);
           status.markOutput();
+          dirty = true;
+          if (saveTimer === undefined) {
+            saveTimer = setTimeout(() => {
+              saveTimer = undefined;
+              void flush();
+            }, SCROLLBACK_SAVE_MS);
+          }
           if (
             !injected &&
             injectTimer === undefined &&
-            shouldInjectDefaultCommand(wantedCommand)
+            shouldInjectLaunch(wantedCommand)
           ) {
             injectTimer = setTimeout(
-              injectDefaultCommand,
-              DEFAULT_COMMAND_AFTER_OUTPUT_MS,
+              injectLaunch,
+              LAUNCH_AFTER_OUTPUT_MS,
             );
           }
         };
         const id = await api.ptySpawn(
           workspace.id,
+          tabId,
           initialCols,
           initialRows,
           channel,
@@ -211,10 +323,10 @@ export default function TerminalView({
           return;
         }
         sessionRef.current = id;
-        if (shouldInjectDefaultCommand(wantedCommand)) {
+        if (shouldInjectLaunch(wantedCommand)) {
           fallbackTimer = setTimeout(
-            injectDefaultCommand,
-            DEFAULT_COMMAND_FALLBACK_MS,
+            injectLaunch,
+            LAUNCH_FALLBACK_MS,
           );
         }
         // Recupera eventuali resize avvenuti prima dello spawn (il
@@ -250,6 +362,8 @@ export default function TerminalView({
 
     return () => {
       disposed = true;
+      registerFlushRef.current?.(tabId, null);
+      if (saveTimer !== undefined) clearTimeout(saveTimer);
       ro.disconnect();
       if (injectTimer !== undefined) clearTimeout(injectTimer);
       if (fallbackTimer !== undefined) clearTimeout(fallbackTimer);
@@ -264,7 +378,7 @@ export default function TerminalView({
     };
   }, []);
 
-  // Quando il tab torna visibile, riadatta il terminale alla dimensione reale.
+  // Quando il pannello torna visibile, riadatta il terminale alla dimensione reale.
   useEffect(() => {
     if (!active) return;
     const term = termRef.current;
@@ -281,14 +395,71 @@ export default function TerminalView({
     });
   }, [active]);
 
+  // La tastiera va solo al pannello attivo del gruppo attivo.
+  useEffect(() => {
+    if (!focused || !active) return;
+    const id = requestAnimationFrame(() => termRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [focused, active]);
+
+  const style: React.CSSProperties =
+    active && rect
+      ? {
+          display: "block",
+          left: `${rect.left}%`,
+          top: `${rect.top}%`,
+          width: `${rect.width}%`,
+          height: `${rect.height}%`,
+        }
+      : { display: "none" };
+
   return (
     <div
-      className="terminal-pane absolute inset-0 py-2 pl-2"
-      style={{ display: active ? "block" : "none" }}
+      className="absolute p-[2px]"
+      style={style}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        onPaneDragOver();
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onPaneDragLeave();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        onPaneDrop();
+      }}
     >
-      {/* L'host di xterm non deve avere padding: FitAddon misura il
-          contenitore e una riga/colonna in più finirebbe fuori vista. */}
-      <div ref={containerRef} className="h-full w-full" />
+      <div
+        className={cn(
+          "terminal-pane flex h-full w-full flex-col overflow-hidden rounded-md border",
+          focused ? "border-primary" : "border-border",
+          dropTarget && "ring-2 ring-primary ring-offset-0",
+        )}
+        onMouseDown={() => {
+          onActivate();
+          termRef.current?.focus();
+        }}
+      >
+        <PaneHeader
+          label={label}
+          status={paneStatus}
+          maximized={maximized}
+          onToggleMaximize={onToggleMaximize}
+          onClose={onClose}
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", tabId);
+            e.dataTransfer.effectAllowed = "move";
+            onPaneDragStart();
+          }}
+          onDragEnd={onPaneDragEnd}
+        />
+        {/* L'host di xterm non deve avere padding: FitAddon misura il
+            contenitore e una riga/colonna in più finirebbe fuori vista. */}
+        <div className="min-h-0 flex-1 py-1 pl-2">
+          <div ref={containerRef} className="h-full w-full" />
+        </div>
+      </div>
     </div>
   );
 }
