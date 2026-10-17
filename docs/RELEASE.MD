@@ -75,6 +75,12 @@ opzionale per l'updater, ma la CI crea la Release solo su tag `v*`).
 
 Runner `windows-latest`, build system reale del progetto:
 
+0. cache Rust (`Swatinem/rust-cache`, `shared-key: release`): le build su tag
+   la ripristinano ma non la salvano (`save-if` solo su `main`). Le cache dei
+   run su tag non sono visibili ad altri tag, quindi la cache viene scaldata
+   da `.github/workflows/cache-rust-main.yml` (push su `main` che tocca
+   `Cargo.toml`/`Cargo.lock`/workflow, o avvio manuale): fa solo
+   `cargo build --release` con dist segnaposto, senza Release ne' artifact;
 1. `npm ci` + `npm test` (`node --test tests/*.test.mjs`);
 2. installa WiX 3.14 via choco (serve per l'MSI; NSIS e' scaricato
    da tauri-bundler automaticamente);

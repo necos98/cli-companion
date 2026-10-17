@@ -46,6 +46,8 @@ interface Props {
   /** Riceve la tastiera (pannello attivo del gruppo attivo). */
   focused: boolean;
   label: string;
+  /** Prefisso "workspace /" mostrato nella vista globale. */
+  labelPrefix?: string;
   status: TabStatus;
   maximized: boolean;
   /** Fissato nella vista globale. */
@@ -85,6 +87,7 @@ export default function TerminalView({
   active,
   focused,
   label,
+  labelPrefix,
   status: paneStatus,
   maximized,
   pinned,
@@ -134,7 +137,7 @@ export default function TerminalView({
 
     const term = new Terminal({
       fontSize: 13,
-      fontFamily: 'Consolas, "Cascadia Code", monospace',
+      fontFamily: '"Geist Mono Variable", "Geist Mono", Consolas, "Cascadia Code", monospace',
       theme: TERMINAL_THEME,
       scrollback: 5000,
     });
@@ -148,6 +151,19 @@ export default function TerminalView({
     fitRef.current = fit;
 
     let disposed = false;
+
+    // Il font è bundlato ma caricato in modo lazy: xterm misura la cella al
+    // primo render, quindi a font arrivato rilanciamo la misura (riassegnando
+    // fontFamily) e rifacciamo il fit.
+    void document.fonts
+      .load('13px "Geist Mono Variable"')
+      .then(() => document.fonts.ready)
+      .then(() => {
+        if (disposed) return;
+        term.options.fontFamily = term.options.fontFamily;
+        fit.fit();
+      })
+      .catch(() => {});
 
     // Scrollback: salvato ~5 s dopo l'output (e alla chiusura dell'app, via
     // registerFlush) cosi' un riavvio ripristina la cronologia.
@@ -433,7 +449,7 @@ export default function TerminalView({
 
   return (
     <div
-      className="absolute p-[2px]"
+      className="absolute p-[3px]"
       style={style}
       onDragOver={(e) => {
         e.preventDefault();
@@ -450,9 +466,9 @@ export default function TerminalView({
     >
       <div
         className={cn(
-          "terminal-pane flex h-full w-full flex-col overflow-hidden rounded-md border",
+          "terminal-pane relative flex h-full w-full flex-col overflow-hidden rounded-lg border bg-base",
           focused ? "border-primary" : "border-border",
-          dropTarget && "ring-2 ring-primary ring-offset-0",
+          dropTarget && "border-dashed border-primary",
         )}
         data-focused={focused}
         onMouseDown={() => {
@@ -462,6 +478,8 @@ export default function TerminalView({
       >
         <PaneHeader
           label={label}
+          prefix={labelPrefix}
+          focused={focused}
           status={paneStatus}
           maximized={maximized}
           pinned={pinned}
@@ -480,6 +498,11 @@ export default function TerminalView({
         <div className="min-h-0 flex-1 py-1 pl-2">
           <div ref={containerRef} className="h-full w-full" />
         </div>
+        {dropTarget && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-primary/[0.06] text-xs text-primary">
+            Rilascia qui per spostare
+          </div>
+        )}
       </div>
     </div>
   );

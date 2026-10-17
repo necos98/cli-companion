@@ -198,7 +198,7 @@ dello store in `setup` e tutti i comandi. Capability minime in
 ## Frontend (`src/`)
 
 - `lib/tauri.ts`: tipi (`Workspace`, eventi PTY) e wrapper `api` sopra `invoke`/`listen`.
-- `App.tsx`: layout sidebar + barra dei workspace + area pannelli; stato globale
+- `App.tsx`: layout barra del titolo + sidebar + area pannelli + barra di stato; stato globale
   (`workspaces`, `tabs`, `layout`, dialog). `tabs` è nell'ordine di creazione
   (ordine di render); gruppi, pannello attivo, ordine nella griglia e maximize
   vivono in `layout` (`lib/layout.ts`).
@@ -207,7 +207,7 @@ dello store in `setup` e tutti i comandi. Capability minime in
   riga incompleta allargata a tutta larghezza, rettangoli in %), `reorderIds`,
   e le transizioni di stato dei gruppi (`openTab`, `closeTabIn`, `selectGroup`,
   `setActivePane`, `toggleMaximize`, `reorderTabs`, `computePaneLayouts`).
-- **Gruppi per workspace**: la barra in alto ha un tab per ogni workspace con almeno un
+- **Gruppi per workspace**: la barra del titolo ha un tab per ogni workspace con almeno un
   terminale (nome, numero di terminali, stato aggregato: ❗ > ✓ > pallino giallo).
   Ordine = prima apertura; aprire un terminale ne attiva il gruppo; il click su una card
   della Sidebar (non sui pulsanti) seleziona il gruppo; l'ultimo terminale chiuso fa
@@ -249,11 +249,37 @@ dello store in `setup` e tutti i comandi. Capability minime in
 - **Scrollback**: `@xterm/addon-serialize` (ultime 2000 righe con colori, senza buffer
   alternativo né modi) salvato ~5 s dopo l'output e alla chiusura dell'app; eliminato
   alla chiusura del tab (anche se la shell esce da sola).
-- `components/Sidebar.tsx`: card workspace con badge `WIN`/`distro`, icona
-  "Apri cartella" (`open_workspace_folder` -> explorer.exe), menu "⋯" (avvii del
-  workspace, "Gestisci avvii…", Rinomina, Elimina) e "+ Terminale" che esegue
-  l'avvio predefinito se presente. Rinomina inline, elimina con doppia
-  conferma (niente `confirm()` nativo, per robustezza nella WebView).
+- **Finestra senza decorazioni** (`decorations: false`, `shadow: true`; il resize dai
+  bordi lo gestisce tao): `components/TitleBar.tsx` (44px) ha logo, tab dei gruppi
+  (`★ Globale (N)` per primo, poi i workspace; tab attivo fuso col contenuto sotto, tinta
+  arancio se serve una risposta; scroll orizzontale in overflow) e i pulsanti
+  minimizza / massimizza-ripristina / chiudi (46px, chiudi rosso). Le zone libere sono
+  `data-tauri-drag-region` (trascina; doppio clic = massimizza); i controlli no.
+  Chiudi usa `close()`, quindi passa dall'`onCloseRequested` di `App.tsx` (salva sessione
+  e scrollback), mai `destroy()` diretto. Capability: `core:window:allow-{minimize,
+  toggle-maximize,close,start-dragging,is-maximized}`.
+- `components/Sidebar.tsx` (260px): intestazione "WORKSPACE" + "+" (aggiungi workspace);
+  riga = chip ambiente (`WIN`/`WSL`), nome, percorso mono. Le righe non attive sono
+  compatte (al passaggio del mouse: "+" nuovo terminale, cartella, menu "⋯"); il
+  workspace selezionato e' una card con l'elenco dei suoi terminali (stato, etichetta,
+  pin; il click usa `focusTab`) e il pulsante diviso "+ Terminale" (avvio predefinito) con
+  caret sul menu degli avvii. Menu "⋯": avvii, "Gestisci avvii…", Rinomina, Elimina
+  (`DropdownMenu modal={false}`; le Impostazioni si aprono con un `setTimeout` a menu
+  chiuso). Rinomina inline, elimina con doppia conferma. Footer: Impostazioni (pallino
+  accent se c'e' un update) e versione (`getVersion()`).
+- `components/PaneHeader.tsx` (30px): stato, etichetta mono (prefisso "workspace /" nella vista
+  globale), parola di stato dell'agente, pin / massimizza / chiudi. Area dei pannelli su
+  `--pane-area` con 6px di margine; pannello attivo col bordo accent; bersaglio di
+  trascinamento tratteggiato con "Rilascia qui per spostare"; stato vuoto con logo.
+  Resta valido: i `TerminalView` sono figli diretti di un unico contenitore fisso.
+- `components/StatusBar.tsx` (26px): "N terminali", "K in attesa di risposta" e, a destra, gli
+  ambienti con il plugin installato (`installedAgentsSummary`). `agent_env_status` lancia
+  processi: e' chiamato una volta, in background ~1,5 s dopo il ripristino della sessione, e
+  aggiornato dalle Impostazioni dopo installa/rimuovi (`onAgentEnvs`).
+- **Tema e brand**: tema dark unico in `src/index.css` (palette `base`, `surface`, `surface-2`,
+  `border-strong`, `text-secondary`, `faint` (solo decorativo), `pane-area`, `pane-header`,
+  stati `status-running/attention/finished`), font Geist / Geist Mono bundlati (offline),
+  logo "C" in `components/Logo.tsx` (icone in `src-tauri/icons`, sorgenti in `icons/source`).
 - `components/AddWorkspaceDialog.tsx`: modal gluestack con toggle Windows/WSL.
   Windows: picker cartella nativo (`@tauri-apps/plugin-dialog`) o path manuale.
   WSL: lista distro con caricamento async, input percorso con bottone "Verifica".

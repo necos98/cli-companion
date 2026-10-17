@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.5.1**.
+Versione corrente: **0.5.2**.
 
 ## Release e aggiornamenti
 

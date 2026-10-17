@@ -1,10 +1,10 @@
-// Tema del terminale xterm (palette ANSI Campbell di Windows Terminal).
+// Tema del terminale xterm (palette brand cli-companion, ANSI armonizzati
+// con l'accento ciano).
 // File volutamente a zero dipendenze: importabile sia dall'app sia dai test
 // `node --test` (type-stripping), come src/lib/terminal.ts e src/lib/updater.ts.
 //
-// Nota: Windows Terminal chiama i viola `purple`/`brightPurple`, ma xterm.js
-// vuole le chiavi `magenta`/`brightMagenta` (quelle ignote vengono ignorate
-// in silenzio, lasciando i default).
+// Nota: xterm.js vuole le chiavi `magenta`/`brightMagenta` (non `purple`):
+// le chiavi ignote vengono ignorate in silenzio, lasciando i default.
 
 /**
  * Sottoinsieme di `ITheme` di xterm.js usato dall'app.
@@ -33,30 +33,26 @@ export interface TerminalTheme {
   brightWhite: string;
 }
 
-/**
- * Base scura dell'app + 16 ANSI Campbell (default di Windows Terminal, vedi
- * https://learn.microsoft.com/en-us/windows/terminal/customize-settings/color-schemes):
- * gli stessi colori che l'utente vede in PowerShell nativo.
- */
+/** Base scura dell'app (#0A0E12) + 16 ANSI in tono con la palette. */
 export const TERMINAL_THEME: TerminalTheme = {
-  background: "#101216",
-  foreground: "#e8e8e8",
-  cursor: "#d0d0d0",
-  selectionBackground: "#3a3d41",
-  black: "#0C0C0C",
-  red: "#C50F1F",
-  green: "#13A10E",
-  yellow: "#C19C00",
-  blue: "#0037DA",
-  magenta: "#881798",
-  cyan: "#3A96DD",
-  white: "#CCCCCC",
-  brightBlack: "#767676",
-  brightRed: "#E74856",
-  brightGreen: "#16C60C",
-  brightYellow: "#F9F1A5",
-  brightBlue: "#3B78FF",
-  brightMagenta: "#B4009E",
-  brightCyan: "#61D6D6",
-  brightWhite: "#F2F2F2",
+  background: "#0A0E12",
+  foreground: "#C4CED8",
+  cursor: "#38BDF8",
+  selectionBackground: "rgba(56, 189, 248, 0.25)",
+  black: "#1C2530",
+  red: "#F87171",
+  green: "#34D399",
+  yellow: "#F5B544",
+  blue: "#60A5FA",
+  magenta: "#C084FC",
+  cyan: "#38BDF8",
+  white: "#C4CED8",
+  brightBlack: "#5D6B79",
+  brightRed: "#FCA5A5",
+  brightGreen: "#6EE7B7",
+  brightYellow: "#FCD34D",
+  brightBlue: "#93C5FD",
+  brightMagenta: "#D8B4FE",
+  brightCyan: "#7DD3FC",
+  brightWhite: "#E6EEF5",
 };

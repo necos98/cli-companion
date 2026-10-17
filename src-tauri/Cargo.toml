@@ -1,6 +1,6 @@
 [package]
 name = "cli-companion"
-version = "0.5.1"
+version = "0.5.2"
 description = "CLI companion con terminali integrati Windows + WSL"
 authors = ["you"]
 edition = "2021"
@@ -28,8 +28,9 @@ tauri-plugin-notification = "2"
 tauri-winrt-notification = "0.8"
 
 [profile.release]
-codegen-units = 1
-lto = true
+# LTO "thin" e codegen-units di default (16): build molto piu' veloce
+# a fronte di un binario leggermente piu' grande.
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

@@ -12,6 +12,9 @@ import {
   resolveInputOverride,
   tabAgentId,
   groupByAgent,
+  installedAgentsSummary,
+  countNeedingInput,
+  terminalCountText,
   isTerminalReply,
   notificationBody,
   shouldSystemNotify,
@@ -253,5 +256,50 @@ describe("profili di input", () => {
     );
     // Stato agente senza id (evento senza agente): ripiega sul comando.
     assert.equal(tabAgentId({ agent: {}, startCommand: "claude" }), "claude-code");
+  });
+});
+
+describe("barra di stato", () => {
+  const env = (agent_id, agent_name, env_label, found, installed) => ({
+    agent_id,
+    agent_name,
+    env_label,
+    found,
+    installed,
+  });
+
+  it("installedAgentsSummary: solo gli env installati, raggruppati per agente", () => {
+    assert.equal(
+      installedAgentsSummary([
+        env("claude-code", "Claude Code", "Windows", true, true),
+        env("claude-code", "Claude Code", "Ubuntu", true, false),
+        env("claude-code", "Claude Code", "Debian", false, true),
+        env("claude-code", "Claude Code", "Ubuntu-24.04", true, true),
+      ]),
+      "Claude Code · Windows, Ubuntu-24.04",
+    );
+    assert.equal(
+      installedAgentsSummary([
+        env("a", "A", "Windows", true, true),
+        env("b", "B", "Windows", true, true),
+      ]),
+      "A · Windows; B · Windows",
+    );
+  });
+
+  it("installedAgentsSummary: niente installato = stringa vuota", () => {
+    assert.equal(installedAgentsSummary([]), "");
+    assert.equal(installedAgentsSummary([env("a", "A", "Windows", true, false)]), "");
+  });
+
+  it("countNeedingInput e terminalCountText", () => {
+    assert.equal(
+      countNeedingInput([{ icon: "alert" }, { icon: "dot" }, { icon: "alert" }, { icon: "check" }]),
+      2,
+    );
+    assert.equal(countNeedingInput([]), 0);
+    assert.equal(terminalCountText(0), "0 terminali");
+    assert.equal(terminalCountText(1), "1 terminale");
+    assert.equal(terminalCountText(3), "3 terminali");
   });
 });

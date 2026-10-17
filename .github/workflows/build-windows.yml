@@ -4,6 +4,10 @@ name: build-windows
 # - su ogni push/PR produce l'eseguibile + i bundle Windows come artifact CI;
 # - su tag v* crea anche la GitHub Release con installer + checksum .sha256,
 #   che e' esattamente cio' che consuma l'updater (vedi docs/UPDATER.MD).
+# La cache Rust (rust-cache) viene salvata solo da cache-rust-main.yml su main:
+# le cache create in un run su tag non sono ripristinabili da altri tag, mentre
+# un run puo' ripristinare quelle del proprio ref o del branch di default.
+# Qui si fa solo restore (save-if su main), con la stessa shared-key.
 on:
   push:
     # Nessuna build automatica sui branch: la build parte solo
@@ -33,6 +37,13 @@ jobs:
 
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust (restore da main)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install WiX Toolset (per bundle MSI)
         # NSIS viene scaricato automaticamente da tauri-bundler;

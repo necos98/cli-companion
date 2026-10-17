@@ -278,3 +278,42 @@ export function tabAgentId(tab: {
   if (tab.agent?.ended) return null;
   return tab.agent?.agentId ?? agentIdForCommand(tab.startCommand);
 }
+
+// ---------------------------------------------------------------------------
+// Barra di stato
+// ---------------------------------------------------------------------------
+
+/**
+ * Riepilogo degli ambienti con il plugin installato, per la barra di stato:
+ * "Claude Code · Windows, Ubuntu-24.04". Più agenti sono separati da "; ".
+ * Stringa vuota se non c'è nulla di installato.
+ */
+export function installedAgentsSummary(
+  envs: Array<Pick<AgentEnvLike, "agent_id" | "agent_name" | "env_label" | "found" | "installed">>,
+): string {
+  const byAgent = new Map<string, { name: string; labels: string[] }>();
+  for (const env of envs) {
+    if (!env.found || !env.installed) continue;
+    const entry = byAgent.get(env.agent_id) ?? { name: env.agent_name, labels: [] };
+    entry.labels.push(env.env_label);
+    byAgent.set(env.agent_id, entry);
+  }
+  return [...byAgent.values()].map((a) => `${a.name} · ${a.labels.join(", ")}`).join("; ");
+}
+
+/** Quanti terminali aspettano una risposta (❗). */
+export function countNeedingInput(statuses: Array<{ icon: TabStatusIcon }>): number {
+  return statuses.filter((s) => s.icon === "alert").length;
+}
+
+/** "1 terminale" / "N terminali". */
+export function terminalCountText(n: number): string {
+  return n === 1 ? "1 terminale" : `${n} terminali`;
+}
+
+/** Stato mostrato su un gruppo di terminali (tab della barra del titolo, riga della sidebar). */
+export const GROUP_STATUS: Record<"alert" | "check" | "busy", TabStatus> = {
+  alert: { icon: "alert", tone: "attention", label: "Un terminale aspetta una risposta" },
+  check: { icon: "check", tone: "done", label: "Un agente ha finito" },
+  busy: { icon: "dot", tone: "busy", label: "Terminali al lavoro" },
+};

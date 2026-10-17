@@ -15,7 +15,12 @@ import {
 import { cn } from "../lib/utils";
 
 /** Tab "Coding agent": installa il plugin di notifica negli env (Windows + WSL). */
-export default function AgentSettingsTab() {
+interface Props {
+  /** Notifica l'elenco aggiornato degli ambienti (barra di stato). */
+  onEnvs?: (envs: AgentEnvStatus[]) => void;
+}
+
+export default function AgentSettingsTab({ onEnvs }: Props) {
   const [envs, setEnvs] = useState<AgentEnvStatus[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -25,12 +30,14 @@ export default function AgentSettingsTab() {
 
   const refresh = useCallback(async () => {
     try {
-      setEnvs(await api.agentEnvStatus());
+      const list = await api.agentEnvStatus();
+      setEnvs(list);
+      onEnvs?.(list);
       setLoadError(null);
     } catch (e) {
       setLoadError(String(e));
     }
-  }, []);
+  }, [onEnvs]);
 
   useEffect(() => {
     void refresh();
@@ -103,9 +110,9 @@ export default function AgentSettingsTab() {
                   className={cn(
                     "h-2 w-2 flex-shrink-0 rounded-full",
                     state === "installed"
-                      ? "bg-green-500"
+                      ? "bg-status-finished"
                       : state === "not-installed"
-                        ? "bg-yellow-500"
+                        ? "bg-status-running"
                         : "bg-muted-foreground/40",
                   )}
                 />

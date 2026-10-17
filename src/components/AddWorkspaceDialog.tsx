@@ -215,7 +215,7 @@ export default function AddWorkspaceDialog({ isOpen, onClose, onAdded }: Props) 
                   </Button>
                 </div>
                 {checkOk === true && (
-                  <p className="mt-1 text-xs text-emerald-500">Cartella trovata.</p>
+                  <p className="mt-1 text-xs text-status-finished">Cartella trovata.</p>
                 )}
                 {checkOk === false && (
                   <p className="mt-1 text-xs text-destructive">

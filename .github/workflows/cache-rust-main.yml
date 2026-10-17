@@ -1,0 +1,49 @@
+name: cache-rust-main
+
+# Scalda la cache Rust per le build di release (build-windows.yml).
+# Le cache salvate da un run su tag v* non sono ripristinabili da altri tag,
+# mentre ogni run puo' ripristinare quelle del branch di default: per questo
+# la cache viene prodotta qui, su main, con la stessa shared-key.
+# Non crea Release ne' carica artifact.
+on:
+  push:
+    branches: [main]
+    paths:
+      - src-tauri/Cargo.lock
+      - src-tauri/Cargo.toml
+      - .github/workflows/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warm-cache:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Dist segnaposto
+        # generate_context! di Tauri richiede che frontendDist (../dist) esista:
+        # per compilare le dipendenze basta una index.html vuota, niente npm.
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Set-Content -Path dist/index.html -Value '<!doctype html><title>cache</title>'
+
+      - name: Build release (solo dipendenze/cache)
+        working-directory: src-tauri
+        run: cargo build --release

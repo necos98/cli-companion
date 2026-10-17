@@ -1,19 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Loader2, Settings, Star } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { Loader2, SlidersHorizontal } from "lucide-react";
 import Sidebar from "./components/Sidebar";
+import type { SidebarTerminal } from "./components/Sidebar";
 import AddWorkspaceDialog from "./components/AddWorkspaceDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import type { SettingsTab } from "./components/SettingsDialog";
-import StatusIcon from "./components/StatusIcon";
+import TitleBar from "./components/TitleBar";
+import type { TitleTab } from "./components/TitleBar";
+import StatusBar from "./components/StatusBar";
+import Logo from "./components/Logo";
 import TerminalView from "./components/TerminalView";
 import { Button } from "./components/ui/button";
 import { api, onAgentEvent, onNotificationActivated } from "./lib/tauri";
-import type { AgentProfile, Launch, Workspace } from "./lib/tauri";
+import type { AgentEnvStatus, AgentProfile, Launch, Workspace } from "./lib/tauri";
 import { defaultLaunch } from "./lib/launch";
 import {
   applyAgentEvent,
+  GROUP_STATUS,
   applyUserInput,
+  countNeedingInput,
+  installedAgentsSummary,
   notificationBody,
   resolveInputOverride,
   shouldSystemNotify,
@@ -51,7 +59,6 @@ import {
 import type { SessionTab } from "./lib/session";
 import { playAttention, playDing } from "./lib/notifySound";
 import { notifyIfUnfocused } from "./lib/systemNotify";
-import { cn } from "./lib/utils";
 
 interface Tab {
   key: string;
@@ -103,12 +110,6 @@ function newTabKey(): string {
   }
 }
 
-const GROUP_STATUS: Record<"alert" | "check" | "busy", TabStatus> = {
-  alert: { icon: "alert", tone: "attention", label: "Un terminale aspetta una risposta" },
-  check: { icon: "check", tone: "done", label: "Un agente ha finito" },
-  busy: { icon: "dot", tone: "busy", label: "Terminali al lavoro" },
-};
-
 export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +135,10 @@ export default function App() {
   // Salvataggio abilitato solo se la lettura della sessione e' riuscita (file
   // assente compreso): dopo un errore di I/O non si sovrascrive session.json.
   const [saveEnabled, setSaveEnabled] = useState(false);
+  // Plugin degli agenti installati per ambiente (barra di stato): caricati una
+  // volta, in background, dopo l'avvio; aggiornati dalle Impostazioni.
+  const [agentEnvs, setAgentEnvs] = useState<AgentEnvStatus[]>([]);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -413,7 +418,34 @@ export default function App() {
     })();
   }, []);
 
-  const openLaunchSettings = useCallback((ws: Workspace) => {
+  // Versione dell'app (footer della sidebar).
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined);
+  }, []);
+
+  // `agent_env_status` lancia processi (wsl.exe, claude): una sola volta, in
+  // background e con un po' di ritardo, quando la sessione e' gia' ripristinata.
+  // Non blocca la UI; dopo install/rimozione lo aggiornano le Impostazioni.
+  useEffect(() => {
+    if (!sessionReady) return;
+    let cancelled = false;
+    const id = setTimeout(() => {
+      api
+        .agentEnvStatus()
+        .then((envs) => {
+          if (!cancelled) setAgentEnvs(envs);
+        })
+        .catch(() => undefined);
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [sessionReady]);
+
+  const openLaunchSettings =useCallback((ws: Workspace) => {
     setSettingsTab("launches");
     setSettingsWorkspaceId(ws.id);
     setSettingsOpen(true);
@@ -541,186 +573,196 @@ export default function App() {
   const globalCount = layout.global.order.length;
 
   const statusOf = (t: Tab): TabStatus => tabStatus(t.agent, busyByKey[t.key] === true);
-  const globalIndicator = groupIndicator(
-    tabs.filter((t) => layout.global.order.includes(t.key)).map(statusOf),
-  );
+  const statuses = tabs.map(statusOf);
+  const statusByKey = new Map(tabs.map((t, i) => [t.key, statuses[i]]));
+  const indicatorStatus = (keys: string[]): TabStatus | null => {
+    const ind = groupIndicator(
+      keys.flatMap((k) => {
+        const s = statusByKey.get(k);
+        return s ? [s] : [];
+      }),
+    );
+    return ind === "none" ? null : GROUP_STATUS[ind];
+  };
+
+  // Tab della barra del titolo: vista globale (se ha tab) + un tab per gruppo.
+  const globalTab: TitleTab | null =
+    globalCount > 0
+      ? {
+          id: GLOBAL_ID,
+          name: "Globale",
+          count: globalCount,
+          status: indicatorStatus(layout.global.order),
+        }
+      : null;
+  const groupTabs: TitleTab[] = layout.groups.map((g) => ({
+    id: g.workspaceId,
+    name:
+      tabs.find((t) => t.workspace.id === g.workspaceId)?.workspace.name ?? g.workspaceId,
+    count: g.order.length,
+    status: indicatorStatus(g.order),
+  }));
+
+  // Terminali di ogni workspace per la sidebar (ordine della griglia).
+  const tabByKey = new Map(tabs.map((t) => [t.key, t]));
+  const sidebarTerminals: Record<string, SidebarTerminal[]> = {};
+  for (const g of layout.groups) {
+    sidebarTerminals[g.workspaceId] = g.order.flatMap((key) => {
+      const t = tabByKey.get(key);
+      if (!t) return [];
+      return [
+        {
+          key,
+          label: tabLabel(t),
+          status: statusByKey.get(key)!,
+          pinned: layout.global.order.includes(key),
+          active: g.activeTabId === key,
+        },
+      ];
+    });
+  }
+
+  const attentionCount = countNeedingInput(statuses);
+  const agentsSummary = installedAgentsSummary(agentEnvs);
+  const anyPaneVisible = Object.values(paneLayouts).some((p) => p.visible);
 
   return (
-    <div className="flex h-screen">
-      <aside className="flex w-[300px] min-w-[260px] max-w-[340px] flex-col overflow-hidden border-r bg-card">
-        {loadError ? (
-          <div className="p-4">
-            <p className="text-[13px] text-destructive">{loadError}</p>
-          </div>
-        ) : loading || !sessionReady ? (
-          <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Caricamento…
-          </div>
-        ) : (
-          <Sidebar
-            workspaces={workspaces}
-            activeWorkspaceId={globalActive ? null : layout.activeWorkspaceId}
-            onSelect={handleSelectWorkspace}
-            onSpawn={spawnTab}
-            onManageLaunches={openLaunchSettings}
-            onRename={handleRename}
-            onRemove={handleRemove}
-            onAdd={() => setDialogOpen(true)}
-          />
-        )}
-        <div className="flex flex-col gap-2 border-t p-3">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setSettingsTab(updateAvailable ? "updates" : "launches");
-              setSettingsWorkspaceId(undefined);
-              setSettingsOpen(true);
-            }}
-            className="w-full justify-start"
-          >
-            <Settings className="h-3.5 w-3.5" />
-            Impostazioni
-            {updateAvailable && (
-              <span
-                className="ml-auto h-2 w-2 rounded-full bg-primary"
-                title="Aggiornamento disponibile"
-                aria-label="Aggiornamento disponibile"
-              />
-            )}
-          </Button>
-        </div>
-      </aside>
+    <div className="flex h-screen flex-col">
+      <TitleBar
+        globalTab={globalTab}
+        globalActive={globalActive}
+        groups={groupTabs}
+        activeWorkspaceId={layout.activeWorkspaceId}
+        onSelectGlobal={() => setLayout(selectGlobal)}
+        onSelectGroup={handleSelectWorkspace}
+      />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* Barra dei workspace: un tab per gruppo di terminali. */}
-        <div className="flex flex-shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-card px-2.5 py-2">
-          {layout.groups.length === 0 && (
-            <span className="px-2 text-xs text-muted-foreground">
-              Nessun terminale aperto
-            </span>
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-[260px] flex-shrink-0 flex-col overflow-hidden border-r bg-base">
+          {loadError ? (
+            <div className="p-4">
+              <p className="text-[13px] text-destructive">{loadError}</p>
+            </div>
+          ) : loading || !sessionReady ? (
+            <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Caricamento…
+            </div>
+          ) : (
+            <Sidebar
+              workspaces={workspaces}
+              activeWorkspaceId={globalActive ? null : layout.activeWorkspaceId}
+              terminals={sidebarTerminals}
+              onSelect={handleSelectWorkspace}
+              onFocusTerminal={(key) => setLayout((l) => focusTab(l, key))}
+              onSpawn={spawnTab}
+              onManageLaunches={openLaunchSettings}
+              onRename={handleRename}
+              onRemove={handleRemove}
+              onAdd={() => setDialogOpen(true)}
+            />
           )}
-          {/* Vista globale: sempre prima, mostrata solo con almeno un tab fissato. */}
-          {globalCount > 0 && (
-            <div
-              key={GLOBAL_ID}
-              onClick={() => setLayout(selectGlobal)}
-              title="Vista globale: terminali fissati di tutti i workspace"
-              aria-label={`Vista globale: ${globalCount} terminali`}
-              className={cn(
-                "flex cursor-pointer select-none items-center gap-2 rounded-md border px-2.5 py-1.5",
-                globalActive ? "border-border bg-muted" : "border-transparent hover:bg-accent",
-              )}
+          <div className="flex items-center gap-2 border-t px-3 py-2.5">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSettingsTab(updateAvailable ? "updates" : "launches");
+                setSettingsWorkspaceId(undefined);
+                setSettingsOpen(true);
+              }}
+              className="h-auto flex-1 justify-start gap-2 px-2 py-[7px] text-[13px] font-normal text-text-secondary hover:text-foreground"
             >
-              {globalIndicator !== "none" && <StatusIcon status={GROUP_STATUS[globalIndicator]} />}
-              <Star className="h-3 w-3 text-primary" />
-              <span
-                className={cn(
-                  "whitespace-nowrap text-xs",
-                  globalActive ? "text-foreground" : "text-muted-foreground",
-                )}
-              >
-                Vista globale ({globalCount})
-              </span>
-            </div>
-          )}
-          {layout.groups.map((g) => {
-            const isActive = !globalActive && g.workspaceId === layout.activeWorkspaceId;
-            const members = tabs.filter((t) => g.order.includes(t.key));
-            const name = members[0]?.workspace.name ?? g.workspaceId;
-            const indicator = groupIndicator(members.map(statusOf));
-            return (
-              <div
-                key={g.workspaceId}
-                onClick={() => handleSelectWorkspace(g.workspaceId)}
-                title={name}
-                aria-label={`${name}: ${g.order.length} terminali`}
-                className={cn(
-                  "flex cursor-pointer select-none items-center gap-2 rounded-md border px-2.5 py-1.5",
-                  isActive
-                    ? "border-border bg-muted"
-                    : "border-transparent hover:bg-accent",
-                )}
-              >
-                {indicator !== "none" && <StatusIcon status={GROUP_STATUS[indicator]} />}
+              <SlidersHorizontal className="!size-[15px]" />
+              Impostazioni
+              {updateAvailable && (
                 <span
-                  className={cn(
-                    "whitespace-nowrap text-xs",
-                    isActive ? "text-foreground" : "text-muted-foreground",
-                  )}
-                >
-                  {name}
-                </span>
-                <span className="rounded bg-background px-1.5 text-[10px] text-muted-foreground">
-                  {g.order.length}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+                  className="h-1.5 w-1.5 rounded-full bg-primary"
+                  title="Aggiornamento disponibile"
+                  role="img"
+                  aria-label="Aggiornamento disponibile"
+                />
+              )}
+            </Button>
+            {appVersion && (
+              <span className="font-mono text-[11px] text-faint">v{appVersion}</span>
+            )}
+          </div>
+        </aside>
 
-        {/* Area dei pannelli. TUTTI i TerminalView di TUTTI i gruppi sono figli
-            diretti di questo contenitore, con chiave stabile e nell'ordine di
-            creazione: layout, riordino, cambio gruppo e maximize cambiano solo
-            lo stile (rettangolo / display), mai la struttura del DOM, quindi
-            nessun terminale viene smontato o spostato (ucciderebbe il pty). */}
-        <div className="relative min-h-0 flex-1">
-          {tabs.length === 0 && (
-            <div className="flex h-full items-center justify-center p-8">
-              <p className="text-center text-sm text-muted-foreground">
-                Premi “+ Terminale” su un workspace per aprire una shell integrata.
-              </p>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Area dei pannelli. TUTTI i TerminalView di TUTTI i gruppi sono figli
+              diretti di questo contenitore, con chiave stabile e nell'ordine di
+              creazione: layout, riordino, cambio gruppo e maximize cambiano solo
+              lo stile (rettangolo / display), mai la struttura del DOM, quindi
+              nessun terminale viene smontato o spostato (ucciderebbe il pty).
+              Il contenitore interno e' fisso (inset 3px + 3px per pannello =
+              6px di margine e di spazio fra i pannelli). */}
+          <div className="relative min-h-0 flex-1 bg-pane-area">
+            <div className="absolute inset-[3px]">
+              {!anyPaneVisible && (
+                <div className="absolute inset-[3px] flex flex-col items-center justify-center gap-3 rounded-[10px] border bg-pane-area p-5">
+                  <Logo size={40} />
+                  <span className="text-[13px] font-medium">Nessun terminale aperto</span>
+                  <span className="text-center text-xs text-muted-foreground">
+                    Apri un terminale da un workspace, o con un avvio dal menu ⋯
+                  </span>
+                </div>
+              )}
+              {tabs.map((t) => {
+                const pl = paneLayouts[t.key];
+                return (
+                  <TerminalView
+                    key={t.key}
+                    tabId={t.key}
+                    workspace={t.workspace}
+                    initialCommand={t.startCommand}
+                    imagePasteSeq={resolveInputOverride(
+                      agentProfiles,
+                      tabAgentId(t),
+                      t.workspace.kind,
+                      "image-paste",
+                    )}
+                    restore={t.restored}
+                    rect={pl?.rect ?? null}
+                    active={pl?.visible ?? false}
+                    focused={pl?.focused ?? false}
+                    label={tabLabel(t)}
+                    labelPrefix={
+                      pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
+                    }
+                    status={statusOf(t)}
+                    maximized={pl?.maximized ?? false}
+                    pinned={pl?.pinned ?? false}
+                    dropTarget={drag.over === t.key}
+                    onActivate={() => setLayout((l) => setActivePane(l, t.key))}
+                    onClose={() => closeTab(t.key)}
+                    onToggleMaximize={() => setLayout((l) => toggleMaximize(l, t.key))}
+                    onTogglePin={() => setLayout((l) => togglePin(l, t.key))}
+                    onPaneDragStart={() => handlePaneDragStart(t.key)}
+                    onPaneDragOver={() => handlePaneDragOver(t.key)}
+                    onPaneDragLeave={() =>
+                      setDrag((d) => (d.over === t.key ? { ...d, over: null } : d))
+                    }
+                    onPaneDrop={() => handlePaneDrop(t.key)}
+                    onPaneDragEnd={handlePaneDragEnd}
+                    registerFlush={registerFlush}
+                    onExit={() => handleExit(t.key)}
+                    onTitle={(title) => handleTitle(t.key, title)}
+                    onStatus={(busy) => handleStatus(t.key, busy)}
+                    onInput={(enter) => handleInput(t.key, enter)}
+                  />
+                );
+              })}
             </div>
-          )}
-          {tabs.map((t) => {
-            const pl = paneLayouts[t.key];
-            return (
-              <TerminalView
-                key={t.key}
-                tabId={t.key}
-                workspace={t.workspace}
-                initialCommand={t.startCommand}
-                imagePasteSeq={resolveInputOverride(
-                  agentProfiles,
-                  tabAgentId(t),
-                  t.workspace.kind,
-                  "image-paste",
-                )}
-                restore={t.restored}
-                rect={pl?.rect ?? null}
-                active={pl?.visible ?? false}
-                focused={pl?.focused ?? false}
-                label={
-                  pl?.groupWorkspaceId === GLOBAL_ID
-                    ? `${t.workspace.name} · ${tabLabel(t)}`
-                    : tabLabel(t)
-                }
-                status={statusOf(t)}
-                maximized={pl?.maximized ?? false}
-                pinned={pl?.pinned ?? false}
-                dropTarget={drag.over === t.key}
-                onActivate={() => setLayout((l) => setActivePane(l, t.key))}
-                onClose={() => closeTab(t.key)}
-                onToggleMaximize={() => setLayout((l) => toggleMaximize(l, t.key))}
-                onTogglePin={() => setLayout((l) => togglePin(l, t.key))}
-                onPaneDragStart={() => handlePaneDragStart(t.key)}
-                onPaneDragOver={() => handlePaneDragOver(t.key)}
-                onPaneDragLeave={() =>
-                  setDrag((d) => (d.over === t.key ? { ...d, over: null } : d))
-                }
-                onPaneDrop={() => handlePaneDrop(t.key)}
-                onPaneDragEnd={handlePaneDragEnd}
-                registerFlush={registerFlush}
-                onExit={() => handleExit(t.key)}
-                onTitle={(title) => handleTitle(t.key, title)}
-                onStatus={(busy) => handleStatus(t.key, busy)}
-                onInput={(enter) => handleInput(t.key, enter)}
-              />
-            );
-          })}
+          </div>
         </div>
       </div>
+
+      <StatusBar
+        terminalCount={tabs.length}
+        attentionCount={attentionCount}
+        agentsSummary={agentsSummary}
+      />
 
       <AddWorkspaceDialog
         isOpen={dialogOpen}
@@ -735,6 +777,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onWorkspaceUpdated={handleWorkspaceUpdated}
         onUpdateAvailable={setUpdateAvailable}
+        onAgentEnvs={setAgentEnvs}
       />
     </div>
   );

@@ -6,7 +6,7 @@ import { cn } from "../lib/utils";
 export default function StatusIcon({ status }: { status: TabStatus }) {
   if (status.icon === "check") {
     return (
-      <Check role="img" aria-label={status.label} className="h-3 w-3 flex-shrink-0 text-green-500">
+      <Check role="img" aria-label={status.label} className="h-3 w-3 flex-shrink-0 text-status-finished">
         <title>{status.label}</title>
       </Check>
     );
@@ -16,7 +16,7 @@ export default function StatusIcon({ status }: { status: TabStatus }) {
       <CircleAlert
         role="img"
         aria-label={status.label}
-        className="h-3 w-3 flex-shrink-0 animate-pulse text-orange-500"
+        className="h-3 w-3 flex-shrink-0 animate-pulse text-status-attention"
       >
         <title>{status.label}</title>
       </CircleAlert>
@@ -29,7 +29,7 @@ export default function StatusIcon({ status }: { status: TabStatus }) {
       title={status.label}
       className={cn(
         "h-2 w-2 flex-shrink-0 rounded-full",
-        status.tone === "busy" ? "bg-yellow-500" : "bg-green-500",
+        status.tone === "busy" ? "bg-status-running" : "bg-status-finished",
       )}
     />
   );

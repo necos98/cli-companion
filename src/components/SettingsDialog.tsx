@@ -12,7 +12,7 @@ import { Input } from "./ui/input";
 import AgentSettingsTab from "./AgentSettingsTab";
 import UpdateCheck from "./UpdateCheck";
 import { api } from "../lib/tauri";
-import type { Launch, Workspace } from "../lib/tauri";
+import type { AgentEnvStatus, Launch, Workspace } from "../lib/tauri";
 import {
   LAUNCH_COMMAND_MAX,
   LAUNCH_NAME_MAX,
@@ -32,6 +32,8 @@ interface Props {
   onWorkspaceUpdated: (ws: Workspace) => void;
   /** Esito del controllo aggiornamenti fatto nel tab "Aggiornamenti". */
   onUpdateAvailable?: (available: boolean) => void;
+  /** Elenco aggiornato degli ambienti dei coding agent (per la barra di stato). */
+  onAgentEnvs?: (envs: AgentEnvStatus[]) => void;
 }
 
 const selectClass =
@@ -45,6 +47,7 @@ export default function SettingsDialog({
   onClose,
   onWorkspaceUpdated,
   onUpdateAvailable,
+  onAgentEnvs,
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -193,7 +196,7 @@ export default function SettingsDialog({
         </div>
 
         {tab === "agents" ? (
-          <AgentSettingsTab />
+          <AgentSettingsTab onEnvs={onAgentEnvs} />
         ) : tab === "updates" ? (
           <UpdateCheck onAvailable={onUpdateAvailable} />
         ) : workspaces.length === 0 || !selected ? (
