@@ -23,6 +23,7 @@ describe("automazione: stati", () => {
     const expected = {
       starting: "in avvio",
       running: "in corso",
+      background: "in background",
       needs_input: "aspetta",
       idle: "fermo",
       completed: "completato",

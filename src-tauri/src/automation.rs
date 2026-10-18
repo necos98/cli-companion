@@ -56,23 +56,30 @@ const LAST_REPORT_MAX: usize = 200;
 const CWD_MAX: usize = 1024;
 const DEFAULT_AGENT: &str = "claude-code";
 
-/// Prompt passato in riga di comando: ASCII semplice, sicuro in ogni shell.
+/// Prompt passato in riga di comando: ASCII semplice, sicuro in ogni shell
+/// (niente virgolette, `$`, backtick, `%`, `!`, `\`). Lo legge il modello:
+/// in inglese.
 pub const BOOTSTRAP_PROMPT: &str =
-    "Sei una sessione automatica di cli-companion. Chiama subito il tool get_task e segui le istruzioni.";
+    "You are an automated cli-companion session. Call the get_task tool right away and follow its instructions.";
 
 /// Testo digitato nel prompt dell'orchestratore quando ci sono eventi nuovi.
 pub const WAKE_TEXT: &str =
-    "[cli-companion] Nuovi eventi dalle sessioni automatiche: chiama wait_for_events.";
+    "[cli-companion] New events from your automated sessions: call wait_for_events.";
 
-/// Istruzioni restituite da `get_task`.
+/// Motivo del blocco dello Stop hook: il worker ha chiuso il turno senza
+/// riferire (`reason` e' mostrato al modello).
+pub const STOP_BLOCK_REASON: &str = "You are an automated cli-companion worker and your turn ended without reporting. If the task is finished, call the complete_task tool now with a full summary. If you are blocked, call request_help. If you are waiting for a background command, keep waiting.";
+
+/// Istruzioni restituite da `get_task` (le legge il modello: inglese).
 pub const WORKER_INSTRUCTIONS: &str = "\
-Sei una sessione automatica di cli-companion, avviata da un orchestratore che ti ha affidato il task qui sopra.\n\
-- Lavora in autonomia sul task, senza chiedere conferme all'utente.\n\
-- Nessuno legge l'output del tuo terminale: comunica SOLO con i tool MCP di cli-companion.\n\
-- report_fact: segnala all'orchestratore i fatti utili che emergono (scoperte, decisioni, avanzamenti importanti).\n\
-- request_help: se sei bloccato, fai una domanda all'orchestratore e poi attendi; la risposta arrivera' come messaggio nel tuo prompt.\n\
-- complete_task: chiudi SEMPRE il lavoro con questo tool, indicando status (completed, failed o blocked) e un riassunto completo: cosa hai fatto, file toccati, esito dei test.\n\
-Se finisci senza chiamare complete_task l'orchestratore non sapra' l'esito.";
+You are an automated cli-companion session, started by an orchestrator that assigned you the task above.\n\
+- Work on the task autonomously, without asking the user for confirmation.\n\
+- Nobody reads your terminal output: communicate ONLY through the cli-companion MCP tools.\n\
+- report_fact: tell the orchestrator about useful facts that emerge (findings, decisions, important progress).\n\
+- request_help: if you are blocked, ask the orchestrator a question and then wait; the answer will arrive as a message in your prompt.\n\
+- complete_task: ALWAYS end the work with this tool, giving a status (completed, failed or blocked) and a full summary: what you did, files touched, test results.\n\
+- Background commands are fine: if you start one and wait for it, your session resumes automatically when it finishes. The task must still always end with complete_task.\n\
+If you finish without calling complete_task the orchestrator will not know the outcome.";
 
 // ---------------------------------------------------------------------------
 // Token
@@ -110,13 +117,13 @@ pub fn token_matches(candidate: Option<&str>) -> bool {
 /// Controlli comuni a ogni richiesta RPC: versione, token, id tab chiamante.
 fn authenticate(req: &RpcRequest, expected_token: &str) -> Result<(), String> {
     if req.rpc != 1 {
-        return Err("versione RPC non supportata".to_string());
+        return Err("unsupported RPC version".to_string());
     }
     if req.token.is_empty() || req.token != expected_token {
-        return Err("token non valido".to_string());
+        return Err("invalid token".to_string());
     }
     if !is_valid_tab_id(&req.session) {
-        return Err("sessione non valida".to_string());
+        return Err("invalid session".to_string());
     }
     Ok(())
 }
@@ -146,6 +153,9 @@ pub enum WorkerStatus {
     /// Spawnato, task non ancora letto.
     Starting,
     Running,
+    /// Turno chiuso in attesa di lavoro in background (Claude Code riprende
+    /// da solo): non e' un abbandono.
+    Background,
     NeedsInput,
     /// L'agente ha finito il turno senza `complete_task`.
     Idle,
@@ -187,6 +197,15 @@ pub enum EventKind {
     NeedsInput,
     StoppedWithoutReport,
     Exited,
+}
+
+impl EventKind {
+    /// Eventi che richiedono l'attenzione dell'orchestratore e possono
+    /// svegliarlo; `started` e `fact` restano in coda fino al prossimo
+    /// `wait_for_events`.
+    fn is_actionable(self) -> bool {
+        !matches!(self, EventKind::Started | EventKind::Fact)
+    }
 }
 
 /// Evento nella coda di un orchestratore.
@@ -302,14 +321,24 @@ struct Queue {
     waiting: u32,
     /// Messaggio di risveglio gia' digitato e non ancora "consumato".
     wake_pending: bool,
-    /// `seq` dell'ultimo evento in coda al momento del risveglio: si
-    /// risveglia di nuovo solo per eventi piu' recenti.
+    /// `seq` dell'ultimo evento azionabile in coda al momento del risveglio:
+    /// si risveglia di nuovo solo per eventi azionabili piu' recenti.
     woke_seq: u64,
 }
 
 // ---------------------------------------------------------------------------
 // Registry (nucleo puro)
 // ---------------------------------------------------------------------------
+
+/// Evento di un hook come lo vede il registro.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HookEvent<'a> {
+    pub event: &'a str,
+    pub notification_type: Option<&'a str>,
+    pub message: Option<&'a str>,
+    pub stop_hook_active: Option<bool>,
+    pub background_work: Option<u32>,
+}
 
 #[derive(Default)]
 pub struct Registry {
@@ -326,10 +355,10 @@ pub struct Registry {
 fn req_text(label: &str, s: &str, max: usize) -> Result<String, String> {
     let t = s.trim();
     if t.is_empty() {
-        return Err(format!("{label} mancante"));
+        return Err(format!("{label} is missing"));
     }
     if t.chars().count() > max {
-        return Err(format!("{label} troppo lungo (max {max} caratteri)"));
+        return Err(format!("{label} is too long (max {max} characters)"));
     }
     Ok(t.to_string())
 }
@@ -356,7 +385,7 @@ impl Registry {
         if self.role(session) == Role::Orchestrator {
             Ok(())
         } else {
-            Err("riservato all'orchestratore".to_string())
+            Err("reserved for the orchestrator".to_string())
         }
     }
 
@@ -372,7 +401,7 @@ impl Registry {
         self.require_orchestrator(orch)?;
         if self.active_count(orch) >= MAX_WORKERS_PER_ORCHESTRATOR {
             return Err(format!(
-                "troppe sessioni attive (max {MAX_WORKERS_PER_ORCHESTRATOR}): chiudine qualcuna"
+                "too many active sessions (max {MAX_WORKERS_PER_ORCHESTRATOR}): close some"
             ));
         }
         Ok(())
@@ -435,7 +464,7 @@ impl Registry {
     fn worker_mut(&mut self, session: &str) -> Result<&mut Worker, String> {
         self.workers
             .get_mut(session)
-            .ok_or_else(|| "riservato alle sessioni automatiche".to_string())
+            .ok_or_else(|| "reserved for automated sessions".to_string())
     }
 
     /// Worker di `orch` (per tutti gli altri: stesso errore, nessuna fuga).
@@ -444,7 +473,7 @@ impl Registry {
         self.workers
             .get(session)
             .filter(|w| w.orchestrator == orch)
-            .ok_or_else(|| "sessione non trovata".to_string())
+            .ok_or_else(|| "session not found".to_string())
     }
 
     fn touch(&mut self, session: &str, now: i64) {
@@ -478,18 +507,21 @@ impl Registry {
         self.check_wake(&orch);
     }
 
-    /// Decide se svegliare l'orchestratore `tab`: ci sono eventi in coda,
-    /// non sta aspettando, il suo ultimo hook e' `finished` (idle al prompt:
-    /// con `needs-input` il testo finirebbe in un dialogo di permesso) e, se
-    /// l'abbiamo gia' svegliato, sono arrivati eventi nuovi da allora. Un
-    /// orchestratore che ignora il risveglio e chiude il turno viene quindi
-    /// risvegliato al prossimo evento, non a ogni turno.
+    /// Decide se svegliare l'orchestratore `tab`: ci sono eventi azionabili
+    /// in coda (`started` e `fact` no: li consegna il prossimo
+    /// `wait_for_events`), non sta aspettando, il suo ultimo hook e'
+    /// `finished` (idle al prompt: con `needs-input` il testo finirebbe in un
+    /// dialogo di permesso) e, se l'abbiamo gia' svegliato, sono arrivati
+    /// eventi azionabili nuovi da allora. Un orchestratore che ignora il
+    /// risveglio e chiude il turno viene quindi risvegliato al prossimo
+    /// evento, non a ogni turno.
     fn check_wake(&mut self, tab: &str) {
         let idle = self.last_hook.get(tab).map(String::as_str) == Some("finished");
         let Some(q) = self.queues.get_mut(tab) else {
             return;
         };
-        let Some(last_seq) = q.events.back().map(|e| e.seq) else {
+        let Some(last_seq) = q.events.iter().rev().find(|e| e.kind.is_actionable()).map(|e| e.seq)
+        else {
             return;
         };
         if q.waiting > 0 || !idle || (q.wake_pending && last_seq <= q.woke_seq) {
@@ -531,11 +563,16 @@ impl Registry {
     fn worker_activity(&mut self, session: &str) -> Result<&mut Worker, String> {
         let w = self.worker_mut(session)?;
         if w.status == WorkerStatus::Closed || !w.tab_open {
-            return Err("la sessione e' chiusa".to_string());
+            return Err("the session is closed".to_string());
         }
         // Un'azione del worker prova che sta lavorando.
-        if matches!(w.status, WorkerStatus::NeedsInput | WorkerStatus::Idle | WorkerStatus::Starting)
-        {
+        if matches!(
+            w.status,
+            WorkerStatus::NeedsInput
+                | WorkerStatus::Idle
+                | WorkerStatus::Starting
+                | WorkerStatus::Background
+        ) {
             w.status = WorkerStatus::Running;
         }
         w.help_pending = false;
@@ -545,7 +582,7 @@ impl Registry {
 
     /// `report_fact`.
     pub fn report_fact(&mut self, session: &str, text: &str, now: i64) -> Result<(), String> {
-        let text = req_text("testo", text, MESSAGE_MAX)?;
+        let text = req_text("text", text, MESSAGE_MAX)?;
         let w = self.worker_activity(session)?;
         w.last_report = Some(clip_chars(&text, LAST_REPORT_MAX));
         self.push_event(session, EventKind::Fact, Some(text), now);
@@ -556,7 +593,7 @@ impl Registry {
     /// `request_help`: lo stato diventa `needs_input` finche' non arriva la
     /// risposta (o il worker riprende da solo).
     pub fn request_help(&mut self, session: &str, question: &str, now: i64) -> Result<(), String> {
-        let q = req_text("domanda", question, MESSAGE_MAX)?;
+        let q = req_text("question", question, MESSAGE_MAX)?;
         let w = self.worker_activity(session)?;
         w.status = WorkerStatus::NeedsInput;
         w.help_pending = true;
@@ -575,8 +612,8 @@ impl Registry {
         now: i64,
     ) -> Result<bool, String> {
         let status = WorkerStatus::from_final(status)
-            .ok_or_else(|| "status non valido (usa completed, failed o blocked)".to_string())?;
-        let summary = req_text("riassunto", summary, SUMMARY_MAX)?;
+            .ok_or_else(|| "invalid status (use completed, failed or blocked)".to_string())?;
+        let summary = req_text("summary", summary, SUMMARY_MAX)?;
         let w = self.worker_activity(session)?;
         w.status = status;
         w.last_report = Some(clip_chars(&summary, LAST_REPORT_MAX));
@@ -599,11 +636,12 @@ impl Registry {
     pub fn send_message(&mut self, orch: &str, session: &str, now: i64) -> Result<(), String> {
         let w = self.owned_worker(orch, session)?;
         if !w.tab_open || w.status == WorkerStatus::Closed {
-            return Err("la sessione e' chiusa".to_string());
+            return Err("the session is closed".to_string());
         }
         let resumes = matches!(
             w.status,
             WorkerStatus::NeedsInput
+                | WorkerStatus::Background
                 | WorkerStatus::Idle
                 | WorkerStatus::Completed
                 | WorkerStatus::Failed
@@ -627,7 +665,7 @@ impl Registry {
     pub fn close_session(&mut self, orch: &str, session: &str, now: i64) -> Result<(), String> {
         let w = self.owned_worker(orch, session)?;
         if !w.tab_open {
-            return Err("la sessione e' gia' chiusa".to_string());
+            return Err("the session is already closed".to_string());
         }
         if let Some(w) = self.workers.get_mut(session) {
             if !w.status.is_terminal() {
@@ -673,37 +711,60 @@ impl Registry {
 
     /// Evento di un hook con token valido. Per i worker genera gli eventi
     /// derivati; per ogni tab ricorda l'ultimo hook (decide il risveglio).
-    pub fn on_hook(&mut self, tab: &str, event: &str, message: Option<&str>, now: i64) {
+    /// Ritorna `Some(motivo)` se lo Stop hook va bloccato: il worker ha
+    /// chiuso il turno senza riferire e Claude Code deve proseguire.
+    pub fn on_hook(&mut self, tab: &str, hook: &HookEvent, now: i64) -> Option<String> {
         if self.last_hook.len() > 512 {
             self.last_hook.clear();
         }
-        self.last_hook.insert(tab.to_string(), event.to_string());
+        self.last_hook.insert(tab.to_string(), hook.event.to_string());
         let Some(w) = self.workers.get_mut(tab) else {
             self.check_wake(tab);
-            return;
+            return None;
         };
         let (status, help_pending) = (w.status, w.help_pending);
-        match event {
+        match hook.event {
+            // `idle_prompt` (~60 s dopo la fine del turno) non e' una
+            // richiesta di permesso: il worker non e' fermo su un dialogo.
+            "needs-input" if hook.notification_type == Some("idle_prompt") => {}
             "needs-input"
                 if matches!(
                     status,
-                    WorkerStatus::Starting | WorkerStatus::Running | WorkerStatus::Idle
+                    WorkerStatus::Starting
+                        | WorkerStatus::Running
+                        | WorkerStatus::Background
+                        | WorkerStatus::Idle
                 ) =>
             {
                 w.status = WorkerStatus::NeedsInput;
-                let text = message.map(str::to_string);
+                let text = hook.message.map(str::to_string);
                 self.push_event(tab, EventKind::NeedsInput, text, now);
                 self.touch(tab, now);
             }
             "finished"
                 if matches!(
                     status,
-                    WorkerStatus::Starting | WorkerStatus::Running | WorkerStatus::NeedsInput
+                    WorkerStatus::Starting
+                        | WorkerStatus::Running
+                        | WorkerStatus::Background
+                        | WorkerStatus::NeedsInput
                 ) && !help_pending =>
             {
-                w.status = WorkerStatus::Idle;
-                self.push_event(tab, EventKind::StoppedWithoutReport, None, now);
-                self.touch(tab, now);
+                // Lavoro in background attivo: Claude Code riprende da solo.
+                if hook.background_work.is_some_and(|n| n > 0) {
+                    if status != WorkerStatus::Background {
+                        w.status = WorkerStatus::Background;
+                        self.touch(tab, now);
+                    }
+                } else if hook.stop_hook_active != Some(true) {
+                    // Prima volta senza report: si fa proseguire il turno.
+                    return Some(STOP_BLOCK_REASON.to_string());
+                } else {
+                    // Gia' sollecitato e ancora nessun report: abbandono.
+                    w.status = WorkerStatus::Idle;
+                    self.push_event(tab, EventKind::StoppedWithoutReport, None, now);
+                    self.touch(tab, now);
+                }
             }
             "session-end" if !status.is_terminal() => {
                 w.status = WorkerStatus::Closed;
@@ -712,6 +773,7 @@ impl Registry {
             }
             _ => {}
         }
+        None
     }
 
     /// Il tab del worker non esiste piu' (chiuso dall'utente, dall'app o
@@ -783,7 +845,7 @@ pub fn resolve_permission(
         None => Ok(max),
         Some(m) if m.rank() <= max.rank() => Ok(m),
         Some(m) => Err(format!(
-            "permission_mode '{}' non consentito: il massimo per questo workspace e' '{}' (si cambia nelle impostazioni del workspace in cli-companion)",
+            "permission_mode '{}' is not allowed: the maximum for this workspace is '{}' (the user changes it in the workspace settings in cli-companion)",
             m.as_str(),
             max.as_str()
         )),
@@ -795,12 +857,12 @@ fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.as_str())),
-        Some(_) => Err(format!("{key} deve essere una stringa")),
+        Some(_) => Err(format!("{key} must be a string")),
     }
 }
 
 fn req_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
-    opt_str(p, key)?.ok_or_else(|| format!("{key} mancante"))
+    opt_str(p, key)?.ok_or_else(|| format!("{key} is missing"))
 }
 
 /// Titolo di ripiego: le prime parole del task.
@@ -819,13 +881,13 @@ fn valid_model(m: &str) -> bool {
 pub fn parse_spawn_params(p: &Value) -> Result<SpawnParams, String> {
     if p.get("workspace").is_some_and(|v| !v.is_null()) {
         return Err(
-            "workspace non ammesso: il worker si apre nel workspace dell'orchestratore".to_string(),
+            "workspace is not allowed: the worker opens in the orchestrator's workspace".to_string(),
         );
     }
     let task = req_text("task", req_str(p, "task")?, TASK_MAX)?;
     let title = match opt_str(p, "title")?.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) if t.chars().count() > TITLE_MAX => {
-            return Err(format!("title troppo lungo (max {TITLE_MAX} caratteri)"))
+            return Err(format!("title is too long (max {TITLE_MAX} characters)"))
         }
         Some(t) => t.to_string(),
         None => default_title(&task),
@@ -837,7 +899,7 @@ pub fn parse_spawn_params(p: &Value) -> Result<SpawnParams, String> {
         .to_string();
     let cwd = match opt_str(p, "cwd")?.map(str::trim).filter(|c| !c.is_empty()) {
         Some(c) if c.chars().count() > CWD_MAX || c.chars().any(char::is_control) => {
-            return Err("cwd non valido".to_string())
+            return Err("invalid cwd".to_string())
         }
         Some(c) => Some(c.to_string()),
         None => None,
@@ -845,12 +907,12 @@ pub fn parse_spawn_params(p: &Value) -> Result<SpawnParams, String> {
     let permission_mode = match opt_str(p, "permission_mode")? {
         None => None,
         Some(m) => Some(PermissionMode::parse(m).ok_or_else(|| {
-            "permission_mode non valido (usa default, accept-edits, plan o bypass)".to_string()
+            "invalid permission_mode (use default, accept-edits, plan or bypass)".to_string()
         })?),
     };
     let model = match opt_str(p, "model")?.map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) if !valid_model(m) => {
-            return Err("model non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string())
+            return Err("invalid model (only letters, digits, '.', '_' and '-', max 64)".to_string())
         }
         Some(m) => Some(m.to_string()),
         None => None,
@@ -858,7 +920,7 @@ pub fn parse_spawn_params(p: &Value) -> Result<SpawnParams, String> {
     let keep_open = match p.get("keep_open") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
-        Some(_) => return Err("keep_open deve essere un booleano".to_string()),
+        Some(_) => return Err("keep_open must be a boolean".to_string()),
     };
     Ok(SpawnParams {
         task,
@@ -1030,7 +1092,7 @@ fn session_param(p: &Value) -> Result<String, String> {
     if is_valid_tab_id(s) {
         Ok(s.to_string())
     } else {
-        Err("session non valido".to_string())
+        Err("invalid session".to_string())
     }
 }
 
@@ -1039,7 +1101,7 @@ fn parse_wait_secs(p: &Value) -> Result<u64, String> {
         None | Some(Value::Null) => Ok(DEFAULT_WAIT_SECS),
         Some(v) => match v.as_u64() {
             Some(n) if (1..=MAX_WAIT_SECS).contains(&n) => Ok(n),
-            _ => Err(format!("timeout_secs deve essere tra 1 e {MAX_WAIT_SECS}")),
+            _ => Err(format!("timeout_secs must be between 1 and {MAX_WAIT_SECS}")),
         },
     }
 }
@@ -1055,14 +1117,14 @@ pub fn dispatch<H: Host>(
     alive: &dyn Fn() -> bool,
 ) -> Result<Value, String> {
     if !(params.is_null() || params.is_object()) {
-        return Err("params deve essere un oggetto".to_string());
+        return Err("params must be an object".to_string());
     }
     let role = st.inner.lock().unwrap().role(session);
     if ORCHESTRATOR_METHODS.contains(&method) && role != Role::Orchestrator {
-        return Err(format!("{method} e' riservato all'orchestratore"));
+        return Err(format!("{method} is reserved for the orchestrator"));
     }
     if WORKER_METHODS.contains(&method) && role != Role::Worker {
-        return Err(format!("{method} e' riservato alle sessioni automatiche"));
+        return Err(format!("{method} is reserved for automated sessions"));
     }
     let now = now_millis();
     match method {
@@ -1123,7 +1185,7 @@ pub fn dispatch<H: Host>(
             let closing = st.run(host, |r| r.complete_task(session, status, summary, now))?;
             Ok(json!({ "closing": closing }))
         }
-        _ => Err(format!("metodo sconosciuto: {method}")),
+        _ => Err(format!("unknown method: {method}")),
     }
 }
 
@@ -1139,19 +1201,19 @@ fn rpc_spawn<H: Host>(
     // Il worker si apre sempre nel workspace dell'orchestratore.
     let ws = &host
         .tab_workspace(orch)
-        .ok_or_else(|| "workspace dell'orchestratore non trovato".to_string())?;
+        .ok_or_else(|| "the orchestrator's workspace was not found".to_string())?;
     if let Some(cwd) = &p.cwd {
         if !cwd_is_absolute(&ws.kind, cwd) {
-            return Err("cwd deve essere un percorso assoluto nell'ambiente del workspace".to_string());
+            return Err("cwd must be an absolute path in the workspace's environment".to_string());
         }
         if !cwd_inside_workspace(&ws.kind, &ws.path, cwd) {
             return Err(format!(
-                "cwd deve stare dentro il workspace ({}); per i git worktree usa una sottocartella, es. .worktrees/",
+                "cwd must be inside the workspace ({}); for git worktrees use a subfolder, e.g. .worktrees/",
                 ws.path
             ));
         }
         if !host.dir_exists(ws, cwd) {
-            return Err(format!("cartella non trovata: {cwd}"));
+            return Err(format!("folder not found: {cwd}"));
         }
     }
     let permission_mode = resolve_permission(p.permission_mode, ws.worker_permission_mode())?;
@@ -1253,15 +1315,22 @@ pub fn handle_rpc(app: &AppHandle, req: &RpcRequest, alive: &dyn Fn() -> bool) -
     ))
 }
 
-/// Evento di un hook con token valido (vedi `agent_notify`).
-pub fn on_hook_event(app: &AppHandle, payload: &crate::agent_notify::NotifyPayload) {
-    let Some(tab) = payload.tab_id.as_deref() else {
-        return;
+/// Evento di un hook con token valido (vedi `agent_notify`). Ritorna il
+/// motivo di blocco se lo Stop hook di un worker va fatto proseguire.
+pub fn on_hook_event(
+    app: &AppHandle,
+    payload: &crate::agent_notify::NotifyPayload,
+) -> Option<String> {
+    let tab = payload.tab_id.as_deref()?;
+    let hook = HookEvent {
+        event: &payload.event,
+        notification_type: payload.notification_type.as_deref(),
+        message: payload.message.as_deref(),
+        stop_hook_active: payload.stop_hook_active,
+        background_work: payload.background_work,
     };
     let st = app.state::<AutomationState>();
-    st.run(&TauriHost(app.clone()), |r| {
-        r.on_hook(tab, &payload.event, payload.message.as_deref(), now_millis())
-    });
+    st.run(&TauriHost(app.clone()), |r| r.on_hook(tab, &hook, now_millis()))
 }
 
 /// Il frontend ha chiuso un tab automatico (utente, app o shell uscita).
@@ -1310,6 +1379,26 @@ mod tests {
 
     fn kinds(events: &[Event]) -> Vec<EventKind> {
         events.iter().map(|e| e.kind).collect()
+    }
+
+    /// Hook semplice (senza dati dello Stop hook).
+    fn hook(r: &mut Registry, tab: &str, event: &str, message: Option<&str>, now: i64) -> Option<String> {
+        r.on_hook(tab, &HookEvent { event, message, ..Default::default() }, now)
+    }
+
+    /// Stop hook di un worker con i dati di Claude Code.
+    fn stop(r: &mut Registry, tab: &str, active: Option<bool>, background: Option<u32>, now: i64) -> Option<String> {
+        let ev = HookEvent {
+            event: "finished",
+            stop_hook_active: active,
+            background_work: background,
+            ..Default::default()
+        };
+        r.on_hook(tab, &ev, now)
+    }
+
+    fn status_of(r: &Registry) -> WorkerStatus {
+        r.list_sessions(ORCH)[0].status
     }
 
     #[test]
@@ -1481,19 +1570,26 @@ mod tests {
         let w = spawn(&mut r, "uno");
         r.get_task(&w, 1).unwrap();
         r.drain(ORCH);
-        r.on_hook(&w, "needs-input", Some("serve un permesso"), 2);
+        hook(&mut r, &w, "needs-input", Some("serve un permesso"), 2);
         // Ripetuto: nessun duplicato.
-        r.on_hook(&w, "needs-input", Some("serve un permesso"), 3);
-        r.on_hook(&w, "finished", None, 4);
+        hook(&mut r, &w, "needs-input", Some("serve un permesso"), 3);
+        // Primo Stop senza report: si blocca (nessun evento); il secondo,
+        // con `stop_hook_active`, e' un abbandono.
+        assert_eq!(stop(&mut r, &w, None, None, 4).as_deref(), Some(STOP_BLOCK_REASON));
+        assert_eq!(stop(&mut r, &w, Some(false), Some(0), 4).as_deref(), Some(STOP_BLOCK_REASON));
+        assert_eq!(stop(&mut r, &w, Some(true), None, 4), None);
         let ev = r.drain(ORCH);
         assert_eq!(kinds(&ev), vec![EventKind::NeedsInput, EventKind::StoppedWithoutReport]);
         assert_eq!(ev[0].text.as_deref(), Some("serve un permesso"));
         assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Idle);
-        r.on_hook(&w, "session-end", None, 5);
+        // Idle: altri Stop non fanno nulla.
+        assert_eq!(stop(&mut r, &w, None, None, 4), None);
+        assert!(r.drain(ORCH).is_empty());
+        hook(&mut r, &w, "session-end", None, 5);
         assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::Exited]);
         assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Closed);
         // Dopo la chiusura nessun altro evento, nemmeno da tab_closed.
-        r.on_hook(&w, "finished", None, 6);
+        hook(&mut r, &w, "finished", None, 6);
         r.tab_closed(&w, 7);
         assert!(r.drain(ORCH).is_empty());
     }
@@ -1506,25 +1602,154 @@ mod tests {
         r.request_help(&w, "aiuto", 2).unwrap();
         r.drain(ORCH);
         // Lo Stop che segue request_help non e' un abbandono.
-        r.on_hook(&w, "finished", None, 3);
+        hook(&mut r, &w, "finished", None, 3);
         assert!(r.drain(ORCH).is_empty());
         assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::NeedsInput);
         r.report_fact(&w, "ok", 4).unwrap();
         r.complete_task(&w, "completed", "fine", 5).unwrap();
         r.drain(ORCH);
-        r.on_hook(&w, "finished", None, 6);
-        r.on_hook(&w, "needs-input", None, 7);
-        r.on_hook(&w, "session-end", None, 8);
+        hook(&mut r, &w, "finished", None, 6);
+        hook(&mut r, &w, "needs-input", None, 7);
+        hook(&mut r, &w, "session-end", None, 8);
         assert!(r.drain(ORCH).is_empty());
         assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Completed);
     }
 
     #[test]
-    fn stop_before_get_task_is_reported() {
+    fn stop_before_get_task_is_nudged_then_reported() {
         let mut r = Registry::default();
         let w = spawn(&mut r, "uno");
-        r.on_hook(&w, "finished", None, 1);
+        assert!(stop(&mut r, &w, None, None, 1).is_some());
+        assert!(r.drain(ORCH).is_empty());
+        assert_eq!(status_of(&r), WorkerStatus::Starting);
+        assert!(stop(&mut r, &w, Some(true), None, 2).is_none());
         assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::StoppedWithoutReport]);
+    }
+
+    #[test]
+    fn stop_with_background_work_moves_to_background_quietly() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        r.drain(ORCH);
+        r.take_effects();
+        assert_eq!(stop(&mut r, &w, None, Some(2), 2), None);
+        assert_eq!(status_of(&r), WorkerStatus::Background);
+        assert!(r.drain(ORCH).is_empty());
+        // Update emesso per la UI, con lo stato serializzato "background".
+        let fx = r.take_effects();
+        let info = fx.iter().find_map(|e| match e {
+            Effect::Update(i) => Some(i.clone()),
+            _ => None,
+        });
+        let info = info.unwrap();
+        assert_eq!(info.status, WorkerStatus::Background);
+        assert_eq!(serde_json::to_value(&info).unwrap()["status"], "background");
+        // Un secondo Stop ancora in background: nessun nuovo update.
+        stop(&mut r, &w, Some(true), Some(1), 3);
+        assert!(r.take_effects().is_empty());
+        // Finito il background senza report: sollecito, poi abbandono.
+        assert!(stop(&mut r, &w, None, Some(0), 4).is_some());
+        assert_eq!(status_of(&r), WorkerStatus::Background);
+        assert!(stop(&mut r, &w, Some(true), Some(0), 5).is_none());
+        assert_eq!(status_of(&r), WorkerStatus::Idle);
+        assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::StoppedWithoutReport]);
+    }
+
+    #[test]
+    fn background_resumes_on_activity_message_and_close() {
+        // Attivita' del worker: torna running.
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        stop(&mut r, &w, None, Some(1), 2);
+        r.report_fact(&w, "ancora vivo", 3).unwrap();
+        assert_eq!(status_of(&r), WorkerStatus::Running);
+        // Messaggio dell'orchestratore: torna running.
+        stop(&mut r, &w, None, Some(1), 4);
+        assert_eq!(status_of(&r), WorkerStatus::Background);
+        r.send_message(ORCH, &w, 5).unwrap();
+        assert_eq!(status_of(&r), WorkerStatus::Running);
+        // Permesso richiesto mentre e' in background.
+        stop(&mut r, &w, None, Some(1), 6);
+        hook(&mut r, &w, "needs-input", Some("permesso"), 7);
+        assert_eq!(status_of(&r), WorkerStatus::NeedsInput);
+        // complete_task da background.
+        stop(&mut r, &w, None, Some(1), 8);
+        r.complete_task(&w, "completed", "fatto", 9).unwrap();
+        assert_eq!(status_of(&r), WorkerStatus::Completed);
+        // Chiusura da background: closed senza evento exited di rimbalzo.
+        let w2 = spawn(&mut r, "due");
+        r.get_task(&w2, 10).unwrap();
+        r.drain(ORCH);
+        stop(&mut r, &w2, None, Some(1), 11);
+        r.close_session(ORCH, &w2, 12).unwrap();
+        r.tab_closed(&w2, 13);
+        assert!(r.drain(ORCH).is_empty());
+        let st2 = r.list_sessions(ORCH).into_iter().find(|x| x.session == w2).unwrap().status;
+        assert_eq!(st2, WorkerStatus::Closed);
+        // Il tab si chiude con il worker in background: exited.
+        let w3 = spawn(&mut r, "tre");
+        r.get_task(&w3, 14).unwrap();
+        r.drain(ORCH);
+        stop(&mut r, &w3, None, Some(1), 15);
+        r.tab_closed(&w3, 16);
+        assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::Exited]);
+    }
+
+    #[test]
+    fn idle_prompt_notification_is_ignored_for_workers() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        r.drain(ORCH);
+        let idle = HookEvent {
+            event: "needs-input",
+            notification_type: Some("idle_prompt"),
+            message: Some("Claude is waiting for your input"),
+            ..Default::default()
+        };
+        assert_eq!(r.on_hook(&w, &idle, 2), None);
+        assert_eq!(status_of(&r), WorkerStatus::Running);
+        assert!(r.drain(ORCH).is_empty());
+        // permission_prompt / elicitation_dialog: come prima.
+        for (i, nt) in ["permission_prompt", "elicitation_dialog"].into_iter().enumerate() {
+            let mut r = Registry::default();
+            let w = spawn(&mut r, "x");
+            r.get_task(&w, 1).unwrap();
+            r.drain(ORCH);
+            let ev = HookEvent { event: "needs-input", notification_type: Some(nt), ..Default::default() };
+            r.on_hook(&w, &ev, 2 + i as i64);
+            assert_eq!(status_of(&r), WorkerStatus::NeedsInput, "{nt}");
+            assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::NeedsInput]);
+        }
+    }
+
+    #[test]
+    fn model_facing_texts_are_english_and_prompt_is_shell_safe() {
+        assert!(BOOTSTRAP_PROMPT.is_ascii());
+        let unsafe_char = |c: char| matches!(c, '"' | '$' | '`' | '%' | '!' | '\\') || c.is_control();
+        assert!(!BOOTSTRAP_PROMPT.chars().any(unsafe_char));
+        assert!(BOOTSTRAP_PROMPT.contains("get_task"));
+        assert!(WAKE_TEXT.contains("wait_for_events"));
+        assert!(WORKER_INSTRUCTIONS.contains("complete_task"));
+        assert!(WORKER_INSTRUCTIONS.contains("Background commands are fine"));
+    }
+
+    #[test]
+    fn nudge_reason_is_english_and_stop_with_help_is_quiet() {
+        assert!(STOP_BLOCK_REASON.contains("complete_task") && STOP_BLOCK_REASON.contains("request_help"));
+        assert!(STOP_BLOCK_REASON.contains("background"));
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        r.request_help(&w, "aiuto", 2).unwrap();
+        // Con una richiesta di aiuto pendente non si sollecita ne' si riferisce.
+        assert_eq!(stop(&mut r, &w, None, None, 3), None);
+        assert_eq!(stop(&mut r, &w, Some(true), None, 4), None);
+        assert_eq!(status_of(&r), WorkerStatus::NeedsInput);
+        // Un orchestratore (non worker) non riceve mai un blocco.
+        assert_eq!(stop(&mut r, ORCH, None, None, 5), None);
     }
 
     #[test]
@@ -1570,23 +1795,84 @@ mod tests {
         let w = spawn(&mut r, "uno");
         r.get_task(&w, 1).unwrap(); // nessun hook di ORCH: niente risveglio
         assert_eq!(wakes(&mut r), 0);
-        r.on_hook(ORCH, "finished", None, 2);
-        // Evento + O idle: un solo risveglio, non ripetuto.
-        r.report_fact(&w, "a", 3).unwrap();
+        hook(&mut r, ORCH, "finished", None, 2);
+        // `started` e `fact` si accodano ma non svegliano.
+        r.report_fact(&w, "f", 2).unwrap();
+        assert_eq!(wakes(&mut r), 0);
+        // Evento azionabile + O idle: un solo risveglio, non ripetuto.
+        r.request_help(&w, "a", 3).unwrap();
         assert_eq!(wakes(&mut r), 1);
-        r.report_fact(&w, "b", 4).unwrap();
+        r.request_help(&w, "b", 4).unwrap();
         assert_eq!(wakes(&mut r), 0);
         // Rientra in wait_for_events: il flag si azzera, e mentre aspetta
         // non si sveglia.
         r.begin_wait(ORCH);
-        r.report_fact(&w, "c", 5).unwrap();
+        r.request_help(&w, "c", 5).unwrap();
         assert_eq!(wakes(&mut r), 0);
-        assert_eq!(r.drain(ORCH).len(), 4);
+        // started + fact + 3 help_request: la coda consegna anche i non azionabili.
+        assert_eq!(r.drain(ORCH).len(), 5);
         r.end_wait(ORCH);
         // Sta elaborando gli eventi: niente risveglio finche' non torna idle.
-        r.report_fact(&w, "d", 6).unwrap();
+        r.request_help(&w, "d", 6).unwrap();
         assert_eq!(wakes(&mut r), 0);
-        r.on_hook(ORCH, "finished", None, 7);
+        hook(&mut r, ORCH, "finished", None, 7);
+        assert_eq!(wakes(&mut r), 1);
+    }
+
+    #[test]
+    fn non_actionable_events_never_wake_nor_block_a_later_wake() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        hook(&mut r, ORCH, "finished", None, 1);
+        r.get_task(&w, 2).unwrap();
+        r.report_fact(&w, "a", 3).unwrap();
+        // Anche un nuovo `finished` di O con soli started/fact in coda: nulla.
+        hook(&mut r, ORCH, "finished", None, 4);
+        assert_eq!(wakes(&mut r), 0);
+        // Un evento azionabile sveglia, e i fact accodati dopo non ne
+        // provocano un altro.
+        r.complete_task(&w, "completed", "fatto", 5).unwrap();
+        assert_eq!(wakes(&mut r), 1);
+        hook(&mut r, ORCH, "finished", None, 6);
+        assert_eq!(wakes(&mut r), 0);
+        // Ogni tipo azionabile sveglia.
+        for (i, (kind, expect)) in [
+            (EventKind::Started, false),
+            (EventKind::Fact, false),
+            (EventKind::HelpRequest, true),
+            (EventKind::Completed, true),
+            (EventKind::NeedsInput, true),
+            (EventKind::StoppedWithoutReport, true),
+            (EventKind::Exited, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(kind.is_actionable(), expect, "{kind:?} ({i})");
+        }
+    }
+
+    #[test]
+    fn stopped_without_report_and_exited_wake_the_orchestrator() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        hook(&mut r, ORCH, "finished", None, 2);
+        assert_eq!(wakes(&mut r), 0);
+        stop(&mut r, &w, None, None, 3); // sollecito: nessun evento
+        assert_eq!(wakes(&mut r), 0);
+        stop(&mut r, &w, Some(true), None, 4);
+        assert_eq!(wakes(&mut r), 1);
+        // Stop con lavoro in background: nessun evento, nessun risveglio.
+        let w2 = spawn(&mut r, "due");
+        r.get_task(&w2, 5).unwrap();
+        r.drain(ORCH);
+        r.begin_wait(ORCH);
+        r.end_wait(ORCH);
+        hook(&mut r, ORCH, "finished", None, 6);
+        stop(&mut r, &w2, None, Some(1), 7);
+        assert_eq!(wakes(&mut r), 0);
+        r.tab_closed(&w2, 8);
         assert_eq!(wakes(&mut r), 1);
     }
 
@@ -1594,15 +1880,19 @@ mod tests {
     fn ignored_wake_repeats_only_for_newer_events() {
         let mut r = Registry::default();
         let w = spawn(&mut r, "uno");
-        r.on_hook(ORCH, "finished", None, 1);
+        hook(&mut r, ORCH, "finished", None, 1);
         r.get_task(&w, 2).unwrap();
+        r.request_help(&w, "a", 3).unwrap();
         assert_eq!(wakes(&mut r), 1);
         // O chiude il turno senza chiamare wait_for_events: nessun evento
         // nuovo, nessun nuovo risveglio (niente spam a ogni turno).
-        r.on_hook(ORCH, "finished", None, 3);
+        hook(&mut r, ORCH, "finished", None, 4);
         assert_eq!(wakes(&mut r), 0);
-        // Un evento nuovo con O idle: si risveglia di nuovo.
-        r.report_fact(&w, "a", 4).unwrap();
+        // Un fact nuovo non conta; un evento azionabile nuovo con O idle si'.
+        r.report_fact(&w, "x", 5).unwrap();
+        hook(&mut r, ORCH, "finished", None, 6);
+        assert_eq!(wakes(&mut r), 0);
+        r.request_help(&w, "b", 7).unwrap();
         assert_eq!(wakes(&mut r), 1);
     }
 
@@ -1610,17 +1900,18 @@ mod tests {
     fn no_wake_while_orchestrator_waits_on_permission() {
         let mut r = Registry::default();
         let w = spawn(&mut r, "uno");
-        r.on_hook(ORCH, "needs-input", Some("permesso"), 1);
+        hook(&mut r, ORCH, "needs-input", Some("permesso"), 1);
         r.get_task(&w, 2).unwrap();
+        r.request_help(&w, "a", 2).unwrap();
         assert_eq!(wakes(&mut r), 0);
         // Risolto il permesso, O finisce il turno: ora si sveglia.
-        r.on_hook(ORCH, "finished", None, 3);
+        hook(&mut r, ORCH, "finished", None, 3);
         assert_eq!(wakes(&mut r), 1);
         // Senza eventi in coda, un finished non sveglia nessuno.
         r.drain(ORCH);
         r.begin_wait(ORCH);
         r.end_wait(ORCH);
-        r.on_hook(ORCH, "finished", None, 4);
+        hook(&mut r, ORCH, "finished", None, 4);
         assert_eq!(wakes(&mut r), 0);
     }
 
@@ -1716,8 +2007,8 @@ mod tests {
                     assert_eq!(r, Ok(req), "{req:?} <= {max:?}");
                 } else {
                     let e = r.unwrap_err();
-                    assert!(e.contains(&format!("'{}' non consentito", req.as_str())), "{e}");
-                    assert!(e.contains(&format!("e' '{}'", max.as_str())), "{e}");
+                    assert!(e.contains(&format!("'{}' is not allowed", req.as_str())), "{e}");
+                    assert!(e.contains(&format!("maximum for this workspace is '{}'", max.as_str())), "{e}");
                 }
             }
         }
@@ -1787,7 +2078,7 @@ mod tests {
         }
         fn launch_command(&self, agent: &str, env_kind: &str, req: &AutomationRequest) -> Result<String, String> {
             if agent != "claude-code" {
-                return Err(format!("agente sconosciuto: {agent}"));
+                return Err(format!("unknown agent: {agent}"));
             }
             Ok(format!("fake {env_kind} {:?} {}", req.permission_mode, req.bootstrap_prompt))
         }
@@ -1832,23 +2123,23 @@ mod tests {
 
         // Validazioni dello spawn.
         let err = call(&st, &h, ORCH, "spawn_session", json!({"workspace":"Proj","task":"t"})).unwrap_err();
-        assert!(err.contains("workspace non ammesso"), "{err}");
+        assert!(err.contains("workspace is not allowed"), "{err}");
         assert!(call(&st, &h, ORCH, "spawn_session", json!({"task":"t","agent":"altro"})).is_err());
         assert!(call(&st, &h, ORCH, "spawn_session", json!({"task":"t","cwd":"rel"})).is_err());
         assert!(call(&st, &h, ORCH, "spawn_session", json!({"task":"t","cwd":"C:\\p\\manca"})).is_err());
         // Fuori dal workspace: anche se la cartella esiste.
         for cwd in ["C:\\esiste", "C:\\p2\\esiste", "C:\\p\\..\\esiste"] {
             let err = call(&st, &h, ORCH, "spawn_session", json!({"task":"t","cwd":cwd})).unwrap_err();
-            assert!(err.contains("dentro il workspace"), "{cwd}: {err}");
+            assert!(err.contains("inside the workspace"), "{cwd}: {err}");
         }
         let err = call(&st, &h, "orch-wsl", "spawn_session", json!({"task":"t","cwd":"/home/u2/esiste"})).unwrap_err();
-        assert!(err.contains("dentro il workspace"), "{err}");
+        assert!(err.contains("inside the workspace"), "{err}");
         // Orchestratore senza workspace noto.
         let err = call(&st, &h, "orch-2", "spawn_session", json!({"task":"t"})).unwrap_err();
-        assert_eq!(err, "workspace dell'orchestratore non trovato");
+        assert_eq!(err, "the orchestrator's workspace was not found");
         // Piu' permissivo del tetto del workspace (accept-edits): rifiutato.
         let err = call(&st, &h, ORCH, "spawn_session", json!({"task":"t","permission_mode":"bypass"})).unwrap_err();
-        assert!(err.contains("non consentito"), "{err}");
+        assert!(err.contains("is not allowed"), "{err}");
         assert!(h.log().is_empty());
 
         // Senza permission_mode: il tetto del workspace.
@@ -1877,7 +2168,7 @@ mod tests {
         .unwrap();
         let w = r["session"].as_str().unwrap().to_string();
         assert_eq!(r["title"], "fai X");
-        assert!(h.log()[0].starts_with(&format!("spawn:{w}:fake windows Plan Sei una sessione")));
+        assert!(h.log()[0].starts_with(&format!("spawn:{w}:fake windows Plan You are an automated")));
 
         // Il worker e' un worker: whoami lo dice e i metodi orchestratore falliscono.
         assert_eq!(call(&st, &h, &w, "whoami", json!({})).unwrap()["role"], "worker");
@@ -1952,8 +2243,8 @@ mod tests {
         assert_eq!(gone.len(), 1); // gli eventi gia' presenti vengono comunque consegnati
         assert!(st.wait_for_events(ORCH, Duration::from_secs(30), &|| false).is_empty());
         // Dopo l'attesa il contatore e' tornato a zero: il risveglio e' di nuovo possibile.
-        st.run(&h, |r| r.on_hook(ORCH, "finished", None, 7));
-        st.run(&h, |r| r.report_fact(&w, "y", 8)).unwrap();
+        st.run(&h, |r| hook(r, ORCH, "finished", None, 7));
+        st.run(&h, |r| r.request_help(&w, "y", 8)).unwrap();
         assert!(h.log().iter().any(|l| l.contains("200~") && l.contains("wait_for_events")));
     }
 
@@ -1962,8 +2253,8 @@ mod tests {
         let st = AutomationState::default();
         let h = FakeHost::default();
         let w = st.run(&h, |r| r.spawn(ORCH, new_worker("w"), 1)).unwrap().tab_id;
-        st.run(&h, |r| r.on_hook(ORCH, "finished", None, 2));
-        st.run(&h, |r| r.get_task(&w, 3)).unwrap();
+        st.run(&h, |r| hook(r, ORCH, "finished", None, 2));
+        st.run(&h, |r| r.request_help(&w, "q", 3)).unwrap();
         let log = h.log();
         let paste = log.iter().position(|l| l.starts_with(&format!("write:{ORCH}:")) && l.contains("200~")).unwrap();
         assert!(log[paste].contains("wait_for_events"));

@@ -355,10 +355,11 @@ pub fn automation_command(
     env_kind: &str,
     req: &AutomationRequest,
 ) -> Result<String, String> {
-    let provider = find_provider(agent_id)?;
+    // Errori letti dal modello via RPC: in inglese.
+    let provider = find_provider(agent_id).map_err(|_| format!("unknown agent: {agent_id}"))?;
     provider
         .automation_command(env_kind, req)
-        .ok_or_else(|| format!("{} non supporta le sessioni automatiche", provider.display_name()))
+        .ok_or_else(|| format!("{} does not support automated sessions", provider.display_name()))
 }
 
 /// Agenti che supportano le sessioni automatiche, come (id, nome).

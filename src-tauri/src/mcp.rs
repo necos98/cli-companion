@@ -61,7 +61,7 @@ impl Server {
         let role = match v.get("role").and_then(Value::as_str) {
             Some("orchestrator") => Role::Orchestrator,
             Some("worker") => Role::Worker,
-            _ => return Err("ruolo sconosciuto nella risposta di whoami".to_string()),
+            _ => return Err("unknown role in the whoami response".to_string()),
         };
         self.workspace = v.get("workspace").and_then(|w| {
             let field = |k: &str| w.get(k).and_then(Value::as_str);
@@ -98,100 +98,104 @@ fn orchestrator_tools() -> Vec<Value> {
     vec![
         tool(
             "list_agents",
-            "Elenca i coding agent che possono essere avviati come sessioni automatiche (id e nome). \
-             L'id va nel parametro `agent` di spawn_session; il default e' claude-code.",
+            "List the coding agents that can be started as automated sessions (id and name). \
+             The id goes in the `agent` parameter of spawn_session; the default is claude-code.",
             json!({}),
             &[],
         ),
         tool(
             "spawn_session",
-            "Avvia una sessione automatica (worker): cli-companion apre un nuovo tab nel workspace dell'orchestratore \
-             (il tuo: non si sceglie) con un coding agent che esegue il task in autonomia. Torna subito, con l'id della sessione, \
-             senza aspettare che il lavoro finisca. Dopo l'avvio usa wait_for_events in un ciclo per \
-             sapere cosa succede. Il worker comunica con te solo tramite i suoi tool (report_fact, \
-             request_help, complete_task): non leggere il suo terminale. Scrivi il task in modo \
-             autosufficiente, il worker non vede la tua conversazione. Massimo 16 worker attivi per \
-             orchestratore. Isolamento (es. git worktree) e coda di lavoro li decidi tu, anche tramite `cwd`.",
+            "Start an automated session (worker): cli-companion opens a new tab in the orchestrator's workspace \
+             (yours: it cannot be chosen) with a coding agent that carries out the task autonomously. Returns \
+             immediately with the session id, without waiting for the work to finish. After starting, call \
+             wait_for_events in a loop to find out what happens. The worker talks to you only through its \
+             tools (report_fact, request_help, complete_task): do not read its terminal. Write the task so \
+             it is self-contained, since the worker cannot see your conversation. Write the `task` text (and \
+             any later send_message text) in English. At most 16 active workers per orchestrator. You decide \
+             isolation (e.g. git worktrees) and the work queue, also through `cwd`.",
             json!({
                 "task": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100000,
-                    "description": "Istruzioni complete per il worker: obiettivo, file o cartelle coinvolti, vincoli, criteri di successo."
+                    "description": "Complete instructions for the worker, in English: goal, files or folders involved, constraints, success criteria."
                 },
                 "title": {
                     "type": "string",
                     "maxLength": 80,
-                    "description": "Titolo breve mostrato sul tab (default: le prime parole del task)."
+                    "description": "Short title shown on the tab (default: the first words of the task)."
                 },
                 "agent": {
                     "type": "string",
-                    "description": "Id del coding agent (vedi list_agents). Default: claude-code."
+                    "description": "Id of the coding agent (see list_agents). Default: claude-code."
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Cartella di lavoro: percorso assoluto ed esistente, uguale o dentro la cartella del tuo workspace (niente '..'), nel suo ambiente (es. C:\\progetti\\app\\.worktrees\\x oppure /home/utente/app/.worktrees/x per WSL). Per i git worktree usa una sottocartella del workspace, es. .worktrees/. Default: la cartella del workspace."
+                    "description": "Working folder: an existing absolute path, equal to or inside your workspace folder (no '..'), in its environment (e.g. C:\\projects\\app\\.worktrees\\x or /home/user/app/.worktrees/x for WSL). For git worktrees use a subfolder of the workspace, e.g. .worktrees/. Default: the workspace folder."
                 },
                 "permission_mode": {
                     "type": "string",
                     "enum": ["default", "accept-edits", "plan", "bypass"],
-                    "description": "Permessi del worker. Default: l'impostazione del workspace (`worker_permission`, vedi istruzioni). Puoi solo restringerla, mai allargarla: oltre il massimo del workspace la chiamata fallisce. Ordine dal piu' restrittivo: 'plan' (sola lettura), 'default' (chiede conferma per ogni azione: il worker resta fermo in attesa dell'utente), 'accept-edits' (approva le modifiche ai file), 'bypass' (salta tutti i permessi, usalo con cautela). Con 'bypass' al primo avvio Claude Code mostra una finestra di conferma, che non compare solo se in ~/.claude/settings.json c'e' skipDangerousModePermissionPrompt: true."
+                    "description": "Worker permissions. Default: the workspace setting (`worker_permission`, see the instructions). You can only restrict it, never widen it: above the workspace maximum the call fails. From most restrictive: 'plan' (read-only), 'default' (asks for confirmation on every action: the worker stays stuck waiting for the user), 'accept-edits' (approves file edits), 'bypass' (skips all permissions, use with care). With 'bypass' Claude Code shows a confirmation dialog on first start, which does not appear only if ~/.claude/settings.json has skipDangerousModePermissionPrompt: true."
                 },
                 "model": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9._-]{1,64}$",
-                    "description": "Modello da usare (es. sonnet, opus o un id completo). Default: quello del coding agent."
+                    "description": "Model to use (e.g. sonnet, opus or a full id). Default: the coding agent's own."
                 },
                 "keep_open": {
                     "type": "boolean",
-                    "description": "Se true il tab resta aperto anche dopo complete_task (default false: si chiude da solo dopo pochi secondi)."
+                    "description": "If true the tab stays open after complete_task (default false: it closes by itself after a few seconds)."
                 }
             }),
             &["task"],
         ),
         tool(
             "list_sessions",
-            "Elenca le sessioni automatiche avviate da te con il loro stato: starting (task non ancora letto), \
-             running, needs_input (aspetta un permesso o una risposta dell'utente), idle (fermo senza aver \
-             chiamato complete_task), completed, failed, blocked, closed. Include l'ultimo report. \
-             Per le novita' preferisci wait_for_events.",
+            "List the automated sessions you started, with their status: starting (task not read yet), \
+             running, background (turn ended while waiting for a background command: it resumes by itself), \
+             needs_input (waiting for a permission or an answer from the user), idle (stopped without having \
+             called complete_task), completed, failed, blocked, closed. Includes the last report. \
+             For news prefer wait_for_events.",
             json!({}),
             &[],
         ),
         tool(
             "send_message",
-            "Invia un messaggio a una tua sessione automatica: viene scritto nel suo prompt come se lo \
-             digitasse l'utente. Usalo per rispondere a una help_request o per dare nuove istruzioni.",
+            "Send a message to one of your automated sessions: it is typed into its prompt as if the user \
+             wrote it. Use it to answer a help_request or to give new instructions. Write the text in English.",
             json!({
-                "session": { "type": "string", "description": "Id della sessione (da spawn_session o list_sessions)." },
-                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Testo del messaggio." }
+                "session": { "type": "string", "description": "Session id (from spawn_session or list_sessions)." },
+                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Message text, in English." }
             }),
             &["session", "text"],
         ),
         tool(
             "close_session",
-            "Chiude il tab di una tua sessione automatica, anche se non ha finito. Il lavoro in corso va perso.",
+            "Close the tab of one of your automated sessions, even if it has not finished. Work in progress is lost.",
             json!({
-                "session": { "type": "string", "description": "Id della sessione da chiudere." }
+                "session": { "type": "string", "description": "Id of the session to close." }
             }),
             &["session"],
         ),
         tool(
             "wait_for_events",
-            "Attende eventi dalle tue sessioni automatiche e li restituisce (svuotando la coda). Torna subito \
-             se ce ne sono gia', altrimenti blocca fino al primo evento o al timeout (in tal caso `events` e' \
-             vuoto: nessuna novita'). Chiamalo in un ciclo finche' i worker non hanno finito; puo' (e deve) \
-             essere richiamato piu' volte. Ogni evento ha: seq, session, title, kind, text (opzionale), \
-             status del worker, at (unix ms). kind: started (il worker ha letto il task), fact (fatto \
-             riferito), help_request (domanda: rispondi con send_message), completed (esito finale in \
-             text), needs_input (il worker aspetta un permesso dell'utente nel suo tab), \
-             stopped_without_report (si e' fermato senza complete_task), exited (il tab e' stato chiuso).",
+            "Wait for events from your automated sessions and return them (draining the queue). Returns \
+             immediately if there are already some, otherwise blocks until the first event or the timeout \
+             (then `events` is empty: nothing new). Call it in a loop until the workers are done; it can \
+             (and must) be called again many times. Each event has: seq, session, title, kind, text \
+             (optional), worker status, at (unix ms). kind: started (the worker read the task), fact \
+             (reported fact), help_request (question: answer with send_message), completed (final outcome \
+             in text), needs_input (the worker is waiting for a permission from the user in its tab), \
+             stopped_without_report (it stopped without complete_task, even after being nudged), exited \
+             (the tab was closed). Only help_request, completed, needs_input, stopped_without_report and \
+             exited wake you up while you are idle; started and fact are delivered with the next call.",
             json!({
                 "timeout_secs": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_WAIT_SECS,
-                    "description": "Attesa massima in secondi. Default 90. Claude Code sposta in background le chiamate oltre i 2 minuti: tieni il valore sotto i 110 e richiama il tool."
+                    "description": "Maximum wait in seconds. Default 90. Claude Code moves calls longer than 2 minutes to the background: keep the value under 110 and call the tool again."
                 }
             }),
             &[],
@@ -203,47 +207,47 @@ fn worker_tools() -> Vec<Value> {
     vec![
         tool(
             "get_task",
-            "PRIMO passo di ogni sessione automatica: restituisce il task assegnato dall'orchestratore e le \
-             istruzioni di lavoro. Chiamalo subito, prima di fare altro, e segui le istruzioni.",
+            "FIRST step of every automated session: returns the task assigned by the orchestrator and the \
+             working instructions. Call it right away, before doing anything else, and follow the instructions.",
             json!({}),
             &[],
         ),
         tool(
             "report_fact",
-            "Segnala all'orchestratore un fatto utile emerso durante il lavoro (scoperta, decisione presa, \
-             avanzamento importante). Non e' la conclusione: per quella usa complete_task. Nessuno legge \
-             l'output del tuo terminale, quindi tutto cio' che l'orchestratore deve sapere passa da qui.",
+            "Tell the orchestrator about a useful fact that emerged during the work (finding, decision made, \
+             important progress). It is not the conclusion: use complete_task for that. Nobody reads your \
+             terminal output, so everything the orchestrator needs to know goes through here.",
             json!({
-                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Il fatto da riferire, autosufficiente." }
+                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The fact to report, self-contained." }
             }),
             &["text"],
         ),
         tool(
             "request_help",
-            "Fai una domanda all'orchestratore quando sei bloccato o serve una decisione. Dopo la chiamata \
-             attendi: la risposta arriva come messaggio nel tuo prompt. Non usarlo per domande che puoi \
-             risolvere da solo.",
+            "Ask the orchestrator a question when you are blocked or a decision is needed. After the call \
+             wait: the answer arrives as a message in your prompt. Do not use it for questions you can \
+             resolve yourself.",
             json!({
-                "question": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "La domanda, con il contesto necessario per rispondere." }
+                "question": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The question, with the context needed to answer it." }
             }),
             &["question"],
         ),
         tool(
             "complete_task",
-            "Chiude il lavoro e consegna l'esito all'orchestratore. Chiamalo SEMPRE alla fine, anche se \
-             fallisci o sei bloccato: senza questa chiamata l'orchestratore non sa com'e' andata. Di norma \
-             il tab si chiude da solo poco dopo.",
+            "Finish the work and hand the outcome to the orchestrator. ALWAYS call it at the end, even if \
+             you fail or are blocked: without this call the orchestrator does not know how it went. \
+             Normally the tab closes by itself shortly after.",
             json!({
                 "status": {
                     "type": "string",
                     "enum": ["completed", "failed", "blocked"],
-                    "description": "completed = task riuscito; failed = fallito; blocked = non posso procedere senza intervento."
+                    "description": "completed = task succeeded; failed = task failed; blocked = cannot proceed without intervention."
                 },
                 "summary": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 50000,
-                    "description": "Riassunto completo: cosa hai fatto, file toccati, esito dei test, problemi aperti."
+                    "description": "Full summary: what you did, files touched, test results, open issues."
                 }
             }),
             &["status", "summary"],
@@ -262,27 +266,27 @@ fn tools_for(role: Role) -> Vec<Value> {
 fn instructions(role: Option<Role>, workspace: Option<&str>, ceiling: Option<&str>) -> String {
     match role {
         Some(Role::Orchestrator) => {
-            let mut text = "cli-companion: puoi avviare sessioni automatiche, ma solo nel workspace del tuo tab: \
-                i worker si aprono li' e spawn_session non permette di sceglierne un altro. Flusso: \
-                spawn_session per ogni task, poi wait_for_events in ciclo; rispondi alle help_request \
-                con send_message e usa close_session solo se serve."
+            let mut text = "cli-companion: you can start automated sessions, but only in the workspace of your own tab: \
+                workers open there and spawn_session cannot pick another one. Flow: spawn_session for \
+                each task, then wait_for_events in a loop; answer help_requests with send_message and \
+                use close_session only when needed. Write task and message texts for workers in English."
                 .to_string();
             if let Some(w) = workspace {
-                text.push_str(&format!(" Il tuo workspace: {w}."));
+                text.push_str(&format!(" Your workspace: {w}."));
             }
             if let Some(c) = ceiling {
                 text.push_str(&format!(
-                    " Permessi massimi dei worker in questo workspace: {c}. Senza permission_mode i worker partono \
-                     con questo livello; puoi solo restringerlo, non allargarlo (lo cambia l'utente nelle \
-                     impostazioni del workspace)."
+                    " Maximum worker permissions in this workspace: {c}. Without permission_mode workers start \
+                     at this level; you can only restrict it, not widen it (the user changes it in the \
+                     workspace settings)."
                 ));
             }
             text
         }
-        Some(Role::Worker) => "cli-companion: sei una sessione automatica. Chiama get_task per primo, comunica solo con \
-             report_fact e request_help e chiudi SEMPRE con complete_task."
+        Some(Role::Worker) => "cli-companion: you are an automated session. Call get_task first, communicate only through \
+             report_fact and request_help, and ALWAYS finish with complete_task."
             .to_string(),
-        None => "cli-companion: tool disponibili solo nei terminali di cli-companion con l'app in esecuzione."
+        None => "cli-companion: tools are only available in cli-companion terminals with the app running."
             .to_string(),
     }
 }
@@ -312,7 +316,7 @@ fn tool_result(text: String, is_error: bool) -> Value {
 pub fn handle_line(server: &mut Server, line: &str, backend: &dyn Backend) -> Option<Value> {
     match serde_json::from_str::<Value>(line) {
         Ok(msg) => handle_message(server, &msg, backend),
-        Err(e) => Some(error_response(&Value::Null, -32700, &format!("JSON non valido: {e}"))),
+        Err(e) => Some(error_response(&Value::Null, -32700, &format!("invalid JSON: {e}"))),
     }
 }
 
@@ -320,7 +324,7 @@ pub fn handle_line(server: &mut Server, line: &str, backend: &dyn Backend) -> Op
 /// del client non producono output.
 pub fn handle_message(server: &mut Server, msg: &Value, backend: &dyn Backend) -> Option<Value> {
     let Some(obj) = msg.as_object() else {
-        return Some(error_response(&Value::Null, -32600, "richiesta non valida"));
+        return Some(error_response(&Value::Null, -32600, "invalid request"));
     };
     let method = obj.get("method").and_then(Value::as_str)?;
     let id = obj.get("id").filter(|v| !v.is_null())?;
@@ -348,7 +352,7 @@ pub fn handle_message(server: &mut Server, msg: &Value, backend: &dyn Backend) -
             ok_response(id, json!({ "tools": tools }))
         }
         "tools/call" => ok_response(id, call_tool(server, params, backend)),
-        _ => error_response(id, -32601, &format!("metodo non supportato: {method}")),
+        _ => error_response(id, -32601, &format!("unsupported method: {method}")),
     })
 }
 
@@ -360,23 +364,23 @@ fn call_tool(server: &mut Server, params: &Value, backend: &dyn Backend) -> Valu
         Err(e) => {
             return tool_result(
                 format!(
-                    "I tool di cli-companion non sono disponibili: {e}. Funzionano solo in un terminale \
-                     di cli-companion con l'app in esecuzione."
+                    "The cli-companion tools are not available: {e}. They only work in a cli-companion \
+                     terminal with the app running."
                 ),
                 true,
             )
         }
     };
     let Some(name) = params.get("name").and_then(Value::as_str) else {
-        return tool_result("manca il nome del tool".to_string(), true);
+        return tool_result("the tool name is missing".to_string(), true);
     };
     if !tools_for(role).iter().any(|t| t["name"] == name) {
-        return tool_result(format!("tool sconosciuto o non disponibile per questa sessione: {name}"), true);
+        return tool_result(format!("unknown tool, or not available for this session: {name}"), true);
     }
     let args = match params.get("arguments") {
         None | Some(Value::Null) => json!({}),
         Some(a) if a.is_object() => a.clone(),
-        Some(_) => return tool_result("arguments deve essere un oggetto".to_string(), true),
+        Some(_) => return tool_result("arguments must be an object".to_string(), true),
     };
     match backend.rpc(name, &args) {
         Ok(result) => tool_result(serde_json::to_string_pretty(&result).unwrap_or_default(), false),
@@ -417,11 +421,11 @@ fn request_line(session: &str, token: &str, method: &str, params: &Value) -> Str
 
 /// Interpreta la riga di risposta dell'app.
 fn parse_response(line: &str) -> Result<Value, String> {
-    let resp: RpcResponse = serde_json::from_str(line).map_err(|e| format!("risposta dell'app non valida: {e}"))?;
+    let resp: RpcResponse = serde_json::from_str(line).map_err(|e| format!("invalid response from the app: {e}"))?;
     if resp.ok {
         Ok(resp.result)
     } else {
-        Err(resp.error.unwrap_or_else(|| "errore sconosciuto dell'app".to_string()))
+        Err(resp.error.unwrap_or_else(|| "unknown error from the app".to_string()))
     }
 }
 
@@ -436,7 +440,7 @@ impl TcpBackend {
         let get = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         match (get(SESSION_ENV), get(TOKEN_ENV)) {
             (Some(session), Some(token)) => Ok(Self { session, token }),
-            _ => Err(format!("{SESSION_ENV}/{TOKEN_ENV} non impostate (terminale non gestito da cli-companion)")),
+            _ => Err(format!("{SESSION_ENV}/{TOKEN_ENV} not set (terminal not managed by cli-companion)")),
         }
     }
 }
@@ -553,7 +557,8 @@ mod tests {
         let r = send(&mut Server::default(), &b, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
         let text = r["result"]["instructions"].as_str().unwrap();
         assert!(text.contains("Proj (wsl, /home/u/app)") && !text.contains("list_workspaces"));
-        assert!(text.contains("Permessi massimi dei worker in questo workspace: accept-edits"));
+        assert!(text.contains("Maximum worker permissions in this workspace: accept-edits"));
+        assert!(text.contains("in English"));
         let w = Fake::new("worker");
         let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
         assert!(!r["result"]["instructions"].as_str().unwrap().contains("Proj"));
@@ -592,7 +597,10 @@ mod tests {
         assert!(props["cwd"]["description"].as_str().unwrap().contains(".worktrees"));
         let pm = props["permission_mode"]["description"].as_str().unwrap();
         assert!(pm.contains("skipDangerousModePermissionPrompt"));
-        assert!(pm.contains("impostazione del workspace") && pm.contains("solo restringerla"));
+        assert!(pm.contains("workspace setting") && pm.contains("only restrict it"));
+        let desc = spawn["description"].as_str().unwrap();
+        assert!(desc.contains("in English") && desc.contains("send_message"));
+        assert!(props["task"]["description"].as_str().unwrap().contains("English"));
     }
 
     #[test]
@@ -620,7 +628,7 @@ mod tests {
         .unwrap();
         assert_eq!(r["result"]["isError"], true);
         let text = r["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("non sono disponibili") && text.contains("app non in ascolto"));
+        assert!(text.contains("not available") && text.contains("app non in ascolto"));
     }
 
     #[test]

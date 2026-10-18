@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.6.1**.
+Versione corrente: **0.6.2**.
 
 ## Release e aggiornamenti
 
@@ -127,14 +127,30 @@ Tool del worker:
 Eventi ricevuti dall'orchestratore (`kind`): `started`, `fact`, `help_request`,
 `completed`, `needs_input` (il worker aspetta un permesso), `stopped_without_report`
 (il worker ha finito il turno senza `complete_task`), `exited` (shell uscita o tab chiuso).
-Stati di un worker: `starting`, `running`, `needs_input`, `idle`, `completed`,
-`failed`, `blocked`, `closed`.
+Stati di un worker: `starting`, `running`, `background` (turno chiuso in attesa di
+un comando in background: Claude Code riprende da solo), `needs_input`, `idle`,
+`completed`, `failed`, `blocked`, `closed`.
 
-Risveglio: se arrivano eventi mentre l'orchestratore è fermo al prompt (non dentro
+Fine turno del worker (hook `Stop`): se ci sono task in background o cron di sessione
+ancora attivi il worker passa a `background` senza avvisare l'orchestratore. Se invece
+ha chiuso il turno senza `complete_task`, cli-companion risponde all'hook con un blocco
+(`{"decision":"block","reason":...}`): il worker riceve un promemoria in inglese
+(chiama `complete_task`, o `request_help` se bloccato) e prosegue. Solo se anche dopo
+il promemoria si ferma senza riferire diventa `idle` e l'orchestratore riceve
+`stopped_without_report`. La notifica `idle_prompt` di un worker viene ignorata.
+
+Risveglio: se arrivano eventi *azionabili* (`help_request`, `completed`, `needs_input`,
+`stopped_without_report`, `exited`) mentre l'orchestratore è fermo al prompt (non dentro
 `wait_for_events`), cli-companion digita nel suo prompt il messaggio
-“Nuovi eventi dalle sessioni automatiche: chiama wait_for_events”. Succede una
-sola volta per gruppo di eventi nuovi, e mai se l'orchestratore sta aspettando una
-risposta a un permesso.
+“New events from your automated sessions: call wait_for_events”. `started` e `fact`
+restano in coda e arrivano con la prossima `wait_for_events`. Il risveglio avviene una
+sola volta per gruppo di eventi azionabili nuovi, e mai se l'orchestratore sta
+aspettando una risposta a un permesso.
+
+Lingua: tutto ciò che legge il modello (prompt di avvio, istruzioni del worker, messaggio
+di risveglio, promemoria dello Stop, descrizioni dei tool MCP ed errori RPC) è in
+inglese, e `spawn_session` chiede all'orchestratore di scrivere `task` e `send_message`
+in inglese. Interfaccia e messaggi dell'app restano in italiano.
 
 Permessi del worker: li decide un'impostazione per workspace (Impostazioni ->
 Avvii personalizzati -> "Permessi dei worker automatici", default `accept-edits`).

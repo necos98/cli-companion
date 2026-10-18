@@ -128,14 +128,25 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 - Se stdin non e' un terminale (`IsTerminal`) viene letta (tetto 1 MB, solo dopo
   la decisione di inviare) e parsata come JSON, con tolleranza ai fallimenti:
   `session_id` -> `agent_session_id`, `notification_type`, `message`
-  (troncato). Il self-test lancia l'exe con stdin nulla.
+  (troncato), `stop_hook_active` (bool) e `background_work` (numero di
+  `background_tasks` con stato non concluso, tollerante e senza maiuscole, piu' le
+  voci di `session_crons`; `None` se i due array mancano). Il self-test lancia
+  l'exe con stdin nulla.
 - Payload (una riga JSON su TCP `127.0.0.1:17421`, poi uguale nell'evento Tauri
   `agent-event`):
-  `{event, agent, tab_id?, agent_session_id?, notification_type?, message?, token?}`.
+  `{event, agent, tab_id?, agent_session_id?, notification_type?, message?, token?,
+  stop_hook_active?, background_work?}` (campi opzionali: i client vecchi restano validi).
   `token` viene da `CLI_COMPANION_TOKEN`; il listener lo toglie prima dell'`emit`
   verso il frontend e, se valido, passa l'evento hook anche ad `automation`.
 - Sullo stesso socket passano due tipi di riga, distinti dalla chiave `rpc`:
-  - **notify**: il payload sopra, limite 64 KB;
+  - **notify**: il payload sopra, limite 64 KB. Il listener risponde con una riga JSON,
+    `{}` oppure `{"block":"<motivo>"}`, scritta dopo che `automation` ha elaborato l'hook
+    (scrittura best-effort: un client che ha gia' chiuso non e' un errore). Solo
+    `--notify finished` con token legge la riga (timeout 4 s; timeout, chiusura o
+    risposta illeggibile = exit 0 senza output, come prima): se contiene `block` stampa su
+    stdout esattamente `{"decision":"block","reason":"<motivo>"}` (formato dello Stop hook
+    di Claude Code, che fa proseguire il turno) ed esce con 0. Nient'altro viene mai
+    scritto su stdout da `--notify`;
   - **RPC** (nuova): `{"rpc":1,"token","session","method","params"}`, limite 1 MB,
     risposta di una riga `{"ok":true,"result":..}` o `{"ok":false,"error":".."}`.
     Token errato o `session` non valida (`is_valid_tab_id`) -> `ok:false`.
@@ -238,9 +249,22 @@ con RPC; i worker rispondono solo con tool MCP. Struttura a strati:
 
 Stati del worker: `starting` (spawnato) -> `running` (`get_task`) -> `completed` |
 `failed` | `blocked` (`complete_task`) -> `closed` (tab chiuso). In mezzo, dagli hook
-di `--notify` (solo con token valido): `needs_input` (hook needs-input) e `idle`
-(hook finished senza `complete_task`). Eventi in coda all'orchestratore: `started`,
-`fact`, `help_request`, `completed`, `needs_input`, `stopped_without_report`, `exited`.
+di `--notify` (solo con token valido): `needs_input` (hook needs-input, tranne
+`idle_prompt`, ignorato per i worker), `background` e `idle`. Gestione di `finished`
+(`Registry::on_hook`, ritorna il motivo di blocco): con `background_work > 0` -> `background`
+(nessun evento, solo update per la UI); altrimenti, se il worker e' `starting`/`running`/
+`background` (o `needs_input` da permesso, non da `request_help`) e
+`stop_hook_active != Some(true)` -> risposta `block` con `STOP_BLOCK_REASON` (nessun
+evento, nessun cambio di stato); se `stop_hook_active == Some(true)` e ancora nessun
+report -> `idle` + `stopped_without_report`; con `request_help` pendente nulla. Qualunque
+attivita' successiva (tool MCP, `send_message`) riporta `background` a `running`.
+Eventi in coda all'orchestratore: `started`, `fact`, `help_request`, `completed`,
+`needs_input`, `stopped_without_report`, `exited`.
+
+Tutto cio' che legge il modello e' in inglese (`BOOTSTRAP_PROMPT`, ASCII sicuro per la
+shell, `WORKER_INSTRUCTIONS`, `WAKE_TEXT`, `STOP_BLOCK_REASON`, descrizioni e schemi dei
+tool MCP, istruzioni dei ruoli, errori di `mcp.rs` e delle RPC); `spawn_session` chiede
+di scrivere `task` e `send_message` in inglese. UI e commenti restano in italiano.
 
 ```text
 O: spawn_session --RPC--> Registry.spawn --> emit automation-spawn --> frontend apre il tab W
@@ -252,8 +276,10 @@ O idle al prompt e coda non vuota --> write_to_tab(O, "[cli-companion] ... chiam
 
 Risveglio (`check_wake`): scrive nel PTY di O (bracketed paste, poi `\r` dopo 300 ms) solo
 se O non e' dentro `wait_for_events`, l'ultimo hook di O e' `finished` (idle al prompt) e
-dall'ultimo risveglio sono arrivati eventi nuovi (`wake_pending`/`woke_seq`: una volta per
-gruppo di eventi). Mai se l'ultimo hook di O e' `needs-input` (finirebbe in un dialogo
+dall'ultimo risveglio sono arrivati eventi **azionabili** nuovi (`EventKind::is_actionable`:
+`completed`, `help_request`, `needs_input`, `stopped_without_report`, `exited`; `started` e
+`fact` si accodano soltanto e non svegliano ne' bloccano un risveglio successivo;
+`wake_pending`/`woke_seq`: una volta per gruppo di eventi). Mai se l'ultimo hook di O e' `needs-input` (finirebbe in un dialogo
 di permesso). `send_message` usa la stessa scrittura nel PTY del worker.
 
 Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`;

@@ -7,6 +7,14 @@
 //! La modalita' --notify spedisce una riga JSON su TCP 127.0.0.1:NOTIFY_PORT
 //! all'istanza GUI, che emette l'evento Tauri `agent-event` verso il frontend.
 //!
+//! Il listener risponde a ogni notifica con una riga JSON (`{}` oppure
+//! `{"block":"<motivo>"}`), scritta dopo che l'automazione ha elaborato
+//! l'hook. Solo `--notify finished` (con il token) la legge, con un timeout
+//! breve: se c'e' `block` stampa su stdout `{"decision":"block","reason":..}`
+//! e Claude Code prosegue il turno. I client vecchi chiudono senza leggere:
+//! scrivere su un socket chiuso e' innocuo. Su stdout, `--notify` non scrive
+//! nient'altro.
+//!
 //! Sullo stesso socket passano anche le chiamate RPC delle sessioni
 //! automatiche (vedi `automation`): una riga JSON con la chiave `rpc`, risposta
 //! di una riga. Il server MCP (`cli-companion --mcp`) le spedisce con
@@ -62,6 +70,8 @@ const WIRE_MAX_BYTES: u64 = 64 * 1024;
 const MESSAGE_MAX_CHARS: usize = 300;
 const FIELD_MAX_CHARS: usize = 128;
 const TAB_ID_MAX: usize = 64;
+/// Attesa massima della riga di risposta a `finished` (l'hook ha 10 s).
+const REPLY_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Payload sul socket e verso il frontend (una riga JSON + `\n`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +86,34 @@ pub struct NotifyPayload {
     /// prima di emettere verso il frontend va azzerato.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Solo `finished`: Claude Code sta gia' proseguendo perche' uno Stop
+    /// hook ha bloccato (`stop_hook_active` dello stdin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_hook_active: Option<bool>,
+    /// Solo `finished`: lavoro in background ancora attivo (task di
+    /// background non finiti + cron di sessione). `None` = dato assente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_work: Option<u32>,
+}
+
+/// Risposta del listener a una notifica: `{}` oppure `{"block":"<motivo>"}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotifyReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
+}
+
+impl NotifyReply {
+    /// Riga JSON senza il `\n` finale.
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+/// Unica riga che `--notify` scrive su stdout: la decisione di blocco dello
+/// Stop hook di Claude Code.
+pub fn block_stdout_line(reason: &str) -> String {
+    serde_json::json!({ "decision": "block", "reason": reason }).to_string()
 }
 
 /// Richiesta RPC sul socket: `{"rpc":1,"token":..,"session":..,"method":..,"params":{..}}`.
@@ -138,6 +176,8 @@ pub struct HookInput {
     pub agent_session_id: Option<String>,
     pub notification_type: Option<String>,
     pub message: Option<String>,
+    pub stop_hook_active: Option<bool>,
+    pub background_work: Option<u32>,
 }
 
 pub fn is_known_event(event: &str) -> bool {
@@ -176,6 +216,31 @@ fn clip(s: &str, max_chars: usize) -> Option<String> {
     }
 }
 
+/// Stati di un background task che lo danno per concluso (minuscolo).
+const FINISHED_TASK_STATES: [&str; 8] = [
+    "completed", "failed", "killed", "stopped", "cancelled", "canceled", "done", "error",
+];
+
+/// Lavoro in background ancora attivo nel JSON di uno Stop hook: task con
+/// stato non concluso (stato assente o sconosciuto = attivo) piu' i cron di
+/// sessione. `None` se nessuno dei due array e' presente.
+fn background_work(v: &Value) -> Option<u32> {
+    let tasks = v.get("background_tasks").and_then(Value::as_array);
+    let crons = v.get("session_crons").and_then(Value::as_array);
+    if tasks.is_none() && crons.is_none() {
+        return None;
+    }
+    let active = tasks.map_or(0, |t| {
+        t.iter()
+            .filter(|task| {
+                let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+                !FINISHED_TASK_STATES.contains(&status.trim().to_lowercase().as_str())
+            })
+            .count()
+    });
+    Some((active + crons.map_or(0, Vec::len)).min(u32::MAX as usize) as u32)
+}
+
 /// Estrae i campi noti dal JSON dell'hook. Tollerante: JSON invalido, non
 /// oggetto o campi di tipo sbagliato danno semplicemente `None`.
 pub fn parse_hook_stdin(raw: &str) -> HookInput {
@@ -188,6 +253,8 @@ pub fn parse_hook_stdin(raw: &str) -> HookInput {
         agent_session_id: field("session_id", FIELD_MAX_CHARS),
         notification_type: field("notification_type", FIELD_MAX_CHARS),
         message: field("message", MESSAGE_MAX_CHARS),
+        stop_hook_active: v.get("stop_hook_active").and_then(Value::as_bool),
+        background_work: background_work(&v),
     }
 }
 
@@ -207,6 +274,8 @@ pub fn build_payload(
         notification_type: input.notification_type,
         message: input.message,
         token: None,
+        stop_hook_active: input.stop_hook_active,
+        background_work: input.background_work,
     }
 }
 
@@ -241,8 +310,8 @@ fn parse_wire(line: &str) -> Result<Wire, String> {
     parse_line(line).map(Wire::Notify)
 }
 
-/// Spedisce un payload al listener locale (usato dalla modalita' --notify).
-pub fn send_to(port: u16, payload: &NotifyPayload) -> Result<(), String> {
+/// Connette al listener e spedisce la riga del payload.
+fn connect_and_send(port: u16, payload: &NotifyPayload) -> Result<TcpStream, String> {
     let line = build_line(payload)?;
     let mut stream = TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}").parse().unwrap(),
@@ -253,6 +322,50 @@ pub fn send_to(port: u16, payload: &NotifyPayload) -> Result<(), String> {
         .write_all(format!("{line}\n").as_bytes())
         .map_err(|e| format!("invio fallito: {e}"))?;
     stream.flush().map_err(|e| format!("invio fallito: {e}"))?;
+    Ok(stream)
+}
+
+/// Spedisce un payload al listener locale senza attendere la risposta.
+pub fn send_to(port: u16, payload: &NotifyPayload) -> Result<(), String> {
+    connect_and_send(port, payload).map(|_| ())
+}
+
+/// Spedisce il payload e attende la riga di risposta (al massimo `timeout`).
+/// Un errore di invio e' un errore vero; timeout, chiusura o risposta
+/// illeggibile danno `Ok(None)`: l'hook si comporta come senza risposta.
+pub fn send_for_reply(
+    port: u16,
+    payload: &NotifyPayload,
+    timeout: Duration,
+) -> Result<Option<NotifyReply>, String> {
+    let stream = connect_and_send(port, payload)?;
+    if stream.set_read_timeout(Some(timeout)).is_err() {
+        return Ok(None);
+    }
+    let mut line = String::new();
+    let read = BufReader::new(stream.take(WIRE_MAX_BYTES)).read_line(&mut line);
+    if read.is_err() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str(line.trim()).ok())
+}
+
+/// Corpo di `--notify` dopo la costruzione del payload. Per `finished` con
+/// token attende la risposta del listener e, se contiene `block`, scrive su
+/// `out` la decisione di blocco; altrimenti non scrive nulla.
+fn notify_via(
+    port: u16,
+    payload: &NotifyPayload,
+    timeout: Duration,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    if payload.event != "finished" || payload.token.is_none() {
+        return send_to(port, payload);
+    }
+    if let Some(reason) = send_for_reply(port, payload, timeout)?.and_then(|r| r.block) {
+        let _ = writeln!(out, "{}", block_stdout_line(&reason));
+        let _ = out.flush();
+    }
     Ok(())
 }
 
@@ -284,7 +397,7 @@ pub fn run_notify(event: &str, agent: &str) -> Result<(), String> {
     let raw = read_stdin_capped();
     let mut payload = build_payload(event, agent, tab_id.as_deref(), raw.as_deref());
     payload.token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
-    send_to(NOTIFY_PORT, &payload)
+    notify_via(NOTIFY_PORT, &payload, REPLY_TIMEOUT, &mut std::io::stdout())
 }
 
 /// Client RPC: spedisce `line` (una riga JSON, `\n` aggiunto qui) al listener
@@ -295,7 +408,7 @@ pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, Stri
         &format!("127.0.0.1:{port}").parse().unwrap(),
         Duration::from_millis(1500),
     )
-    .map_err(|_| "app non in ascolto (avvia cli-companion)".to_string())?;
+    .map_err(|_| "the cli-companion app is not listening (start it)".to_string())?;
     stream
         .set_read_timeout(Some(timeout))
         .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(10))))
@@ -303,18 +416,18 @@ pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, Stri
     stream
         .write_all(format!("{}\n", line.trim_end_matches(['\r', '\n'])).as_bytes())
         .and_then(|_| stream.flush())
-        .map_err(|e| format!("invio fallito: {e}"))?;
+        .map_err(|e| format!("send failed: {e}"))?;
     let mut resp = String::new();
     BufReader::new(stream.take(RPC_RESPONSE_MAX_BYTES))
         .read_line(&mut resp)
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                "timeout in attesa della risposta".to_string()
+                "timeout waiting for the response".to_string()
             }
-            _ => format!("lettura risposta fallita: {e}"),
+            _ => format!("reading the response failed: {e}"),
         })?;
     if resp.trim().is_empty() {
-        return Err("l'app ha chiuso la connessione senza rispondere".to_string());
+        return Err("the app closed the connection without answering".to_string());
     }
     Ok(resp.trim_end().to_string())
 }
@@ -351,14 +464,23 @@ fn peer_alive(stream: &TcpStream) -> bool {
 
 /// Serve una connessione: legge una riga, inoltra le RPC a `on_rpc` (con un
 /// controllo di vitalita' del client) e scrive la risposta; le notifiche
-/// vanno a `on_notify`.
+/// vanno a `on_notify`, che decide la riga di risposta.
 fn serve_conn<R, N>(stream: &mut TcpStream, on_rpc: R, on_notify: N) -> Result<(), String>
 where
     R: FnOnce(RpcRequest, &dyn Fn() -> bool) -> RpcResponse,
-    N: FnOnce(NotifyPayload) -> Result<(), String>,
+    N: FnOnce(NotifyPayload) -> Result<NotifyReply, String>,
 {
     match read_wire(stream)? {
-        Wire::Notify(p) => on_notify(p),
+        Wire::Notify(p) => {
+            let result = on_notify(p);
+            // Risposta a best effort: i client vecchi hanno gia' chiuso.
+            let reply = result.as_ref().cloned().unwrap_or_default();
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let _ = stream
+                .write_all(format!("{}\n", reply.to_line()).as_bytes())
+                .and_then(|_| stream.flush());
+            result.map(|_| ())
+        }
         Wire::Rpc(req) => {
             let probe = stream.try_clone().map_err(|e| e.to_string())?;
             let resp = on_rpc(req, &|| peer_alive(&probe));
@@ -373,6 +495,13 @@ where
     }
 }
 
+/// `finished` che non e' una vera fine: lo Stop e' stato bloccato (il worker
+/// continua) o la sessione aspetta lavoro in background e riprendera' da
+/// sola. Al frontend non va, altrimenti ding e "finito" sarebbero falsi.
+fn is_paused_stop(payload: &NotifyPayload, blocked: bool) -> bool {
+    payload.event == "finished" && (blocked || payload.background_work.unwrap_or(0) > 0)
+}
+
 fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
     serve_conn(
         stream,
@@ -381,11 +510,15 @@ fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
             // Il token resta nel backend: al frontend non deve arrivare.
             let token_ok = crate::automation::token_matches(payload.token.as_deref());
             payload.token = None;
-            app.emit(FRONTEND_EVENT, &payload).map_err(|e| e.to_string())?;
-            if token_ok {
-                crate::automation::on_hook_event(app, &payload);
+            let block = if token_ok {
+                crate::automation::on_hook_event(app, &payload)
+            } else {
+                None
+            };
+            if !is_paused_stop(&payload, block.is_some()) {
+                app.emit(FRONTEND_EVENT, &payload).map_err(|e| e.to_string())?;
             }
-            Ok(())
+            Ok(NotifyReply { block })
         },
     )
 }
@@ -649,7 +782,7 @@ mod tests {
         let mut got = None;
         serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |p| {
             got = Some(p);
-            Ok(())
+            Ok(NotifyReply::default())
         })
         .unwrap();
         assert_eq!(got.unwrap().token.as_deref(), Some("secret"));
@@ -661,6 +794,140 @@ mod tests {
         drop(client);
         std::thread::sleep(Duration::from_millis(100));
         assert!(!peer_alive(&server_side));
+    }
+
+    #[test]
+    fn background_work_counts_active_tasks_and_crons() {
+        let n = |raw: &str| parse_hook_stdin(raw).background_work;
+        assert_eq!(n(r#"{"session_id":"s"}"#), None);
+        assert_eq!(n(r#"{"background_tasks":[],"session_crons":[]}"#), Some(0));
+        assert_eq!(n(r#"{"background_tasks":[{"id":"a","status":"running"},{"id":"b"},{"status":"Pending"}]}"#), Some(3));
+        assert_eq!(
+            n(r#"{"background_tasks":[{"status":"completed"},{"status":" FAILED "},{"status":"killed"},{"status":"stopped"},{"status":"cancelled"},{"status":"done"},{"status":"error"}]}"#),
+            Some(0)
+        );
+        assert_eq!(
+            n(r#"{"background_tasks":[{"status":"in_progress"},{"status":"completed"}],"session_crons":[{"id":"c"},{"id":"d"}]}"#),
+            Some(3)
+        );
+        assert_eq!(n(r#"{"session_crons":[{"id":"c"}]}"#), Some(1));
+        // Tipi sbagliati: ignorati.
+        assert_eq!(n(r#"{"background_tasks":"x","session_crons":5}"#), None);
+        let p = parse_hook_stdin(r#"{"stop_hook_active":true}"#);
+        assert_eq!(p.stop_hook_active, Some(true));
+        assert_eq!(parse_hook_stdin(r#"{"stop_hook_active":"si"}"#).stop_hook_active, None);
+        // Retrocompatibilita': payload vecchio senza i nuovi campi.
+        let old = parse_line(r#"{"event":"finished","agent":"x"}"#).unwrap();
+        assert_eq!((old.stop_hook_active, old.background_work), (None, None));
+        let ser = serde_json::to_string(&old).unwrap();
+        assert!(!ser.contains("stop_hook_active") && !ser.contains("background_work"));
+    }
+
+    #[test]
+    fn reply_and_stdout_line_shapes() {
+        assert_eq!(NotifyReply::default().to_line(), "{}");
+        assert_eq!(NotifyReply { block: Some("x".into()) }.to_line(), r#"{"block":"x"}"#);
+        assert_eq!(block_stdout_line("x"), r#"{"decision":"block","reason":"x"}"#);
+        assert_eq!(
+            block_stdout_line("say \"hi\""),
+            r#"{"decision":"block","reason":"say \"hi\""}"#
+        );
+    }
+
+    /// Server finto su porta effimera: legge la notifica e risponde `reply`
+    /// (se `Some`), poi chiude; con `None` resta in silenzio per `hold`.
+    fn fake_listener(reply: Option<&'static str>, hold: Duration) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let Wire::Notify(p) = read_wire(&mut s).unwrap() else {
+                panic!("attesa una notifica");
+            };
+            assert_eq!(p.event, "finished");
+            match reply {
+                Some(r) => {
+                    s.write_all(format!("{r}\n").as_bytes()).unwrap();
+                }
+                None => std::thread::sleep(hold),
+            }
+        });
+        (port, h)
+    }
+
+    fn finished_with_token() -> NotifyPayload {
+        let mut p = sample("finished");
+        p.token = Some("tok".to_string());
+        p
+    }
+
+    #[test]
+    fn notify_prints_block_decision_from_reply() {
+        let (port, h) = fake_listener(Some(r#"{"block":"x"}"#), Duration::ZERO);
+        let mut out = Vec::new();
+        notify_via(port, &finished_with_token(), Duration::from_secs(2), &mut out).unwrap();
+        h.join().unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "{\"decision\":\"block\",\"reason\":\"x\"}\n");
+    }
+
+    #[test]
+    fn notify_prints_nothing_without_block_or_on_timeout() {
+        for reply in [Some("{}"), Some("garbage"), Some(r#"{"block":null}"#)] {
+            let (port, h) = fake_listener(reply, Duration::ZERO);
+            let mut out = Vec::new();
+            notify_via(port, &finished_with_token(), Duration::from_secs(2), &mut out).unwrap();
+            h.join().unwrap();
+            assert!(out.is_empty(), "{reply:?}");
+        }
+        // Nessuna risposta entro il timeout: Ok e stdout vuoto.
+        let (port, h) = fake_listener(None, Duration::from_millis(600));
+        let mut out = Vec::new();
+        let t0 = std::time::Instant::now();
+        notify_via(port, &finished_with_token(), Duration::from_millis(200), &mut out).unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(550));
+        h.join().unwrap();
+        assert!(out.is_empty());
+        // Porta chiusa: errore di invio come prima.
+        assert!(notify_via(1, &finished_with_token(), Duration::from_millis(100), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn serve_conn_replies_to_notify_and_tolerates_legacy_client() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Client nuovo: legge la riga con il blocco.
+        let client = std::thread::spawn(move || {
+            send_for_reply(port, &finished_with_token(), Duration::from_secs(2)).unwrap()
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |_| {
+            Ok(NotifyReply { block: Some("r".into()) })
+        })
+        .unwrap();
+        assert_eq!(client.join().unwrap(), Some(NotifyReply { block: Some("r".into()) }));
+        // Client vecchio: invia e chiude subito; il server non deve fallire.
+        send_to(port, &finished_with_token()).unwrap();
+        let (mut s, _) = listener.accept().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |_| {
+            Ok(NotifyReply { block: Some("r".into()) })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn paused_stop_is_not_forwarded_to_frontend() {
+        let mut p = sample("finished");
+        assert!(!is_paused_stop(&p, false));
+        assert!(is_paused_stop(&p, true));
+        p.background_work = Some(0);
+        assert!(!is_paused_stop(&p, false));
+        p.background_work = Some(2);
+        assert!(is_paused_stop(&p, false));
+        // Solo `finished`: gli altri eventi passano sempre.
+        let mut n = sample("needs-input");
+        n.background_work = Some(2);
+        assert!(!is_paused_stop(&n, true));
     }
 
     #[test]

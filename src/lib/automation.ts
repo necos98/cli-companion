@@ -7,6 +7,7 @@
 export type WorkerStatus =
   | "starting"
   | "running"
+  | "background"
   | "needs_input"
   | "idle"
   | "completed"
@@ -37,6 +38,7 @@ export function isAutomated(tab: { automation?: unknown }): boolean {
 const STATUS_WORDS: Record<string, string> = {
   starting: "in avvio",
   running: "in corso",
+  background: "in background",
   needs_input: "aspetta",
   idle: "fermo",
   completed: "completato",
@@ -49,6 +51,7 @@ const STATUS_WORDS: Record<string, string> = {
 const STATUS_CLASSES: Record<string, string> = {
   starting: "text-muted-foreground",
   running: "text-status-running",
+  background: "text-status-running",
   needs_input: "text-status-attention",
   idle: "text-muted-foreground",
   completed: "text-status-finished",
