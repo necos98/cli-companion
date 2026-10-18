@@ -13,7 +13,14 @@ import StatusBar from "./components/StatusBar";
 import Logo from "./components/Logo";
 import TerminalView from "./components/TerminalView";
 import { Button } from "./components/ui/button";
-import { api, onAgentEvent, onNotificationActivated } from "./lib/tauri";
+import {
+  api,
+  onAgentEvent,
+  onAutomationClose,
+  onAutomationSpawn,
+  onAutomationUpdate,
+  onNotificationActivated,
+} from "./lib/tauri";
 import type { AgentEnvStatus, AgentProfile, Launch, Workspace } from "./lib/tauri";
 import { defaultLaunch } from "./lib/launch";
 import {
@@ -31,6 +38,13 @@ import {
 } from "./lib/agents";
 import type { AgentTabState, TabStatus } from "./lib/agents";
 import {
+  applyAutomationUpdate,
+  automationTooltip,
+  isAutomated,
+  persistableTabs,
+} from "./lib/automation";
+import type { AutomationMeta } from "./lib/automation";
+import {
   EMPTY_LAYOUT,
   GLOBAL_ID,
   activePaneId,
@@ -39,6 +53,7 @@ import {
   focusTab,
   groupIndicator,
   openTab,
+  openTabBackground,
   reorderTabs,
   selectGlobal,
   selectGroup,
@@ -80,10 +95,17 @@ interface Tab {
    * `agent.agentSessionId` serve a riprendere la sessione (`--resume`).
    */
   agent?: AgentTabState;
+  /**
+   * Sessione automatica (worker di un orchestratore): non si salva nella
+   * sessione ne' si ripristina. Assente = tab normale.
+   */
+  automation?: AutomationMeta;
 }
 
 /** Etichetta mostrata per un tab (titolo OSC > nome avvio > nome workspace). */
 function tabLabel(t: Tab): string {
+  // Un worker mostra il titolo del task: il titolo OSC dell'agente cambia di continuo.
+  if (t.automation?.title) return t.automation.title;
   const launchName = t.launchId
     ? t.workspace.launches.find((l) => l.id === t.launchId)?.name
     : undefined;
@@ -164,6 +186,8 @@ export default function App() {
   // una volta sola).
   const tabsRef = useRef<Tab[]>([]);
   tabsRef.current = tabs;
+  const workspacesRef = useRef<Workspace[]>([]);
+  workspacesRef.current = workspaces;
 
   const paneLayouts = useMemo(() => computePaneLayouts(layout), [layout]);
   const paneLayoutsRef = useRef(paneLayouts);
@@ -233,7 +257,7 @@ export default function App() {
         activeView: layout.activeView,
         groups: layout.groups,
         global: layout.global,
-        tabs: tabs.map(toSessionTab),
+        tabs: persistableTabs(tabs).map(toSessionTab),
       }),
     [tabs, layout],
   );
@@ -453,7 +477,16 @@ export default function App() {
 
   // Chiusura di un terminale (dall'utente o perché la shell è uscita): la sua
   // cronologia salvata non serve più.
+  // Un tab automatico chiuso va comunicato al backend una volta sola, da
+  // qualunque via arrivi la chiusura (utente, `automation-close`, shell uscita).
+  const reportedClosedRef = useRef(new Set<string>());
   const closeTab = useCallback((key: string) => {
+    const closing = tabsRef.current.find((t) => t.key === key);
+    const automated = closing !== undefined && isAutomated(closing);
+    if (automated && !reportedClosedRef.current.has(key)) {
+      reportedClosedRef.current.add(key);
+      void api.automationTabClosed(key).catch(() => undefined);
+    }
     setTabs((prev) => prev.filter((t) => t.key !== key));
     setLayout((l) => closeTabIn(l, key));
     setBusyByKey((prev) => {
@@ -462,7 +495,8 @@ export default function App() {
       delete next[key];
       return next;
     });
-    void api.deleteScrollback(key).catch(() => undefined);
+    // Gli automatici non salvano lo scrollback: niente da cancellare.
+    if (!automated) void api.deleteScrollback(key).catch(() => undefined);
   }, []);
 
   // La shell è uscita da sola. Durante la chiusura dell'app i pty vengono
@@ -474,6 +508,85 @@ export default function App() {
     },
     [closeTab],
   );
+
+  const closeTabRef = useRef(closeTab);
+  closeTabRef.current = closeTab;
+
+  // Sessioni automatiche: il backend chiede di aprire/chiudere i tab dei worker
+  // e ne comunica gli stati. Registrato una volta sola (stato letto dai ref).
+  useEffect(() => {
+    const unlistens: Array<() => void> = [];
+    let cancelled = false;
+    const keep = (p: Promise<() => void>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlistens.push(u);
+        })
+        .catch(() => undefined);
+
+    keep(
+      onAutomationSpawn((ev) => {
+        // Workspace sconosciuto (rimosso nel frattempo) o tab gia' aperto: ignora.
+        const ws = workspacesRef.current.find((w) => w.id === ev.workspace_id);
+        if (!ws || tabsRef.current.some((t) => t.key === ev.tab_id)) return;
+        const tab: Tab = {
+          key: ev.tab_id,
+          workspace: ws,
+          command: "",
+          startCommand: ev.command,
+          automation: {
+            parentTabId: ev.parent_tab_id,
+            title: ev.title,
+            status: "starting",
+            agentId: ev.agent_id,
+            cwd: ev.cwd ?? undefined,
+          },
+        };
+        // Aggiornamento sincrono del ref: un secondo evento identico non riapre il tab.
+        tabsRef.current = [...tabsRef.current, tab];
+        setTabs((prev) => (prev.some((t) => t.key === tab.key) ? prev : [...prev, tab]));
+        // In secondo piano: non toglie all'utente la vista in cui sta lavorando.
+        setLayout((l) => openTabBackground(l, ws.id, tab.key));
+      }),
+    );
+
+    keep(onAutomationClose((ev) => closeTabRef.current(ev.tab_id)));
+
+    keep(
+      onAutomationUpdate((ev) =>
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.key === ev.tab_id && t.automation
+              ? { ...t, automation: applyAutomationUpdate(t.automation, ev) }
+              : t,
+          ),
+        ),
+      ),
+    );
+
+    // Riallinea i metadati dei tab gia' aperti (es. dopo un ricaricamento).
+    api
+      .automationSessions()
+      .then((infos) => {
+        if (cancelled) return;
+        const byKey = new Map(infos.map((i) => [i.tab_id, i]));
+        setTabs((prev) =>
+          prev.map((t) => {
+            const info = byKey.get(t.key);
+            return info && t.automation
+              ? { ...t, automation: applyAutomationUpdate(t.automation, info) }
+              : t;
+          }),
+        );
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      unlistens.forEach((u) => u());
+    };
+  }, []);
 
   const handleTitle = useCallback((key: string, title: string) => {
     setTabs((prev) => prev.map((t) => (t.key === key ? { ...t, title } : t)));
@@ -731,6 +844,20 @@ export default function App() {
                       pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
                     }
                     status={statusOf(t)}
+                    cwd={t.automation?.cwd}
+                    automation={
+                      t.automation
+                        ? {
+                            status: t.automation.status,
+                            tooltip: automationTooltip(
+                              t.automation,
+                              tabByKey.get(t.automation.parentTabId)
+                                ? tabLabel(tabByKey.get(t.automation.parentTabId)!)
+                                : undefined,
+                            ),
+                          }
+                        : undefined
+                    }
                     maximized={pl?.maximized ?? false}
                     pinned={pl?.pinned ?? false}
                     dropTarget={drag.over === t.key}

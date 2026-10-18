@@ -7,10 +7,18 @@
 //! La modalita' --notify spedisce una riga JSON su TCP 127.0.0.1:NOTIFY_PORT
 //! all'istanza GUI, che emette l'evento Tauri `agent-event` verso il frontend.
 //!
+//! Sullo stesso socket passano anche le chiamate RPC delle sessioni
+//! automatiche (vedi `automation`): una riga JSON con la chiave `rpc`, risposta
+//! di una riga. Il server MCP (`cli-companion --mcp`) le spedisce con
+//! `rpc_call`. Gli hook portano il token dell'app (`CLI_COMPANION_TOKEN`) e
+//! l'automazione considera solo gli eventi col token giusto; il token non
+//! arriva mai al frontend.
+//!
 //! Nota WSL: l'exe gira sempre sull'host Windows (interop), quindi il TCP
 //! resta locale e non serve alcun networking cross-VM. Solo std + serde.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
@@ -36,8 +44,17 @@ const KNOWN_EVENTS: [&str; 5] = [
 /// Variabile d'ambiente impostata dal pty con l'id del tab: gli hook la
 /// ereditano (anche da WSL, via WSLENV) e cosi' l'evento si lega al tab.
 pub const SESSION_ENV: &str = "CLI_COMPANION_SESSION";
+/// Token casuale dell'app, impostato dal pty accanto a `SESSION_ENV`: chi lo
+/// conosce e' un processo figlio di un terminale di cli-companion.
+pub const TOKEN_ENV: &str = "CLI_COMPANION_TOKEN";
 /// Nome evento Tauri verso il frontend.
 const FRONTEND_EVENT: &str = "agent-event";
+/// Tetto di una riga RPC in ingresso e di una risposta letta dal client.
+const RPC_MAX_BYTES: u64 = 1024 * 1024;
+const RPC_RESPONSE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Timeout di lettura della riga di richiesta (non della risposta, che per
+/// `wait_for_events` puo' arrivare molto dopo).
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// Tetti: stdin degli hook (il JSON di Claude Code puo' contenere l'ultimo
 /// messaggio dell'assistente), riga sul socket, campi del payload.
 const STDIN_MAX_BYTES: u64 = 1024 * 1024;
@@ -55,6 +72,64 @@ pub struct NotifyPayload {
     pub agent_session_id: Option<String>,
     pub notification_type: Option<String>,
     pub message: Option<String>,
+    /// Token dell'app (da `CLI_COMPANION_TOKEN`). Serve solo al backend:
+    /// prima di emettere verso il frontend va azzerato.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// Richiesta RPC sul socket: `{"rpc":1,"token":..,"session":..,"method":..,"params":{..}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RpcRequest {
+    pub rpc: u32,
+    #[serde(default)]
+    pub token: String,
+    /// Id del tab chiamante.
+    #[serde(default)]
+    pub session: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+/// Risposta RPC: `{"ok":true,"result":..}` oppure `{"ok":false,"error":".."}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RpcResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub result: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl RpcResponse {
+    pub fn success(result: Value) -> Self {
+        Self { ok: true, result, error: None }
+    }
+
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self { ok: false, result: Value::Null, error: Some(error.into()) }
+    }
+
+    /// Esito di un dispatch -> risposta.
+    pub fn from_result(r: Result<Value, String>) -> Self {
+        match r {
+            Ok(v) => Self::success(v),
+            Err(e) => Self::failure(e),
+        }
+    }
+
+    /// Riga JSON senza il `\n` finale.
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| r#"{"ok":false,"error":"risposta non serializzabile"}"#.to_string())
+    }
+}
+
+/// Una riga letta dal socket: notifica di un hook o chiamata RPC.
+#[derive(Debug)]
+pub enum Wire {
+    Notify(NotifyPayload),
+    Rpc(RpcRequest),
 }
 
 /// Campi utili del JSON che l'agente passa all'hook su stdin.
@@ -131,6 +206,7 @@ pub fn build_payload(
         agent_session_id: input.agent_session_id,
         notification_type: input.notification_type,
         message: input.message,
+        token: None,
     }
 }
 
@@ -148,6 +224,21 @@ fn parse_line(line: &str) -> Result<NotifyPayload, String> {
         return Err(format!("evento sconosciuto: {}", payload.event));
     }
     Ok(payload)
+}
+
+/// Distingue una riga RPC (chiave `rpc`) da una notifica. Le notifiche
+/// restano limitate a 64 KB, le RPC a 1 MB (gia' garantito dalla lettura).
+fn parse_wire(line: &str) -> Result<Wire, String> {
+    let v: Value = serde_json::from_str(line.trim()).map_err(|_| "payload non valido".to_string())?;
+    if v.get("rpc").is_some() {
+        let req: RpcRequest =
+            serde_json::from_value(v).map_err(|e| format!("richiesta RPC non valida: {e}"))?;
+        return Ok(Wire::Rpc(req));
+    }
+    if line.len() as u64 > WIRE_MAX_BYTES {
+        return Err("payload troppo grande".to_string());
+    }
+    parse_line(line).map(Wire::Notify)
 }
 
 /// Spedisce un payload al listener locale (usato dalla modalita' --notify).
@@ -191,26 +282,112 @@ pub fn run_notify(event: &str, agent: &str) -> Result<(), String> {
     // La stdin si legge solo dopo la decisione: un evento ignorato non deve
     // restare appeso su una pipe che nessuno chiude.
     let raw = read_stdin_capped();
-    let payload = build_payload(event, agent, tab_id.as_deref(), raw.as_deref());
+    let mut payload = build_payload(event, agent, tab_id.as_deref(), raw.as_deref());
+    payload.token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
     send_to(NOTIFY_PORT, &payload)
 }
 
-/// Legge una riga di payload dal socket (tetto 64 KB).
-fn read_payload(stream: &mut TcpStream) -> Result<NotifyPayload, String> {
+/// Client RPC: spedisce `line` (una riga JSON, `\n` aggiunto qui) al listener
+/// su `port` e ritorna la riga di risposta. `timeout` e' l'attesa massima
+/// della risposta (per `wait_for_events` va portato oltre il suo timeout).
+pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, String> {
+    let mut stream = TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        Duration::from_millis(1500),
+    )
+    .map_err(|_| "app non in ascolto (avvia cli-companion)".to_string())?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(10))))
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(format!("{}\n", line.trim_end_matches(['\r', '\n'])).as_bytes())
+        .and_then(|_| stream.flush())
+        .map_err(|e| format!("invio fallito: {e}"))?;
+    let mut resp = String::new();
+    BufReader::new(stream.take(RPC_RESPONSE_MAX_BYTES))
+        .read_line(&mut resp)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                "timeout in attesa della risposta".to_string()
+            }
+            _ => format!("lettura risposta fallita: {e}"),
+        })?;
+    if resp.trim().is_empty() {
+        return Err("l'app ha chiuso la connessione senza rispondere".to_string());
+    }
+    Ok(resp.trim_end().to_string())
+}
+
+/// Legge una riga dal socket (tetto `max` byte) e la classifica. Il timeout
+/// di lettura vale solo qui: la risposta puo' arrivare anche molto dopo.
+fn read_wire(stream: &mut TcpStream) -> Result<Wire, String> {
+    stream
+        .set_read_timeout(Some(REQUEST_READ_TIMEOUT))
+        .map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(stream.take(WIRE_MAX_BYTES))
+    BufReader::new((&*stream).take(RPC_MAX_BYTES))
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
-    parse_line(&line)
+    stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+    parse_wire(&line)
+}
+
+/// Il client e' ancora connesso? (peek non bloccante: 0 byte = chiuso). Serve
+/// alle attese lunghe per non drenare eventi verso una connessione morta.
+fn peer_alive(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut b = [0u8; 1];
+    let alive = match stream.peek(&mut b) {
+        Ok(0) => false,
+        Ok(_) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+    };
+    let _ = stream.set_nonblocking(false);
+    alive
+}
+
+/// Serve una connessione: legge una riga, inoltra le RPC a `on_rpc` (con un
+/// controllo di vitalita' del client) e scrive la risposta; le notifiche
+/// vanno a `on_notify`.
+fn serve_conn<R, N>(stream: &mut TcpStream, on_rpc: R, on_notify: N) -> Result<(), String>
+where
+    R: FnOnce(RpcRequest, &dyn Fn() -> bool) -> RpcResponse,
+    N: FnOnce(NotifyPayload) -> Result<(), String>,
+{
+    match read_wire(stream)? {
+        Wire::Notify(p) => on_notify(p),
+        Wire::Rpc(req) => {
+            let probe = stream.try_clone().map_err(|e| e.to_string())?;
+            let resp = on_rpc(req, &|| peer_alive(&probe));
+            stream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .map_err(|e| e.to_string())?;
+            stream
+                .write_all(format!("{}\n", resp.to_line()).as_bytes())
+                .and_then(|_| stream.flush())
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|e| e.to_string())?;
-    let payload = read_payload(stream)?;
-    app.emit(FRONTEND_EVENT, &payload).map_err(|e| e.to_string())?;
-    Ok(())
+    serve_conn(
+        stream,
+        |req, alive| crate::automation::handle_rpc(app, &req, alive),
+        |mut payload| {
+            // Il token resta nel backend: al frontend non deve arrivare.
+            let token_ok = crate::automation::token_matches(payload.token.as_deref());
+            payload.token = None;
+            app.emit(FRONTEND_EVENT, &payload).map_err(|e| e.to_string())?;
+            if token_ok {
+                crate::automation::on_hook_event(app, &payload);
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Avvia il listener in un thread dedicato. Se la porta e' occupata
@@ -288,7 +465,9 @@ mod tests {
         );
         send_to(port, &sent).unwrap();
         let (mut stream, _) = listener.accept().unwrap();
-        let got = read_payload(&mut stream).unwrap();
+        let Wire::Notify(got) = read_wire(&mut stream).unwrap() else {
+            panic!("attesa una notifica");
+        };
         assert_eq!(got, sent);
         assert_eq!(got.agent_session_id.as_deref(), Some("abc"));
         assert_eq!(got.message.as_deref(), Some("Serve il permesso"));
@@ -365,6 +544,123 @@ mod tests {
         let p = build_payload("test", "self-test", None, None);
         assert_eq!(p.tab_id, None);
         assert_eq!(p.message, None);
+    }
+
+    #[test]
+    fn token_is_optional_and_not_serialized_when_absent() {
+        let p = sample("finished");
+        assert!(!serde_json::to_string(&p).unwrap().contains("token"));
+        let with = parse_line(r#"{"event":"finished","agent":"x","token":"abc"}"#).unwrap();
+        assert_eq!(with.token.as_deref(), Some("abc"));
+        let without = parse_line(r#"{"event":"finished","agent":"x"}"#).unwrap();
+        assert_eq!(without.token, None);
+    }
+
+    #[test]
+    fn wire_classifies_rpc_and_notify() {
+        let rpc = r#"{"rpc":1,"token":"t","session":"tab-1","method":"whoami","params":{}}"#;
+        match parse_wire(rpc).unwrap() {
+            Wire::Rpc(r) => {
+                assert_eq!((r.rpc, r.token.as_str(), r.session.as_str()), (1, "t", "tab-1"));
+                assert_eq!(r.method, "whoami");
+            }
+            Wire::Notify(_) => panic!("attesa una RPC"),
+        }
+        // Params e token assenti: parsing ok (e' l'auth a rifiutare).
+        let Wire::Rpc(r) = parse_wire(r#"{"rpc":1,"method":"x"}"#).unwrap() else {
+            panic!("attesa una RPC");
+        };
+        assert!(r.token.is_empty() && r.params.is_null());
+        assert!(matches!(
+            parse_wire(r#"{"event":"finished","agent":"x"}"#).unwrap(),
+            Wire::Notify(_)
+        ));
+        assert!(parse_wire(r#"{"rpc":1}"#).is_err()); // manca method
+        assert!(parse_wire("non json").is_err());
+        // Le notifiche hanno il tetto di 64 KB, le RPC no.
+        let big = "x".repeat(WIRE_MAX_BYTES as usize);
+        let notify = format!(r#"{{"event":"finished","agent":"{big}"}}"#);
+        assert!(parse_wire(&notify).is_err());
+        let rpc = format!(r#"{{"rpc":1,"method":"m","params":{{"a":"{big}"}}}}"#);
+        assert!(matches!(parse_wire(&rpc), Ok(Wire::Rpc(_))));
+    }
+
+    #[test]
+    fn rpc_response_shapes() {
+        let ok = RpcResponse::success(serde_json::json!({"a":1}));
+        assert_eq!(ok.to_line(), r#"{"ok":true,"result":{"a":1}}"#);
+        let err = RpcResponse::failure("no");
+        assert_eq!(err.to_line(), r#"{"ok":false,"error":"no"}"#);
+        let back: RpcResponse = serde_json::from_str(&ok.to_line()).unwrap();
+        assert_eq!(back, ok);
+        assert_eq!(RpcResponse::from_result(Err("x".into())), RpcResponse::failure("x"));
+    }
+
+    /// Roundtrip completo su una porta effimera: il lato server e' il vero
+    /// `serve_conn` con un handler finto che dura piu' del timeout di lettura
+    /// della richiesta (2 s), per provare che non si applica alla risposta.
+    #[test]
+    fn rpc_roundtrip_over_tcp_with_slow_handler() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            serve_conn(
+                &mut s,
+                |req, alive| {
+                    assert!(alive());
+                    std::thread::sleep(Duration::from_millis(2300));
+                    RpcResponse::success(serde_json::json!({"echo": req.method, "session": req.session}))
+                },
+                |_| panic!("attesa una RPC"),
+            )
+        });
+        let line = r#"{"rpc":1,"token":"t","session":"tab-1","method":"ping","params":{}}"#;
+        let resp = rpc_call(port, line, Duration::from_secs(10)).unwrap();
+        let r: RpcResponse = serde_json::from_str(&resp).unwrap();
+        assert!(r.ok);
+        assert_eq!(r.result["echo"], "ping");
+        assert_eq!(r.result["session"], "tab-1");
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn rpc_call_errors() {
+        assert!(rpc_call(1, "{}", Duration::from_secs(1)).is_err()); // porta chiusa
+        // Server che non risponde mai: timeout.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _keep = std::thread::spawn(move || {
+            let (_s, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+        });
+        let e = rpc_call(port, "{}", Duration::from_millis(300)).unwrap_err();
+        assert!(e.contains("timeout"), "{e}");
+    }
+
+    #[test]
+    fn notify_goes_to_notify_handler_and_peer_liveness() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut sent = sample("needs-input");
+        sent.token = Some("secret".to_string());
+        send_to(port, &sent).unwrap();
+        let (mut s, _) = listener.accept().unwrap();
+        let mut got = None;
+        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |p| {
+            got = Some(p);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(got.unwrap().token.as_deref(), Some("secret"));
+
+        // Liveness: connesso = vivo, dopo la chiusura del client = morto.
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server_side, _) = listener.accept().unwrap();
+        assert!(peer_alive(&server_side));
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!peer_alive(&server_side));
     }
 
     #[test]

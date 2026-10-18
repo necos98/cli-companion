@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.5.2**.
+Versione corrente: **0.6.0**.
 
 ## Release e aggiornamenti
 
@@ -74,7 +74,11 @@ Aggiungere un nuovo agente: crea `src-tauri/src/agents/<nome>.rs` con una
 struct che implementa `AgentProvider` (`detect`, `is_installed`, `install`,
 `uninstall`; gli hook devono eseguire `cli-companion --notify <evento> <agente>`
 con eventi `session-start`, `finished`, `needs-input`) e registrala in `PROVIDERS`
-in `agents/mod.rs`. La UI non cambia.
+in `agents/mod.rs`. La UI non cambia. Per supportare anche le sessioni
+automatiche (vedi sotto) implementa `automation_command(env_kind, req)`, che
+restituisce il comando da digitare nella shell per avviare l'agente con prompt
+iniziale, modalità permessi e modello, e dichiara nel plugin dell'agente il
+server MCP `cli-companion` (`cli-companion --mcp`).
 
 Profilo di input (facoltativo): se l'agente vuole tasti propri nel terminale,
 implementa `input_profile()` con regole dichiarative `InputRule { event, env_kind,
@@ -84,6 +88,69 @@ invia `send` (Claude Code: Alt+V = `ESC v`, su Windows e WSL). Nuovi eventi: una
 variante di `InputEvent` e la sua gestione in `TerminalView`. Il frontend legge i
 profili all'avvio (`agent_profiles`) e li risolve con `resolveInputOverride`
 (`src/lib/agents.ts`).
+
+## Sessioni automatiche (orchestratore)
+
+Qualunque sessione Claude Code aperta in un tab di cli-companion può fare da
+**orchestratore**: con i tool MCP di cli-companion avvia altre sessioni, i
+**worker**, e ne segue il lavoro. Un worker è un tab marcato **AUTO** (badge e
+stato nell'intestazione, tooltip con titolo del task, padre e ultimo report)
+che comunica solo tramite tool: nessuno legge il suo terminale.
+
+Setup: reinstalla il plugin da **Impostazioni → Coding agent** (per ogni
+ambiente: Windows e ogni distro WSL). Il plugin ora dichiara anche il server MCP
+`cli-companion` (`cli-companion --mcp`); fuori dai terminali di cli-companion, o
+con l'app chiusa, non espone alcun tool.
+
+Tool dell'orchestratore:
+
+- `list_agents` — coding agent con supporto all'automazione.
+- `spawn_session` — avvia un worker (`task`, opz. `title`, `agent`, `cwd`,
+  `permission_mode`, `model`, `keep_open`). L'orchestratore lavora solo nel proprio
+  workspace: il worker si apre nel workspace del suo tab (non si sceglie) e `cwd`, se
+  indicato, deve essere assoluto, esistente e dentro la cartella del workspace (niente
+  `..`); per i git worktree usa una sottocartella, es. `.worktrees/`.
+- `list_sessions` — i propri worker con stato e ultimo report.
+- `send_message` — scrive un messaggio nel prompt di un worker (es. la risposta a una richiesta d'aiuto).
+- `close_session` — chiude il tab di un worker.
+- `wait_for_events` — attende eventi dai worker (default 90 s, max 600 s; ritorna
+  subito se ce ne sono già, lista vuota allo scadere).
+
+Tool del worker:
+
+- `get_task` — legge task e istruzioni (da chiamare per primo).
+- `report_fact` — segnala all'orchestratore un fatto utile.
+- `request_help` — pone una domanda all'orchestratore; la risposta arriva come messaggio nel prompt.
+- `complete_task` — chiude il lavoro con `status` (`completed`, `failed`, `blocked`) e riassunto;
+  il tab si chiude dopo ~1,5 s, salvo `keep_open`.
+
+Eventi ricevuti dall'orchestratore (`kind`): `started`, `fact`, `help_request`,
+`completed`, `needs_input` (il worker aspetta un permesso), `stopped_without_report`
+(il worker ha finito il turno senza `complete_task`), `exited` (shell uscita o tab chiuso).
+Stati di un worker: `starting`, `running`, `needs_input`, `idle`, `completed`,
+`failed`, `blocked`, `closed`.
+
+Risveglio: se arrivano eventi mentre l'orchestratore è fermo al prompt (non dentro
+`wait_for_events`), cli-companion digita nel suo prompt il messaggio
+“Nuovi eventi dalle sessioni automatiche: chiama wait_for_events”. Succede una
+sola volta per gruppo di eventi nuovi, e mai se l'orchestratore sta aspettando una
+risposta a un permesso.
+
+Permessi del worker (`permission_mode` di `spawn_session`): `accept-edits`
+(default), `default` (chiede conferma per ogni azione: il worker resta fermo in
+attesa dell'utente), `plan` (sola lettura), `bypass` (nessun permesso: usalo con
+cautela). Con `bypass` il primo avvio interattivo di Claude Code mostra una
+finestra di conferma, che non compare solo se in `~/.claude/settings.json` c'è
+`skipDangerousModePermissionPrompt: true`.
+
+L'isolamento è compito dell'orchestratore: cli-companion non crea worktree. Per
+lavori paralleli sullo stesso repository l'orchestratore crea (ad esempio) un
+git worktree per worker e lo passa come `cwd`.
+
+I tab dei worker non vengono salvati nella sessione né ripristinati al riavvio.
+
+Limiti: 16 worker attivi per orchestratore, 32 terminali in totale, coda di 1000
+eventi per orchestratore (i più vecchi vengono scartati).
 
 ## Migrazione da muse-companion (v0.4.0)
 

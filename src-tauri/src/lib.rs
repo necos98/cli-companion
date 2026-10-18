@@ -1,5 +1,7 @@
 pub mod agent_notify;
 mod agents;
+pub mod automation;
+pub mod mcp;
 mod pty;
 mod session;
 mod toast;
@@ -7,6 +9,7 @@ pub mod updater;
 mod workspaces;
 mod wsl;
 
+use automation::AutomationState;
 use pty::PtyState;
 use tauri::Manager;
 use workspaces::WorkspaceStore;
@@ -73,6 +76,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(WorkspaceStore::default())
         .manage(PtyState::default())
+        .manage(AutomationState::default())
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
@@ -99,6 +103,8 @@ pub fn run() {
             updater::download_update,
             updater::install_update,
             agent_notify::test_agent_notify,
+            automation::automation_tab_closed,
+            automation::automation_sessions,
             toast::show_agent_notification,
             agents::agent_env_status,
             agents::agent_profiles,

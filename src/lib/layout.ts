@@ -148,6 +148,30 @@ export function openTab(state: LayoutState, workspaceId: string, tabId: string):
 }
 
 /**
+ * Apre un pannello "in secondo piano" (sessioni automatiche): lo accoda al
+ * gruppo del workspace senza cambiare gruppo, vista, pannello attivo o
+ * maximize. Il gruppo, se manca, nasce in coda; diventa quello attivo solo se
+ * non ce n'e' nessuno. Pannello gia' presente: stato invariato.
+ */
+export function openTabBackground(
+  state: LayoutState,
+  workspaceId: string,
+  tabId: string,
+): LayoutState {
+  if (findGroupOfTab(state, tabId)) return state;
+  const exists = state.groups.some((g) => g.workspaceId === workspaceId);
+  const groups = exists
+    ? state.groups.map((g) =>
+        g.workspaceId === workspaceId ? { ...g, order: [...g.order, tabId] } : g,
+      )
+    : [
+        ...state.groups,
+        { workspaceId, order: [tabId], activeTabId: tabId, maximizedTabId: null },
+      ];
+  return { ...state, groups, activeWorkspaceId: state.activeWorkspaceId ?? workspaceId };
+}
+
+/**
  * Chiude un pannello. Il gruppo che resta vuoto sparisce; se era quello
  * attivo passa al gruppo adiacente (quello che ne prende il posto, o il
  * precedente se era l'ultimo). Il pannello attivo di un gruppo che perde

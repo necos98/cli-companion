@@ -1,5 +1,6 @@
 import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
+import { statusWord as workerStatusWord } from "../lib/automation";
 import { cn } from "../lib/utils";
 import StatusIcon from "./StatusIcon";
 
@@ -8,6 +9,8 @@ interface Props {
   /** Nome del workspace, mostrato come prefisso "workspace / label" nella vista globale. */
   prefix?: string;
   status: TabStatus;
+  /** Sessione automatica (worker): stato e tooltip; assente = tab normale. */
+  automation?: { status: string; tooltip: string };
   /** Il pannello riceve la tastiera. */
   focused?: boolean;
   maximized: boolean;
@@ -35,6 +38,7 @@ export default function PaneHeader({
   label,
   prefix,
   status,
+  automation,
   focused = false,
   maximized,
   pinned,
@@ -44,14 +48,16 @@ export default function PaneHeader({
   onDragStart,
   onDragEnd,
 }: Props) {
-  const word = statusWord(status);
+  // Per un worker la parola di stato e' quella del task, non quella dell'agente.
+  const word = automation ? workerStatusWord(automation.status) : statusWord(status);
+  const baseTitle = prefix ? `${prefix} / ${label}` : label;
   return (
     <div
       draggable
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onDoubleClick={onToggleMaximize}
-      title={prefix ? `${prefix} / ${label}` : label}
+      title={automation ? `${baseTitle}\n${automation.tooltip}` : baseTitle}
       className="flex h-[30px] flex-shrink-0 cursor-grab select-none items-center gap-2 border-b bg-pane-header pl-2.5 pr-1.5 active:cursor-grabbing"
     >
       <span className="flex w-3.5 flex-shrink-0 justify-center">
@@ -75,6 +81,11 @@ export default function PaneHeader({
       >
         {label}
       </span>
+      {automation && (
+        <span className="flex-shrink-0 rounded-[4px] border px-1 font-mono text-[9px] font-medium leading-[14px] tracking-wide text-muted-foreground">
+          AUTO
+        </span>
+      )}
       {word && (
         <span className={cn("flex-shrink-0 whitespace-nowrap text-[11px]", word.className)}>
           {word.text}

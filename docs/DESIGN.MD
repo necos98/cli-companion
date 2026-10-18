@@ -88,7 +88,15 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     aggiunge `CLI_COMPANION_SESSION/u` a `WSLENV` (valore del processo padre
     preservato, senza duplicati: `merge_wslenv`) perche' la variabile attraversi
     il confine verso la distro e, via interop, torni all'exe Windows dell'hook;
+  - impostano anche `CLI_COMPANION_TOKEN` (token dell'app, `automation::token()`),
+    propagato su WSL con `/u` nello stesso `WSLENV` (`merge_wslenv` accetta piu'
+    variabili): serve a `--notify` e `--mcp` per autenticarsi sul socket;
+  - `cwd` opzionale (usato dalle sessioni automatiche) al posto della cartella del
+    workspace, validato come questa (Windows `is_dir`, WSL `wsl_dir_exists`);
   - ricontrolla che la cartella esista al momento dello spawn.
+- `PtySession` tiene il `tab_id`; `write_to_tab(app, tab_id, data)` scrive nel PTY
+  di un tab dal backend (usato da `automation.rs` per `send_message` e per il
+  risveglio dell'orchestratore).
 - Un thread di lettura per sessione inoltra i chunk al frontend sul `Channel`
   passato a `pty_spawn` (`{kind:"output",data}`; alla chiusura `{kind:"exit"}`):
   ogni tab riceve solo il proprio output, anche quello prima del ritorno dello spawn.
@@ -118,7 +126,17 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   (troncato). Il self-test lancia l'exe con stdin nulla.
 - Payload (una riga JSON su TCP `127.0.0.1:17421`, poi uguale nell'evento Tauri
   `agent-event`):
-  `{event, agent, tab_id?, agent_session_id?, notification_type?, message?}`.
+  `{event, agent, tab_id?, agent_session_id?, notification_type?, message?, token?}`.
+  `token` viene da `CLI_COMPANION_TOKEN`; il listener lo toglie prima dell'`emit`
+  verso il frontend e, se valido, passa l'evento hook anche ad `automation`.
+- Sullo stesso socket passano due tipi di riga, distinti dalla chiave `rpc`:
+  - **notify**: il payload sopra, limite 64 KB;
+  - **RPC** (nuova): `{"rpc":1,"token","session","method","params"}`, limite 1 MB,
+    risposta di una riga `{"ok":true,"result":..}` o `{"ok":false,"error":".."}`.
+    Token errato o `session` non valida (`is_valid_tab_id`) -> `ok:false`.
+    `dispatch_rpc` (in `automation.rs`) la esegue. Il client `rpc_call(port, line,
+    timeout)` e' usato da `mcp.rs`; il timeout di lettura della richiesta e' 2 s,
+    ma la risposta a `wait_for_events` puo' arrivare molto dopo.
 - Da WSL l'exe gira sull'host via interop: il TCP resta locale, nessun
   networking cross-VM.
 - Comando: `test_agent_notify` (self-test via --notify).
@@ -149,6 +167,17 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 - Aggiungere un agente: un file in `agents/` che implementa `AgentProvider` + una
   riga in `PROVIDERS`. La UI (Impostazioni -> Coding agent) raggruppa per agente
   da sola.
+- Automazione (facoltativa): `AgentProvider::automation_command(env_kind, &AutomationRequest)
+  -> Option<String>` (default `None`) costruisce il comando da digitare nel tab per
+  avviare una sessione automatica. `AutomationRequest { bootstrap_prompt,
+  permission_mode: PermissionMode (Default | AcceptEdits | Plan | Bypass), model }`.
+  Helper pubblici `automation_command(agent_id, env_kind, req)` e `automation_agents()`.
+  Claude Code: `claude "<bootstrap>" --permission-mode <m> --allowedTools
+  mcp__plugin_cli-companion-notify_cli-companion [--model <m>]` (prompt prima dei flag:
+  `--allowedTools` e' variadico; la regola senza nome tool abilita tutti i tool del server,
+  necessario perche' `acceptEdits` non approva i tool MCP). `bypassPermissions` al primo
+  avvio interattivo mostra un dialogo di conferma (salta con
+  `skipDangerousModePermissionPrompt: true` in `~/.claude/settings.json`).
 - Profili di input: `AgentProvider::input_profile() -> InputProfile` (default vuoto)
   con regole dichiarative `InputRule { event: InputEvent, env_kind: Option<"windows"|"wsl">,
   send }`. `InputEvent` (kebab-case) e' il punto di estensione; oggi solo
@@ -171,13 +200,79 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     dritti, o `/mnt/c/...` su WSL; `args` = `["--notify", evento, "claude-code"]`,
     `timeout` 10): `SessionStart` -> `session-start`, `Stop` -> `finished`,
     `Notification` (matcher `permission_prompt|idle_prompt|elicitation_dialog`) ->
-    `needs-input`. Passi: `plugin validate`, pulizia best-effort, `plugin marketplace
-    add`, `plugin install --scope user`. La versione del plugin deriva dagli hook
-    (Claude cache per versione: exe spostato = versione nuova). La cartella e'
+    `needs-input`. Il plugin contiene anche `.mcp.json` con il server `cli-companion`
+    (`command` = exe come sopra, `args` = `["--mcp"]`). Passi: `plugin validate`,
+    pulizia best-effort, `plugin marketplace add`, `plugin install --scope user`. La
+    versione del plugin deriva da hook + `.mcp.json` (Claude cache per versione: exe
+    spostato = versione nuova; il contenuto MCP nuovo richiede la reinstallazione). La cartella e'
     caricata sul posto e deve restare su disco.
   - stato installato: `claude plugin list --json` contiene `id` ==
     `cli-companion-notify@cli-companion-local` (array o oggetto con `plugins`).
   - rimozione: `plugin uninstall` + `marketplace remove` + cartella generata.
+
+### `automation.rs` — sessioni automatiche (orchestratore -> worker)
+
+Un orchestratore (qualunque tab non registrato come worker) avvia worker (tab PTY)
+con RPC; i worker rispondono solo con tool MCP. Struttura a strati:
+
+- `Registry`: nucleo **puro** (niente `AppHandle`, tempo iniettato). Tiene worker, code
+  di eventi per orchestratore (`seq` crescenti, tetto 1000, scarta i piu' vecchi), la
+  decisione di risveglio e accumula gli `Effect` da eseguire. Tetti: 16 worker attivi
+  per orchestratore, 256 worker tracciati in memoria.
+- `AutomationState { Mutex<Registry>, Condvar }` (managed state): `run` modifica sotto
+  lock e applica gli effetti **fuori** dal lock; `wait_for_events` e' il long-poll
+  sulla coda (Condvar con passi di 1 s; default 90 s, max 600: Claude Code sposta in
+  background le tool call oltre 2 minuti). Drena la coda e azzera `wake_pending`.
+- `Host`: gli effetti verso l'esterno (eventi Tauri, `pty::write_to_tab`, timer di
+  chiusura, workspace). `TauriHost` e' la versione reale, i test usano un host finto.
+- `dispatch_rpc` smista per ruolo: orchestratore = `list_agents`, `spawn_session`,
+  `list_sessions`, `send_message`, `close_session`, `wait_for_events`;
+  worker = `get_task`, `report_fact`, `request_help`, `complete_task` (`whoami` per
+  entrambi; per l'orchestratore riporta anche il suo `workspace`). Un worker puo' usare solo i propri metodi; un orchestratore agisce solo
+  sui propri worker.
+
+Stati del worker: `starting` (spawnato) -> `running` (`get_task`) -> `completed` |
+`failed` | `blocked` (`complete_task`) -> `closed` (tab chiuso). In mezzo, dagli hook
+di `--notify` (solo con token valido): `needs_input` (hook needs-input) e `idle`
+(hook finished senza `complete_task`). Eventi in coda all'orchestratore: `started`,
+`fact`, `help_request`, `completed`, `needs_input`, `stopped_without_report`, `exited`.
+
+```text
+O: spawn_session --RPC--> Registry.spawn --> emit automation-spawn --> frontend apre il tab W
+W: claude "<bootstrap>" --> get_task --> report_fact / request_help --> complete_task
+                                   \_____ eventi in coda di O _____/        |
+O: wait_for_events <-- Condvar -- coda                       dopo 1,5 s: emit automation-close
+O idle al prompt e coda non vuota --> write_to_tab(O, "[cli-companion] ... chiama wait_for_events")
+```
+
+Risveglio (`check_wake`): scrive nel PTY di O (bracketed paste, poi `\r` dopo 300 ms) solo
+se O non e' dentro `wait_for_events`, l'ultimo hook di O e' `finished` (idle al prompt) e
+dall'ultimo risveglio sono arrivati eventi nuovi (`wake_pending`/`woke_seq`: una volta per
+gruppo di eventi). Mai se l'ultimo hook di O e' `needs-input` (finirebbe in un dialogo
+di permesso). `send_message` usa la stessa scrittura nel PTY del worker.
+
+Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`;
+comandi `automation_tab_closed(tab_id)` e `automation_sessions()` (riallineamento a
+hot reload). Il comando di avvio e' `agents::automation_command`; l'isolamento (es.
+git worktree + `cwd`) e' deciso dall'orchestratore, ma solo dentro il suo workspace:
+`spawn_session` non accetta `workspace` (errore esplicito), il worker si apre nel
+workspace del tab dell'orchestratore (`pty::workspace_of_tab`, `Host::tab_workspace`) e il
+`cwd` opzionale deve essere assoluto, senza `..`, uguale o sotto il path del workspace
+(Windows: senza maiuscole e con ``/`/` equivalenti; WSL: per segmenti su `/`).
+
+### `mcp.rs` — server MCP stdio (`cli-companion --mcp`)
+
+- Ramo con early-return in `main.rs` come `--notify`. JSON-RPC 2.0 newline-delimited su
+  stdin/stdout: `initialize`, `notifications/initialized`, `ping`, `tools/list`,
+  `tools/call`; metodo ignoto con id -> errore -32601. Niente altro su stdout.
+- E' uno **shim**: ogni `tools/call` apre una connessione TCP a `127.0.0.1:17421`
+  (`agent_notify::rpc_call`), invia la riga RPC con `CLI_COMPANION_TOKEN` e
+  `CLI_COMPANION_SESSION` dall'ambiente e restituisce il risultato come testo JSON
+  (errore RPC -> `isError: true`). Read timeout 30 s, o `timeout_secs + 30` per
+  `wait_for_events`.
+- Il ruolo si risolve con `whoami` e decide i tool esposti (orchestratore o worker).
+  Senza variabili o con l'app non raggiungibile la lista tool e' vuota.
+- Logica pura (`handle_message` con `trait Backend`), testata con un backend finto.
 
 ### `session.rs` — persistenza della sessione
 
@@ -296,6 +391,16 @@ dello store in `setup` e tutti i comandi. Capability minime in
   tab sono ignorati (tranne `test`: solo suono). Suoni in `notifySound.ts`
   (`playDing`, `playAttention`); a finestra senza focus anche una notifica di
   sistema (`systemNotify.ts`, `tauri-plugin-notification`).
+- **Sessioni automatiche** (`lib/automation.ts`, zero-dep, `tests/automation.test.mjs`):
+  etichette/colori di stato, tooltip, filtro dei tab automatici. `App.tsx` ascolta
+  `automation-spawn` (apre il tab con `startCommand` = comando di avvio, `cwd` e
+  `Tab.automation` con padre/titolo/stato; usa `openTabBackground` di `layout.ts`, che
+  aggiunge il pannello al gruppo del workspace senza cambiare gruppo attivo né focus),
+  `automation-close` (stesso percorso di `closeTab`) e `automation-update` (stato e
+  ultimo report); alla chiusura di un tab automatico chiama `automation_tab_closed`.
+  All'avvio `automation_sessions()` riallinea lo stato. `PaneHeader` mostra il badge AUTO
+  e la parola di stato. I tab automatici sono esclusi dal salvataggio di sessione e
+  scrollback e non vengono ripristinati.
 - `components/ui/dropdown-menu.tsx`: wrapper shadcn di Radix, usato dal menu
   "⋯" della card workspace.
 - `lib/launch.ts`: pure functions zero-dep (sanitizza, trigger, input pty

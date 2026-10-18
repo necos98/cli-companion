@@ -270,6 +270,39 @@ pub struct InputProfile {
     pub rules: Vec<InputRule>,
 }
 
+/// Livello di permessi con cui parte una sessione automatica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Plan,
+    Bypass,
+}
+
+impl PermissionMode {
+    /// Valore ammesso dall'RPC `spawn_session`: "default" | "accept-edits" |
+    /// "plan" | "bypass".
+    pub fn parse(s: &str) -> Option<PermissionMode> {
+        match s {
+            "default" => Some(PermissionMode::Default),
+            "accept-edits" => Some(PermissionMode::AcceptEdits),
+            "plan" => Some(PermissionMode::Plan),
+            "bypass" => Some(PermissionMode::Bypass),
+            _ => None,
+        }
+    }
+}
+
+/// Richiesta di avvio di una sessione automatica.
+pub struct AutomationRequest<'a> {
+    /// ASCII sicuro (`[A-Za-z0-9 .,:;_()'-]`, garantito dal chiamante):
+    /// finisce in una riga di comando digitata nella shell del tab.
+    pub bootstrap_prompt: &'a str,
+    pub permission_mode: PermissionMode,
+    /// Gia' validato (`[A-Za-z0-9._-]{1,64}`).
+    pub model: Option<&'a str>,
+}
+
 /// Un coding agent supportato.
 pub trait AgentProvider: Sync {
     /// Id stabile (usato in `--notify`, nelle cartelle e nell'API).
@@ -287,6 +320,39 @@ pub trait AgentProvider: Sync {
     fn install(&self, ctx: &InstallCtx, env: &Env, det: &Detection) -> Result<String, String>;
     /// Rimuove il plugin e i file generati; ritorna il log dei passi.
     fn uninstall(&self, ctx: &InstallCtx, env: &Env, det: &Detection) -> Result<String, String>;
+    /// Comando da digitare nella shell del tab per avviare una sessione
+    /// automatica (`None` = l'agente non supporta l'automazione). `env_kind`
+    /// e' "windows" o "wsl": la stringa deve funzionare in PowerShell, cmd e
+    /// bash/zsh.
+    fn automation_command(&self, _env_kind: &str, _req: &AutomationRequest) -> Option<String> {
+        None
+    }
+}
+
+/// Comando di avvio di una sessione automatica per l'agente `agent_id`.
+pub fn automation_command(
+    agent_id: &str,
+    env_kind: &str,
+    req: &AutomationRequest,
+) -> Result<String, String> {
+    let provider = find_provider(agent_id)?;
+    provider
+        .automation_command(env_kind, req)
+        .ok_or_else(|| format!("{} non supporta le sessioni automatiche", provider.display_name()))
+}
+
+/// Agenti che supportano le sessioni automatiche, come (id, nome).
+pub fn automation_agents() -> Vec<(&'static str, &'static str)> {
+    let probe = AutomationRequest {
+        bootstrap_prompt: "probe",
+        permission_mode: PermissionMode::Default,
+        model: None,
+    };
+    PROVIDERS
+        .iter()
+        .filter(|p| p.automation_command("windows", &probe).is_some())
+        .map(|p| (p.id(), p.display_name()))
+        .collect()
 }
 
 fn find_provider(id: &str) -> Result<&'static dyn AgentProvider, String> {

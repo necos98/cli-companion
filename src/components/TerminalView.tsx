@@ -76,6 +76,13 @@ interface Props {
    * l'ambiente del workspace); null = Ctrl+V grezzo.
    */
   imagePasteSeq?: string | null;
+  /** Cartella di lavoro al posto di quella del workspace (sessioni automatiche). */
+  cwd?: string | null;
+  /**
+   * Tab automatico: stato del worker e tooltip dell'intestazione. Presente =
+   * lo scrollback non viene salvato (il tab non e' mai ripristinato).
+   */
+  automation?: { status: string; tooltip: string };
 }
 
 export default function TerminalView({
@@ -107,6 +114,8 @@ export default function TerminalView({
   onStatus,
   onInput,
   imagePasteSeq = null,
+  cwd = null,
+  automation,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -130,6 +139,9 @@ export default function TerminalView({
   // Catturato al mount: modifiche successive agli avvii valgono
   // solo per i terminali aperti dopo.
   const pendingCommandRef = useRef(initialCommand);
+  const cwdRef = useRef(cwd);
+  // I tab automatici non si ripristinano: niente salvataggio dello scrollback.
+  const skipScrollbackRef = useRef(automation !== undefined);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -187,7 +199,7 @@ export default function TerminalView({
         dirty = true;
       }
     };
-    registerFlushRef.current?.(tabId, flush);
+    if (!skipScrollbackRef.current) registerFlushRef.current?.(tabId, flush);
 
     const status = createBusyTracker({
       idleMs: 2000,
@@ -327,8 +339,8 @@ export default function TerminalView({
           }
           term.write(e.data);
           status.markOutput();
-          dirty = true;
-          if (saveTimer === undefined) {
+          if (!skipScrollbackRef.current) dirty = true;
+          if (!skipScrollbackRef.current && saveTimer === undefined) {
             saveTimer = setTimeout(() => {
               saveTimer = undefined;
               void flush();
@@ -351,6 +363,7 @@ export default function TerminalView({
           initialCols,
           initialRows,
           channel,
+          cwdRef.current,
         );
         if (disposed) {
           void api.ptyClose(id).catch(() => undefined);
@@ -481,6 +494,7 @@ export default function TerminalView({
           prefix={labelPrefix}
           focused={focused}
           status={paneStatus}
+          automation={automation}
           maximized={maximized}
           pinned={pinned}
           onTogglePin={onTogglePin}

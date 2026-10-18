@@ -1,17 +1,19 @@
 //! Provider Claude Code: plugin locale con gli hook che chiamano
-//! `cli-companion --notify`.
+//! `cli-companion --notify` e il server MCP `cli-companion --mcp`.
 //!
 //! Layout generato in `<app_data>/agent-plugins/claude-code/<env>/`:
 //! ```text
 //! .claude-plugin/marketplace.json
 //! plugins/cli-companion-notify/.claude-plugin/plugin.json
 //! plugins/cli-companion-notify/hooks/hooks.json
+//! plugins/cli-companion-notify/.mcp.json
 //! ```
 //! Il marketplace locale e' caricato sul posto: la cartella deve restare su
 //! disco finche' il plugin e' installato.
 
 use super::{
-    parse_version, resolve_wsl_command, AgentProvider, Detection, Env, InputEvent, InputProfile, InputRule, InstallCtx,
+    parse_version, resolve_wsl_command, AgentProvider, AutomationRequest, Detection, Env, InputEvent, InputProfile,
+    InputRule, InstallCtx, PermissionMode,
 };
 
 pub struct ClaudeCode;
@@ -24,6 +26,12 @@ const PLUGIN_ID: &str = "cli-companion-notify@cli-companion-local";
 /// Notification che richiedono una risposta dell'utente.
 const NEEDS_INPUT_MATCHER: &str = "permission_prompt|idle_prompt|elicitation_dialog";
 const HOOK_TIMEOUT_SECS: u32 = 10;
+/// Chiave del server MCP nel plugin.
+const MCP_SERVER: &str = "cli-companion";
+/// Regola di permesso che copre tutti i tool del server MCP del plugin
+/// (`mcp__plugin_<plugin>_<server>__<tool>`; senza nome tool = tutti).
+/// `acceptEdits` non approva i tool MCP, quindi serve sempre.
+const MCP_ALLOW_RULE: &str = "mcp__plugin_cli-companion-notify_cli-companion";
 
 fn marketplace_json() -> String {
     let v = serde_json::json!({
@@ -60,21 +68,34 @@ fn hooks_json(exe: &str) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 
+/// Server MCP del plugin (`.mcp.json` alla radice del plugin): stesso exe
+/// degli hook, in modalita' `--mcp` (stdio). Eredita l'ambiente di `claude`,
+/// quindi vede `CLI_COMPANION_SESSION` e `CLI_COMPANION_TOKEN`.
+fn mcp_json(exe: &str) -> String {
+    let v = serde_json::json!({
+        "mcpServers": {
+            MCP_SERVER: { "command": exe, "args": ["--mcp"] }
+        }
+    });
+    serde_json::to_string_pretty(&v).unwrap_or_default()
+}
+
 /// FNV-1a a 32 bit: serve solo a derivare la versione del plugin.
 fn fnv32(s: &str) -> u32 {
     s.bytes()
         .fold(0x811c9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x01000193))
 }
 
-/// La versione dipende dagli hook: Claude Code copia il plugin in una cache
+/// La versione dipende da hook e server MCP: Claude Code copia il plugin in una cache
 /// per versione, quindi se cambia il percorso dell'exe (app spostata o
 /// aggiornata) la versione deve cambiare, altrimenti resterebbe la copia
 /// vecchia con l'exe sbagliato.
-fn plugin_json(hooks: &str) -> String {
+fn plugin_json(hooks: &str, mcp: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
-        "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta.",
-        "version": format!("1.0.{}", fnv32(hooks) % 1_000_000),
+        "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta \
+                        e fornisce i tool MCP per orchestrare sessioni automatiche.",
+        "version": format!("1.1.{}", fnv32(&format!("{hooks}\n{mcp}")) % 1_000_000),
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
@@ -83,13 +104,15 @@ fn plugin_json(hooks: &str) -> String {
 /// `String` -> file: UTF-8 senza BOM.
 fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let hooks = hooks_json(exe);
+    let mcp = mcp_json(exe);
     vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (
             format!("plugins/{PLUGIN}/.claude-plugin/plugin.json"),
-            plugin_json(&hooks),
+            plugin_json(&hooks, &mcp),
         ),
         (format!("plugins/{PLUGIN}/hooks/hooks.json"), hooks),
+        (format!("plugins/{PLUGIN}/.mcp.json"), mcp),
     ]
 }
 
@@ -163,6 +186,38 @@ impl AgentProvider for ClaudeCode {
         InputProfile {
             rules: vec![rule("windows"), rule("wsl")],
         }
+    }
+
+    /// `claude "<prompt>" --permission-mode <m> --allowedTools <regola> [--model <m>]`.
+    /// Il prompt va PRIMA dei flag (`--allowedTools` e' variadico). La stringa
+    /// e' digitata in PowerShell, cmd o bash/zsh: un prompt con caratteri
+    /// speciali per una qualunque di queste shell viene rifiutato.
+    fn automation_command(&self, _env_kind: &str, req: &AutomationRequest) -> Option<String> {
+        let unsafe_char = |c: char| matches!(c, '"' | '$' | '`' | '%' | '!' | '\\') || c.is_control();
+        if req.bootstrap_prompt.is_empty() || req.bootstrap_prompt.chars().any(unsafe_char) {
+            return None;
+        }
+        let mode = match req.permission_mode {
+            PermissionMode::Default => "default",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Plan => "plan",
+            PermissionMode::Bypass => "bypassPermissions",
+        };
+        let mut cmd = format!(
+            "claude \"{}\" --permission-mode {mode} --allowedTools {MCP_ALLOW_RULE}",
+            req.bootstrap_prompt
+        );
+        if let Some(m) = req.model {
+            let ok = !m.is_empty()
+                && m.len() <= 64
+                && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+            if !ok {
+                return None;
+            }
+            cmd.push_str(" --model ");
+            cmd.push_str(m);
+        }
+        Some(cmd)
     }
 
     fn detect(&self, env: &Env) -> Detection {
@@ -339,9 +394,79 @@ mod tests {
         let wsl = plugin_files("/mnt/c/a/cli-companion.exe");
         let hooks = &wsl[2].1;
         assert!(hooks.contains("/mnt/c/a/cli-companion.exe"));
+        assert!(wsl[3].1.contains("/mnt/c/a/cli-companion.exe"));
         // Exe diverso => hooks diversi => versione diversa (cache di Claude).
         assert_ne!(win[1].1, wsl[1].1);
         assert_eq!(win[1].1, plugin_files("C:/a/cli-companion.exe")[1].1);
+    }
+
+    #[test]
+    fn plugin_declares_mcp_server() {
+        for exe in ["C:/Program Files/cli-companion/cli-companion.exe", "/mnt/c/a/cli-companion.exe"] {
+            let f = files(exe);
+            let m = &f["plugins/cli-companion-notify/.mcp.json"]["mcpServers"]["cli-companion"];
+            assert_eq!(m["command"], exe);
+            assert_eq!(m["args"], serde_json::json!(["--mcp"]));
+        }
+        let f = files("x");
+        let desc = &f["plugins/cli-companion-notify/.claude-plugin/plugin.json"]["description"];
+        assert!(desc.as_str().unwrap().contains("MCP"));
+    }
+
+    #[test]
+    fn version_depends_on_hooks_and_mcp() {
+        let hooks = hooks_json("C:/a.exe");
+        let v1 = plugin_json(&hooks, &mcp_json("C:/a.exe"));
+        assert_eq!(v1, plugin_json(&hooks, &mcp_json("C:/a.exe")));
+        // Stessi hook, MCP diverso => versione diversa.
+        assert_ne!(v1, plugin_json(&hooks, &mcp_json("C:/b.exe")));
+        assert_ne!(v1, plugin_json(&hooks_json("C:/b.exe"), &mcp_json("C:/a.exe")));
+    }
+
+    fn req<'a>(mode: PermissionMode, model: Option<&'a str>, prompt: &'a str) -> AutomationRequest<'a> {
+        AutomationRequest { bootstrap_prompt: prompt, permission_mode: mode, model }
+    }
+
+    #[test]
+    fn automation_command_every_env_and_mode() {
+        let p = "Sei una sessione automatica. Chiama get_task.";
+        let cases = [
+            (PermissionMode::Default, "default"),
+            (PermissionMode::AcceptEdits, "acceptEdits"),
+            (PermissionMode::Plan, "plan"),
+            (PermissionMode::Bypass, "bypassPermissions"),
+        ];
+        for env in ["windows", "wsl"] {
+            for (mode, flag) in cases {
+                let c = ClaudeCode.automation_command(env, &req(mode, None, p)).unwrap();
+                assert_eq!(
+                    c,
+                    format!(
+                        "claude \"{p}\" --permission-mode {flag} --allowedTools mcp__plugin_cli-companion-notify_cli-companion"
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automation_command_model_and_rejections() {
+        let c = ClaudeCode
+            .automation_command("wsl", &req(PermissionMode::Plan, Some("claude-opus-4.1"), "ciao"))
+            .unwrap();
+        assert!(c.ends_with(" --model claude-opus-4.1"));
+        for bad in ["a\"b", "a$b", "a`b", "a%b", "a!b", "a\\b", "a\nb", ""] {
+            let r = req(PermissionMode::Default, None, bad);
+            assert!(ClaudeCode.automation_command("windows", &r).is_none(), "{bad:?}");
+        }
+        let long = "a".repeat(65);
+        for bad in ["", "m x", "m;ls", "m\"", long.as_str()] {
+            let r = req(PermissionMode::Default, Some(bad), "ok");
+            assert!(ClaudeCode.automation_command("windows", &r).is_none(), "{bad:?}");
+        }
+        // Tramite l'helper pubblico.
+        let r = req(PermissionMode::Default, None, "ok");
+        assert!(crate::agents::automation_command("claude-code", "wsl", &r).is_ok());
     }
 
     #[test]

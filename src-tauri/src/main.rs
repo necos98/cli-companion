@@ -12,7 +12,10 @@ fn print_help() {
              agent (session-start|session-end|finished|needs-input|test) all'istanza in esecuzione ed\n  \
              esce; legge il JSON dell'hook da stdin e l'id tab da CLI_COMPANION_SESSION\n  \
              (eventi non riconosciuti o senza tab: ignorati, exit 0)\n  \
-           cli-companion --version       Stampa la versione ed esce\n  \
+           cli-companion --mcp           Server MCP (stdio) con i tool per orchestrare sessioni\n  \
+             automatiche; lanciato da Claude Code, usa CLI_COMPANION_SESSION e\n  \
+             CLI_COMPANION_TOKEN (fuori da cli-companion espone zero tool)\n  \
+           cli-companion --version      Stampa la versione ed esce\n  \
            cli-companion --help          Questo aiuto\n\
          \n\
          Exit code di --check-update: 0 = aggiornato, 2 = aggiornamento disponibile,\n  \
@@ -21,7 +24,7 @@ fn print_help() {
          Nota Windows: le build release non hanno console (windows_subsystem), quindi\n  \
          --check-update/--version sono pensati per le build debug o per script;\n  \
          --notify invece non stampa nulla e funziona anche in release: e' il\n  \
-         comando usato dagli hook dei coding agent.",
+         comando usato dagli hook dei coding agent;\n         --mcp parla solo JSON-RPC su stdio.",
         cli_companion_lib::updater::current_version()
     );
 }
@@ -46,6 +49,10 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    if args.iter().any(|a| a == "--mcp") {
+        cli_companion_lib::mcp::run_stdio();
+        std::process::exit(0);
     }
     if args.iter().any(|a| a == "--check-update") {
         let as_json = args.iter().any(|a| a == "--json");

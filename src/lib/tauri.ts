@@ -66,6 +66,32 @@ export interface AgentProfile {
   input_profile: { rules: InputRule[] };
 }
 
+/** Evento `automation-spawn` (vedi automation.rs): apri un tab worker. */
+export interface AutomationSpawn {
+  tab_id: string;
+  workspace_id: string;
+  /** Comando di avvio da digitare nella shell del tab. */
+  command: string;
+  cwd?: string | null;
+  title: string;
+  parent_tab_id: string;
+  agent_id: string;
+}
+
+/** Evento `automation-close`: chiudi il tab worker. */
+export interface AutomationClose {
+  tab_id: string;
+}
+
+/** Evento `automation-update` e risultato di `automation_sessions`. */
+export interface AutomationTabInfo {
+  tab_id: string;
+  status: string;
+  title: string;
+  parent_tab_id: string;
+  last_report?: string | null;
+}
+
 export interface NewWorkspace {
   name: string;
   kind: "windows" | "wsl";
@@ -127,7 +153,9 @@ export const api = {
     cols: number,
     rows: number,
     onEvent: Channel<PtyEvent>,
-  ) => invoke<number>("pty_spawn", { workspaceId, tabId, cols, rows, onEvent }),
+    cwd?: string | null,
+  ) =>
+    invoke<number>("pty_spawn", { workspaceId, tabId, cols, rows, onEvent, cwd: cwd ?? null }),
 
   ptyWrite: (sessionId: number, data: string) =>
     invoke<void>("pty_write", { sessionId, data }),
@@ -152,6 +180,12 @@ export const api = {
 
   removeAgentPlugin: (agentId: string, envKey: string) =>
     invoke<string>("remove_agent_plugin", { agentId, envKey }),
+
+  // Sessioni automatiche (backend: src-tauri/src/automation.rs).
+  /** Un tab automatico e' stato chiuso (utente, app o shell uscita). */
+  automationTabClosed: (tabId: string) => invoke<void>("automation_tab_closed", { tabId }),
+
+  automationSessions: () => invoke<AutomationTabInfo[]>("automation_sessions"),
 
   // Persistenza della sessione (backend: src-tauri/src/session.rs).
   loadSession: () => invoke<string | null>("load_session"),
@@ -183,6 +217,18 @@ export function onNotificationActivated(cb: (tabId: string) => void) {
   return listen<{ tab_id: string }>("notification-activated", (event) =>
     cb(event.payload.tab_id),
   );
+}
+
+export function onAutomationSpawn(cb: (e: AutomationSpawn) => void) {
+  return listen<AutomationSpawn>("automation-spawn", (event) => cb(event.payload));
+}
+
+export function onAutomationClose(cb: (e: AutomationClose) => void) {
+  return listen<AutomationClose>("automation-close", (event) => cb(event.payload));
+}
+
+export function onAutomationUpdate(cb: (e: AutomationTabInfo) => void) {
+  return listen<AutomationTabInfo>("automation-update", (event) => cb(event.payload));
 }
 
 export function onAgentEvent(cb: (e: AgentEvent) => void) {

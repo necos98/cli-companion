@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-use crate::agent_notify::SESSION_ENV;
+use crate::agent_notify::{SESSION_ENV, TOKEN_ENV};
 use crate::workspaces::WorkspaceStore;
 
 const MAX_SESSIONS: usize = 32;
@@ -23,6 +23,10 @@ pub enum PtyEvent {
 }
 
 struct PtySession {
+    /// Id del tab che ha aperto la sessione (serve a scriverci da fuori).
+    tab_id: String,
+    /// Workspace in cui e' stato aperto il tab.
+    workspace_id: String,
     master: Box<dyn MasterPty + Send>,
     /// Arc: pty_write lo clona e scrive senza tenere il lock della mappa,
     /// cosi' una shell che non legge non blocca le altre sessioni.
@@ -174,25 +178,35 @@ mod tests {
 
   #[test]
   fn wslenv_merge_appends_without_duplicates() {
-    let v = "CLI_COMPANION_SESSION";
-    assert_eq!(merge_wslenv(None, v), "CLI_COMPANION_SESSION/u");
-    assert_eq!(merge_wslenv(Some(""), v), "CLI_COMPANION_SESSION/u");
-    assert_eq!(merge_wslenv(Some("PATH/l"), v), "PATH/l:CLI_COMPANION_SESSION/u");
+    let v = ["CLI_COMPANION_SESSION"];
+    assert_eq!(merge_wslenv(None, &v), "CLI_COMPANION_SESSION/u");
+    assert_eq!(merge_wslenv(Some(""), &v), "CLI_COMPANION_SESSION/u");
+    assert_eq!(merge_wslenv(Some("PATH/l"), &v), "PATH/l:CLI_COMPANION_SESSION/u");
     assert_eq!(
-      merge_wslenv(Some("A:B/p:"), v),
+      merge_wslenv(Some("A:B/p:"), &v),
       "A:B/p:CLI_COMPANION_SESSION/u"
     );
     // Gia' presente (con o senza flag): invariato.
     assert_eq!(
-      merge_wslenv(Some("A:CLI_COMPANION_SESSION/u"), v),
+      merge_wslenv(Some("A:CLI_COMPANION_SESSION/u"), &v),
       "A:CLI_COMPANION_SESSION/u"
     );
-    assert_eq!(merge_wslenv(Some("CLI_COMPANION_SESSION"), v), "CLI_COMPANION_SESSION");
+    assert_eq!(merge_wslenv(Some("CLI_COMPANION_SESSION"), &v), "CLI_COMPANION_SESSION");
     // Nome che contiene solo la variabile come prefisso: non conta.
     assert_eq!(
-      merge_wslenv(Some("CLI_COMPANION_SESSION_X"), v),
+      merge_wslenv(Some("CLI_COMPANION_SESSION_X"), &v),
       "CLI_COMPANION_SESSION_X:CLI_COMPANION_SESSION/u"
     );
+  }
+
+  #[test]
+  fn wslenv_merge_handles_several_vars() {
+    let v = ["S", "T"];
+    assert_eq!(merge_wslenv(None, &v), "S/u:T/u");
+    assert_eq!(merge_wslenv(Some("A/p"), &v), "A/p:S/u:T/u");
+    // Una gia' presente: si aggiunge solo l'altra.
+    assert_eq!(merge_wslenv(Some("T/u"), &v), "T/u:S/u");
+    assert_eq!(merge_wslenv(Some("S:T/u"), &v), "S:T/u");
   }
 
   #[test]
@@ -200,11 +214,14 @@ mod tests {
     let mut c = CommandBuilder::new("dummy");
     apply_session_env(&mut c, "tab-1", false);
     assert_eq!(c.get_env("CLI_COMPANION_SESSION"), Some(std::ffi::OsStr::new("tab-1")));
+    let token = c.get_env("CLI_COMPANION_TOKEN").unwrap().to_string_lossy().into_owned();
+    assert_eq!(token, crate::automation::token());
     assert!(c.get_env("WSLENV").is_none());
     let mut w = CommandBuilder::new("dummy");
     apply_session_env(&mut w, "tab-1", true);
     let wslenv = w.get_env("WSLENV").unwrap().to_string_lossy().into_owned();
     assert!(wslenv.split(':').any(|e| e == "CLI_COMPANION_SESSION/u"), "{wslenv}");
+    assert!(wslenv.split(':').any(|e| e == "CLI_COMPANION_TOKEN/u"), "{wslenv}");
   }
 
   #[test]
@@ -240,31 +257,35 @@ fn apply_color_env(cmd: &mut CommandBuilder) {
     cmd.env("COLORTERM", "truecolor");
 }
 
-/// Aggiunge `var` a un valore di WSLENV (`A/p:B`), separato da `:`, senza
-/// duplicarla se c'e' gia' (con o senza flag). Il flag `/u` la fa passare da
-/// Windows alla distro; i processi Windows lanciati da li' (l'exe degli hook,
-/// via interop) la ricevono ancora dall'ambiente d'origine.
-fn merge_wslenv(existing: Option<&str>, var: &str) -> String {
-  let current = existing.unwrap_or("").trim_matches(':');
-  let present = current
+/// Aggiunge le `vars` a un valore di WSLENV (`A/p:B`), separato da `:`, senza
+/// duplicarle se ci sono gia' (con o senza flag). Il flag `/u` le fa passare
+/// da Windows alla distro; i processi Windows lanciati da li' (l'exe degli
+/// hook, via interop) le ricevono ancora dall'ambiente d'origine.
+fn merge_wslenv(existing: Option<&str>, vars: &[&str]) -> String {
+  let mut entries: Vec<String> = existing
+    .unwrap_or("")
+    .trim_matches(':')
     .split(':')
-    .any(|e| e.split('/').next() == Some(var));
-  if present {
-    current.to_string()
-  } else if current.is_empty() {
-    format!("{var}/u")
-  } else {
-    format!("{current}:{var}/u")
+    .filter(|e| !e.is_empty())
+    .map(str::to_string)
+    .collect();
+  for var in vars {
+    if !entries.iter().any(|e| e.split('/').next() == Some(*var)) {
+      entries.push(format!("{var}/u"));
+    }
   }
+  entries.join(":")
 }
 
-/// Imposta `CLI_COMPANION_SESSION` (id del tab) per gli hook degli agenti;
-/// su WSL la fa attraversare il confine con WSLENV.
+/// Imposta `CLI_COMPANION_SESSION` (id del tab) e `CLI_COMPANION_TOKEN` per
+/// gli hook degli agenti e il server MCP; su WSL le fa attraversare il
+/// confine con WSLENV.
 fn apply_session_env(cmd: &mut CommandBuilder, tab_id: &str, wsl: bool) {
   cmd.env(SESSION_ENV, tab_id);
+  cmd.env(TOKEN_ENV, crate::automation::token());
   if wsl {
     let parent = std::env::var("WSLENV").ok();
-    cmd.env("WSLENV", merge_wslenv(parent.as_deref(), SESSION_ENV));
+    cmd.env("WSLENV", merge_wslenv(parent.as_deref(), &[SESSION_ENV, TOKEN_ENV]));
   }
 }
 
@@ -298,13 +319,14 @@ pub async fn pty_spawn(
     tab_id: String,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
     if !crate::agent_notify::is_valid_tab_id(&tab_id) {
         return Err("id tab non valido".to_string());
     }
     crate::blocking(move || {
-        spawn_blocking_session(&app, &workspace_id, &tab_id, cols, rows, on_event)
+        spawn_blocking_session(&app, &workspace_id, &tab_id, cols, rows, cwd, on_event)
     })
     .await
 }
@@ -315,6 +337,7 @@ fn spawn_blocking_session(
     tab_id: &str,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
     let pty = app.state::<PtyState>();
@@ -322,6 +345,14 @@ fn spawn_blocking_session(
     let ws = store
         .find(workspace_id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
+    // Cartella di partenza: quella richiesta (sessioni automatiche) oppure
+    // quella del workspace.
+    let dir = cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .unwrap_or(&ws.path)
+        .to_string();
 
     {
         let sessions = pty.sessions.lock().unwrap();
@@ -335,14 +366,14 @@ fn spawn_blocking_session(
         if distro.is_empty() {
             return Err("distro mancante nel workspace".to_string());
         }
-        if !crate::wsl::wsl_dir_exists(&distro, &ws.path) {
-            return Err(format!("cartella non trovata in {distro}: {}", ws.path));
+        if !crate::wsl::wsl_dir_exists(&distro, &dir) {
+            return Err(format!("cartella non trovata in {distro}: {dir}"));
         }
         let mut c = CommandBuilder::new("wsl.exe");
         c.arg("-d");
         c.arg(&distro);
         c.arg("--cd");
-        c.arg(&ws.path);
+        c.arg(&dir);
         if let Some(shell) = ws.shell.clone().filter(|s| !s.is_empty()) {
             c.arg("-e");
             c.arg(&shell);
@@ -352,9 +383,9 @@ fn spawn_blocking_session(
         c
     } else {
         let meta =
-            std::fs::metadata(&ws.path).map_err(|_| format!("cartella non trovata: {}", ws.path))?;
+            std::fs::metadata(&dir).map_err(|_| format!("cartella non trovata: {dir}"))?;
         if !meta.is_dir() {
-            return Err(format!("non è una cartella: {}", ws.path));
+            return Err(format!("non è una cartella: {dir}"));
         }
         let shell = ws
             .shell
@@ -368,7 +399,7 @@ fn spawn_blocking_session(
             c.arg("-Command");
             c.arg(POWERSHELL_TITLE_HOOK);
         }
-        c.cwd(&ws.path);
+        c.cwd(&dir);
         apply_color_env(&mut c);
         apply_session_env(&mut c, tab_id, false);
         c
@@ -396,6 +427,8 @@ fn spawn_blocking_session(
     pty.sessions.lock().unwrap().insert(
         session_id,
         PtySession {
+            tab_id: tab_id.to_string(),
+            workspace_id: workspace_id.to_string(),
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
             child: Mutex::new(child),
@@ -434,6 +467,35 @@ fn spawn_blocking_session(
     });
 
     Ok(session_id)
+}
+
+/// Scrive nel terminale del tab `tab_id` (usato dall'automazione per
+/// digitare messaggi nei prompt degli agenti). Come `pty_write`, non tiene il
+/// lock della mappa durante la scrittura.
+pub fn write_to_tab(app: &AppHandle, tab_id: &str, data: &str) -> Result<(), String> {
+    let pty = app.state::<PtyState>();
+    let writer = pty
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .find(|sess| sess.tab_id == tab_id)
+        .map(|sess| sess.writer.clone())
+        .ok_or_else(|| "terminale del tab non trovato".to_string())?;
+    let mut writer = writer.lock().unwrap();
+    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Id del workspace in cui e' aperto il tab `tab_id` (None se non ha un pty vivo).
+pub fn workspace_of_tab(app: &AppHandle, tab_id: &str) -> Option<String> {
+    let pty = app.state::<PtyState>();
+    let sessions = pty.sessions.lock().unwrap();
+    sessions
+        .values()
+        .find(|sess| sess.tab_id == tab_id)
+        .map(|sess| sess.workspace_id.clone())
 }
 
 #[tauri::command]
