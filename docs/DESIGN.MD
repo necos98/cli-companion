@@ -151,8 +151,8 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     risposta di una riga `{"ok":true,"result":..}` o `{"ok":false,"error":".."}`.
     Token errato o `session` non valida (`is_valid_tab_id`) -> `ok:false`.
     `dispatch_rpc` (in `automation.rs`) la esegue. Il client `rpc_call(port, line,
-    timeout)` e' usato da `mcp.rs`; il timeout di lettura della richiesta e' 2 s,
-    ma la risposta a `wait_for_events` puo' arrivare molto dopo.
+    timeout)` e' usato da `mcp.rs`; il timeout di lettura della richiesta e' 2 s.
+    Nessuna RPC resta in attesa: rispondono tutte subito.
 - Da WSL l'exe gira sull'host via interop: il TCP resta locale, nessun
   networking cross-VM.
 - Comando: `test_agent_notify` (self-test via --notify).
@@ -235,14 +235,15 @@ con RPC; i worker rispondono solo con tool MCP. Struttura a strati:
   di eventi per orchestratore (`seq` crescenti, tetto 1000, scarta i piu' vecchi), la
   decisione di risveglio e accumula gli `Effect` da eseguire. Tetti: 16 worker attivi
   per orchestratore, 256 worker tracciati in memoria.
-- `AutomationState { Mutex<Registry>, Condvar }` (managed state): `run` modifica sotto
-  lock e applica gli effetti **fuori** dal lock; `wait_for_events` e' il long-poll
-  sulla coda (Condvar con passi di 1 s; default 90 s, max 600: Claude Code sposta in
-  background le tool call oltre 2 minuti). Drena la coda e azzera `wake_pending`.
+- `AutomationState { Mutex<Registry> }` (managed state): `run` modifica sotto lock e
+  applica gli effetti **fuori** dal lock. `get_events` (`Registry::drain`) svuota la coda
+  e azzera `wake_pending` senza mai attendere: l'orchestratore e' a eventi, chiude il
+  turno dopo gli spawn e viene svegliato (niente long-poll che tenga occupato il tab e
+  consumi una richiesta a ogni giro a vuoto).
 - `Host`: gli effetti verso l'esterno (eventi Tauri, `pty::write_to_tab`, timer di
   chiusura, workspace). `TauriHost` e' la versione reale, i test usano un host finto.
 - `dispatch_rpc` smista per ruolo: orchestratore = `list_agents`, `spawn_session`,
-  `list_sessions`, `send_message`, `close_session`, `wait_for_events`;
+  `list_sessions`, `send_message`, `close_session`, `get_events`;
   worker = `get_task`, `report_fact`, `request_help`, `complete_task` (`whoami` per
   entrambi; per l'orchestratore riporta anche il suo `workspace`). Un worker puo' usare solo i propri metodi; un orchestratore agisce solo
   sui propri worker.
@@ -270,12 +271,14 @@ di scrivere `task` e `send_message` in inglese. UI e commenti restano in italian
 O: spawn_session --RPC--> Registry.spawn --> emit automation-spawn --> frontend apre il tab W
 W: claude "<bootstrap>" --> get_task --> report_fact / request_help --> complete_task
                                    \_____ eventi in coda di O _____/        |
-O: wait_for_events <-- Condvar -- coda                       dopo 1,5 s: emit automation-close
-O idle al prompt e coda non vuota --> write_to_tab(O, "[cli-companion] ... chiama wait_for_events")
+O: chiude il turno                                          dopo 1,5 s: emit automation-close
+O idle al prompt ed evento azionabile --> write_to_tab(O, "[cli-companion] ... call get_events ...")
+O: get_events <-- coda, gestisce gli eventi, chiude di nuovo il turno
 ```
 
 Risveglio (`check_wake`): scrive nel PTY di O (bracketed paste, poi `\r` dopo 300 ms) solo
-se O non e' dentro `wait_for_events`, l'ultimo hook di O e' `finished` (idle al prompt) e
+se l'ultimo hook di O e' `finished` (idle al prompt; la notifica `idle_prompt`, ~60 s dopo
+la fine del turno, conta come `finished` e non come richiesta di permesso) e
 dall'ultimo risveglio sono arrivati eventi **azionabili** nuovi (`EventKind::is_actionable`:
 `completed`, `help_request`, `needs_input`, `stopped_without_report`, `exited`; `started` e
 `fact` si accodano soltanto e non svegliano ne' bloccano un risveglio successivo;
@@ -303,8 +306,7 @@ permessi: ordine `plan < default < accept-edits < bypass`; `permission_mode` di
 - E' uno **shim**: ogni `tools/call` apre una connessione TCP a `127.0.0.1:17421`
   (`agent_notify::rpc_call`), invia la riga RPC con `CLI_COMPANION_TOKEN` e
   `CLI_COMPANION_SESSION` dall'ambiente e restituisce il risultato come testo JSON
-  (errore RPC -> `isError: true`). Read timeout 30 s, o `timeout_secs + 30` per
-  `wait_for_events`.
+  (errore RPC -> `isError: true`). Read timeout 30 s.
 - Il ruolo si risolve con `whoami` e decide i tool esposti (orchestratore o worker).
   Senza variabili o con l'app non raggiungibile la lista tool e' vuota.
 - Logica pura (`handle_message` con `trait Backend`), testata con un backend finto.

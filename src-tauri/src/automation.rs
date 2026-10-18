@@ -8,9 +8,12 @@
 //! - `Registry`: nucleo PURO (niente `AppHandle`, niente I/O, tempo iniettato).
 //!   Tiene worker, code di eventi per orchestratore e la decisione di
 //!   "risveglio"; gli effetti da eseguire li accumula come `Effect`.
-//! - `AutomationState`: `Mutex<Registry>` + `Condvar` (managed state Tauri).
-//!   `run` esegue una modifica, preleva gli effetti e li applica FUORI dal
-//!   lock; `wait_for_events` e' il long-poll sulla coda.
+//! - `AutomationState`: `Mutex<Registry>` (managed state Tauri). `run`
+//!   esegue una modifica, preleva gli effetti e li applica FUORI dal lock.
+//!
+//! L'orchestratore non resta mai in attesa dentro un tool: dopo gli spawn
+//! chiude il turno e, quando arrivano eventi azionabili, cli-companion digita
+//! `WAKE_TEXT` nel suo prompt; `get_events` gli consegna la coda.
 //! - `Host`: gli effetti verso l'esterno (eventi Tauri, scrittura nel PTY,
 //!   timer, workspace). `TauriHost` e' l'implementazione reale; i test usano
 //!   un host finto, cosi' anche `dispatch` si prova senza finestra.
@@ -25,8 +28,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Eventi Tauri verso il frontend.
@@ -43,10 +46,6 @@ const MAX_TRACKED_WORKERS: usize = 256;
 pub const CLOSE_DELAY: Duration = Duration::from_millis(1500);
 /// Pausa tra l'incolla e l'Invio: la TUI deve aver chiuso il bracketed paste.
 pub const ENTER_DELAY: Duration = Duration::from_millis(300);
-/// Passo di controllo della vitalita' del client durante `wait_for_events`.
-const WAIT_SLICE: Duration = Duration::from_secs(1);
-const DEFAULT_WAIT_SECS: u64 = 90;
-const MAX_WAIT_SECS: u64 = 600;
 
 const TITLE_MAX: usize = 80;
 const TASK_MAX: usize = 100_000;
@@ -64,7 +63,7 @@ pub const BOOTSTRAP_PROMPT: &str =
 
 /// Testo digitato nel prompt dell'orchestratore quando ci sono eventi nuovi.
 pub const WAKE_TEXT: &str =
-    "[cli-companion] New events from your automated sessions: call wait_for_events.";
+    "[cli-companion] New events from your automated sessions: call get_events, handle them, then end your turn.";
 
 /// Motivo del blocco dello Stop hook: il worker ha chiuso il turno senza
 /// riferire (`reason` e' mostrato al modello).
@@ -202,7 +201,7 @@ pub enum EventKind {
 impl EventKind {
     /// Eventi che richiedono l'attenzione dell'orchestratore e possono
     /// svegliarlo; `started` e `fact` restano in coda fino al prossimo
-    /// `wait_for_events`.
+    /// `get_events`.
     fn is_actionable(self) -> bool {
         !matches!(self, EventKind::Started | EventKind::Fact)
     }
@@ -317,8 +316,6 @@ impl Worker {
 #[derive(Default)]
 struct Queue {
     events: VecDeque<Event>,
-    /// Quanti `wait_for_events` sono in corso per questo orchestratore.
-    waiting: u32,
     /// Messaggio di risveglio gia' digitato e non ancora "consumato".
     wake_pending: bool,
     /// `seq` dell'ultimo evento azionabile in coda al momento del risveglio:
@@ -509,9 +506,9 @@ impl Registry {
 
     /// Decide se svegliare l'orchestratore `tab`: ci sono eventi azionabili
     /// in coda (`started` e `fact` no: li consegna il prossimo
-    /// `wait_for_events`), non sta aspettando, il suo ultimo hook e'
-    /// `finished` (idle al prompt: con `needs-input` il testo finirebbe in un
-    /// dialogo di permesso) e, se l'abbiamo gia' svegliato, sono arrivati
+    /// `get_events`), il suo ultimo hook e' `finished` (idle al prompt: con
+    /// `needs-input` il testo finirebbe in un dialogo di permesso) e, se
+    /// l'abbiamo gia' svegliato, sono arrivati
     /// eventi azionabili nuovi da allora. Un orchestratore che ignora il
     /// risveglio e chiude il turno viene quindi risvegliato al prossimo
     /// evento, non a ogni turno.
@@ -524,7 +521,7 @@ impl Registry {
         else {
             return;
         };
-        if q.waiting > 0 || !idle || (q.wake_pending && last_seq <= q.woke_seq) {
+        if !idle || (q.wake_pending && last_seq <= q.woke_seq) {
             return;
         }
         q.wake_pending = true;
@@ -717,7 +714,11 @@ impl Registry {
         if self.last_hook.len() > 512 {
             self.last_hook.clear();
         }
-        self.last_hook.insert(tab.to_string(), hook.event.to_string());
+        // `idle_prompt` (~60 s dopo la fine del turno) conferma che il tab e'
+        // fermo al prompt: per il risveglio vale come `finished`, non come
+        // una richiesta di permesso.
+        let last = if hook.notification_type == Some("idle_prompt") { "finished" } else { hook.event };
+        self.last_hook.insert(tab.to_string(), last.to_string());
         let Some(w) = self.workers.get_mut(tab) else {
             self.check_wake(tab);
             return None;
@@ -796,25 +797,14 @@ impl Registry {
 
     // --- coda ---
 
-    /// Inizio di un `wait_for_events`: azzera il risveglio pendente.
-    pub fn begin_wait(&mut self, orch: &str) {
-        let q = self.queues.entry(orch.to_string()).or_default();
-        q.waiting += 1;
-        q.wake_pending = false;
-    }
-
-    pub fn end_wait(&mut self, orch: &str) {
-        if let Some(q) = self.queues.get_mut(orch) {
-            q.waiting = q.waiting.saturating_sub(1);
-        }
-    }
-
-    /// Svuota la coda dell'orchestratore.
+    /// `get_events`: svuota la coda dell'orchestratore; il risveglio digitato
+    /// e' consumato.
     pub fn drain(&mut self, orch: &str) -> Vec<Event> {
-        self.queues
-            .get_mut(orch)
-            .map(|q| q.events.drain(..).collect())
-            .unwrap_or_default()
+        let Some(q) = self.queues.get_mut(orch) else {
+            return Vec::new();
+        };
+        q.wake_pending = false;
+        q.events.drain(..).collect()
     }
 }
 
@@ -997,49 +987,18 @@ pub trait Host: Clone + Send + 'static {
 #[derive(Default)]
 pub struct AutomationState {
     inner: Mutex<Registry>,
-    cv: Condvar,
 }
 
 impl AutomationState {
-    /// Esegue `f` sul registro, poi applica gli effetti fuori dal lock e
-    /// sveglia chi aspetta sulla coda.
+    /// Esegue `f` sul registro, poi applica gli effetti fuori dal lock.
     pub fn run<H: Host, T>(&self, host: &H, f: impl FnOnce(&mut Registry) -> T) -> T {
         let (out, effects) = {
             let mut reg = self.inner.lock().unwrap();
             let out = f(&mut reg);
             (out, reg.take_effects())
         };
-        self.cv.notify_all();
         apply_effects(host, effects);
         out
-    }
-
-    /// Long-poll: ritorna subito se la coda di `orch` non e' vuota, altrimenti
-    /// attende un evento fino a `timeout` (lista vuota). Si ferma prima se
-    /// `alive` dice che il client non c'e' piu': gli eventi restano in coda.
-    pub fn wait_for_events(
-        &self,
-        orch: &str,
-        timeout: Duration,
-        alive: &dyn Fn() -> bool,
-    ) -> Vec<Event> {
-        let deadline = Instant::now() + timeout;
-        let mut reg = self.inner.lock().unwrap();
-        reg.begin_wait(orch);
-        let events = loop {
-            let events = reg.drain(orch);
-            if !events.is_empty() {
-                break events;
-            }
-            let now = Instant::now();
-            if now >= deadline || !alive() {
-                break Vec::new();
-            }
-            let slice = (deadline - now).min(WAIT_SLICE);
-            reg = self.cv.wait_timeout(reg, slice).unwrap().0;
-        };
-        reg.end_wait(orch);
-        events
     }
 }
 
@@ -1083,7 +1042,7 @@ const ORCHESTRATOR_METHODS: [&str; 6] = [
     "list_sessions",
     "send_message",
     "close_session",
-    "wait_for_events",
+    "get_events",
 ];
 const WORKER_METHODS: [&str; 4] = ["get_task", "report_fact", "request_help", "complete_task"];
 
@@ -1096,25 +1055,13 @@ fn session_param(p: &Value) -> Result<String, String> {
     }
 }
 
-fn parse_wait_secs(p: &Value) -> Result<u64, String> {
-    match p.get("timeout_secs") {
-        None | Some(Value::Null) => Ok(DEFAULT_WAIT_SECS),
-        Some(v) => match v.as_u64() {
-            Some(n) if (1..=MAX_WAIT_SECS).contains(&n) => Ok(n),
-            _ => Err(format!("timeout_secs must be between 1 and {MAX_WAIT_SECS}")),
-        },
-    }
-}
-
-/// Esegue un metodo RPC per `session`. `alive` dice se il client e' ancora
-/// connesso (usato dalle attese lunghe).
+/// Esegue un metodo RPC per `session`.
 pub fn dispatch<H: Host>(
     st: &AutomationState,
     host: &H,
     session: &str,
     method: &str,
     params: &Value,
-    alive: &dyn Fn() -> bool,
 ) -> Result<Value, String> {
     if !(params.is_null() || params.is_object()) {
         return Err("params must be an object".to_string());
@@ -1163,9 +1110,8 @@ pub fn dispatch<H: Host>(
             st.run(host, |r| r.close_session(session, &target, now))?;
             Ok(json!({ "closed": true }))
         }
-        "wait_for_events" => {
-            let secs = parse_wait_secs(params)?;
-            let events = st.wait_for_events(session, Duration::from_secs(secs), alive);
+        "get_events" => {
+            let events = st.run(host, |r| r.drain(session));
             Ok(json!({ "events": events }))
         }
         "get_task" => st.run(host, |r| r.get_task(session, now)),
@@ -1300,7 +1246,7 @@ impl Host for TauriHost {
 }
 
 /// Punto d'ingresso delle RPC dal socket: autentica e smista.
-pub fn handle_rpc(app: &AppHandle, req: &RpcRequest, alive: &dyn Fn() -> bool) -> RpcResponse {
+pub fn handle_rpc(app: &AppHandle, req: &RpcRequest) -> RpcResponse {
     if let Err(e) = authenticate(req, token()) {
         return RpcResponse::failure(e);
     }
@@ -1311,7 +1257,6 @@ pub fn handle_rpc(app: &AppHandle, req: &RpcRequest, alive: &dyn Fn() -> bool) -
         &req.session,
         &req.method,
         &req.params,
-        alive,
     ))
 }
 
@@ -1731,7 +1676,7 @@ mod tests {
         let unsafe_char = |c: char| matches!(c, '"' | '$' | '`' | '%' | '!' | '\\') || c.is_control();
         assert!(!BOOTSTRAP_PROMPT.chars().any(unsafe_char));
         assert!(BOOTSTRAP_PROMPT.contains("get_task"));
-        assert!(WAKE_TEXT.contains("wait_for_events"));
+        assert!(WAKE_TEXT.is_ascii() && WAKE_TEXT.contains("get_events"));
         assert!(WORKER_INSTRUCTIONS.contains("complete_task"));
         assert!(WORKER_INSTRUCTIONS.contains("Background commands are fine"));
     }
@@ -1804,18 +1749,40 @@ mod tests {
         assert_eq!(wakes(&mut r), 1);
         r.request_help(&w, "b", 4).unwrap();
         assert_eq!(wakes(&mut r), 0);
-        // Rientra in wait_for_events: il flag si azzera, e mentre aspetta
-        // non si sveglia.
-        r.begin_wait(ORCH);
+        // get_events: started + fact + 2 help_request, anche i non azionabili.
+        assert_eq!(r.drain(ORCH).len(), 4);
+        // Sta elaborando gli eventi: niente risveglio finche' non torna idle.
         r.request_help(&w, "c", 5).unwrap();
         assert_eq!(wakes(&mut r), 0);
-        // started + fact + 3 help_request: la coda consegna anche i non azionabili.
-        assert_eq!(r.drain(ORCH).len(), 5);
-        r.end_wait(ORCH);
-        // Sta elaborando gli eventi: niente risveglio finche' non torna idle.
-        r.request_help(&w, "d", 6).unwrap();
+        hook(&mut r, ORCH, "finished", None, 6);
+        assert_eq!(wakes(&mut r), 1);
+    }
+
+    #[test]
+    fn idle_prompt_counts_as_idle_for_the_orchestrator() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        hook(&mut r, ORCH, "finished", None, 2);
+        // ~60 s dopo la fine del turno Claude Code manda `idle_prompt`: O e'
+        // ancora al prompt e un evento azionabile deve svegliarlo.
+        let idle = HookEvent {
+            event: "needs-input",
+            notification_type: Some("idle_prompt"),
+            ..Default::default()
+        };
+        r.on_hook(ORCH, &idle, 3);
+        r.request_help(&w, "a", 4).unwrap();
+        assert_eq!(wakes(&mut r), 1);
+        // Risveglio ignorato: un idle_prompt successivo non lo ripete.
+        r.on_hook(ORCH, &idle, 5);
         assert_eq!(wakes(&mut r), 0);
-        hook(&mut r, ORCH, "finished", None, 7);
+        // Un evento azionabile in coda mentre O lavorava: idle_prompt lo sveglia.
+        r.drain(ORCH);
+        hook(&mut r, ORCH, "prompt", None, 6);
+        r.complete_task(&w, "completed", "fatto", 7).unwrap();
+        assert_eq!(wakes(&mut r), 0);
+        r.on_hook(ORCH, &idle, 8);
         assert_eq!(wakes(&mut r), 1);
     }
 
@@ -1867,8 +1834,6 @@ mod tests {
         let w2 = spawn(&mut r, "due");
         r.get_task(&w2, 5).unwrap();
         r.drain(ORCH);
-        r.begin_wait(ORCH);
-        r.end_wait(ORCH);
         hook(&mut r, ORCH, "finished", None, 6);
         stop(&mut r, &w2, None, Some(1), 7);
         assert_eq!(wakes(&mut r), 0);
@@ -1884,7 +1849,7 @@ mod tests {
         r.get_task(&w, 2).unwrap();
         r.request_help(&w, "a", 3).unwrap();
         assert_eq!(wakes(&mut r), 1);
-        // O chiude il turno senza chiamare wait_for_events: nessun evento
+        // O chiude il turno senza chiamare get_events: nessun evento
         // nuovo, nessun nuovo risveglio (niente spam a ogni turno).
         hook(&mut r, ORCH, "finished", None, 4);
         assert_eq!(wakes(&mut r), 0);
@@ -1909,8 +1874,6 @@ mod tests {
         assert_eq!(wakes(&mut r), 1);
         // Senza eventi in coda, un finished non sveglia nessuno.
         r.drain(ORCH);
-        r.begin_wait(ORCH);
-        r.end_wait(ORCH);
         hook(&mut r, ORCH, "finished", None, 4);
         assert_eq!(wakes(&mut r), 0);
     }
@@ -2102,7 +2065,7 @@ mod tests {
     }
 
     fn call(st: &AutomationState, h: &FakeHost, session: &str, method: &str, params: Value) -> Result<Value, String> {
-        dispatch(st, h, session, method, &params, &|| true)
+        dispatch(st, h, session, method, &params)
     }
 
     #[test]
@@ -2173,7 +2136,7 @@ mod tests {
         // Il worker e' un worker: whoami lo dice e i metodi orchestratore falliscono.
         assert_eq!(call(&st, &h, &w, "whoami", json!({})).unwrap()["role"], "worker");
         assert!(call(&st, &h, &w, "spawn_session", json!({"task":"t"})).is_err());
-        assert!(call(&st, &h, &w, "wait_for_events", json!({})).is_err());
+        assert!(call(&st, &h, &w, "get_events", json!({})).is_err());
         assert!(call(&st, &h, ORCH, "get_task", json!({})).is_err());
 
         let t = call(&st, &h, &w, "get_task", json!({})).unwrap();
@@ -2194,12 +2157,11 @@ mod tests {
         assert!(call(&st, &h, ORCH, "send_message", json!({"session": "altro", "text": "x"})).is_err());
         assert!(call(&st, &h, "orch-2", "send_message", json!({"session": w, "text": "x"})).is_err());
 
-        // wait_for_events: eventi gia' in coda -> subito.
-        let ev = call(&st, &h, ORCH, "wait_for_events", json!({"timeout_secs": 5})).unwrap();
+        // get_events: consegna la coda e la svuota, senza mai attendere.
+        let ev = call(&st, &h, ORCH, "get_events", json!({})).unwrap();
         let kinds: Vec<_> = ev["events"].as_array().unwrap().iter().map(|e| e["kind"].clone()).collect();
         assert_eq!(kinds, vec![json!("started"), json!("fact")]);
-        assert!(call(&st, &h, ORCH, "wait_for_events", json!({"timeout_secs": 0})).is_err());
-        assert!(call(&st, &h, ORCH, "wait_for_events", json!({"timeout_secs": 601})).is_err());
+        assert_eq!(call(&st, &h, ORCH, "get_events", Value::Null).unwrap(), json!({"events": []}));
 
         // complete_task con chiusura ritardata di 1500 ms.
         let c = call(&st, &h, &w, "complete_task", json!({"status":"completed","summary":"fatto"})).unwrap();
@@ -2215,37 +2177,20 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_events_blocks_until_event_or_timeout() {
-        let st = Arc::new(AutomationState::default());
-        let h = FakeHost::default();
+    fn get_events_rearms_an_ignored_wake() {
+        let (st, h) = (AutomationState::default(), FakeHost::default());
         let w = st.run(&h, |r| r.spawn(ORCH, new_worker("w"), 1)).unwrap().tab_id;
-
-        // Timeout: lista vuota dopo l'attesa.
-        let t0 = Instant::now();
-        assert!(st.wait_for_events(ORCH, Duration::from_millis(150), &|| true).is_empty());
-        assert!(t0.elapsed() >= Duration::from_millis(140));
-
-        // Un evento da un altro thread sveglia l'attesa molto prima del timeout.
-        let (st2, h2, w2) = (st.clone(), h.clone(), w.clone());
-        let pusher = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            st2.run(&h2, |r| r.get_task(&w2, 5)).unwrap();
-        });
-        let t0 = Instant::now();
-        let ev = st.wait_for_events(ORCH, Duration::from_secs(30), &|| true);
-        pusher.join().unwrap();
-        assert_eq!(kinds(&ev), vec![EventKind::Started]);
-        assert!(t0.elapsed() < Duration::from_secs(5));
-
-        // Client sparito: l'attesa termina e gli eventi restano in coda.
-        st.run(&h, |r| r.report_fact(&w, "x", 6)).unwrap();
-        let gone = st.wait_for_events(ORCH, Duration::from_secs(30), &|| false);
-        assert_eq!(gone.len(), 1); // gli eventi gia' presenti vengono comunque consegnati
-        assert!(st.wait_for_events(ORCH, Duration::from_secs(30), &|| false).is_empty());
-        // Dopo l'attesa il contatore e' tornato a zero: il risveglio e' di nuovo possibile.
-        st.run(&h, |r| hook(r, ORCH, "finished", None, 7));
-        st.run(&h, |r| r.request_help(&w, "y", 8)).unwrap();
-        assert!(h.log().iter().any(|l| l.contains("200~") && l.contains("wait_for_events")));
+        st.run(&h, |r| r.get_task(&w, 2)).unwrap();
+        st.run(&h, |r| hook(r, ORCH, "finished", None, 3));
+        st.run(&h, |r| r.request_help(&w, "a", 4)).unwrap();
+        let pastes = || h.log().iter().filter(|l| l.starts_with(&format!("write:{ORCH}:")) && l.contains("200~")).count();
+        assert_eq!(pastes(), 1);
+        // O legge la coda e chiude il turno: il prossimo evento azionabile lo
+        // sveglia di nuovo.
+        call(&st, &h, ORCH, "get_events", json!({})).unwrap();
+        st.run(&h, |r| hook(r, ORCH, "finished", None, 5));
+        st.run(&h, |r| r.complete_task(&w, "completed", "fatto", 6)).unwrap();
+        assert_eq!(pastes(), 2);
     }
 
     #[test]
@@ -2257,7 +2202,7 @@ mod tests {
         st.run(&h, |r| r.request_help(&w, "q", 3)).unwrap();
         let log = h.log();
         let paste = log.iter().position(|l| l.starts_with(&format!("write:{ORCH}:")) && l.contains("200~")).unwrap();
-        assert!(log[paste].contains("wait_for_events"));
+        assert!(log[paste].contains("get_events"));
         assert!(log.contains(&format!("write:{ORCH}:\\r")));
     }
 }

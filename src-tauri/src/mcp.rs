@@ -22,11 +22,8 @@ use crate::agent_notify::{rpc_call, RpcRequest, RpcResponse, NOTIFY_PORT, SESSIO
 
 /// Versioni del protocollo MCP che sappiamo parlare (la prima e' il default).
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const DEFAULT_WAIT_SECS: u64 = 90;
-const MAX_WAIT_SECS: u64 = 600;
-/// Margine di lettura oltre il timeout di `wait_for_events`.
-const WAIT_MARGIN_SECS: u64 = 30;
-const RPC_TIMEOUT_SECS: u64 = 30;
+/// Attesa massima della risposta di una RPC (nessun tool resta in attesa).
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Ruolo del chiamante, come riportato da `whoami`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,8 +104,9 @@ fn orchestrator_tools() -> Vec<Value> {
             "spawn_session",
             "Start an automated session (worker): cli-companion opens a new tab in the orchestrator's workspace \
              (yours: it cannot be chosen) with a coding agent that carries out the task autonomously. Returns \
-             immediately with the session id, without waiting for the work to finish. After starting, call \
-             wait_for_events in a loop to find out what happens. The worker talks to you only through its \
+             immediately with the session id, without waiting for the work to finish. After starting the \
+             workers, end your turn: cli-companion types a message into your prompt when they need you \
+             (then call get_events). Do not wait, sleep or poll. The worker talks to you only through its \
              tools (report_fact, request_help, complete_task): do not read its terminal. Write the task so \
              it is self-contained, since the worker cannot see your conversation. Write the `task` text (and \
              any later send_message text) in English. At most 16 active workers per orchestrator. You decide \
@@ -156,7 +154,7 @@ fn orchestrator_tools() -> Vec<Value> {
              running, background (turn ended while waiting for a background command: it resumes by itself), \
              needs_input (waiting for a permission or an answer from the user), idle (stopped without having \
              called complete_task), completed, failed, blocked, closed. Includes the last report. \
-             For news prefer wait_for_events.",
+             For news prefer get_events.",
             json!({}),
             &[],
         ),
@@ -179,25 +177,19 @@ fn orchestrator_tools() -> Vec<Value> {
             &["session"],
         ),
         tool(
-            "wait_for_events",
-            "Wait for events from your automated sessions and return them (draining the queue). Returns \
-             immediately if there are already some, otherwise blocks until the first event or the timeout \
-             (then `events` is empty: nothing new). Call it in a loop until the workers are done; it can \
-             (and must) be called again many times. Each event has: seq, session, title, kind, text \
-             (optional), worker status, at (unix ms). kind: started (the worker read the task), fact \
-             (reported fact), help_request (question: answer with send_message), completed (final outcome \
-             in text), needs_input (the worker is waiting for a permission from the user in its tab), \
-             stopped_without_report (it stopped without complete_task, even after being nudged), exited \
-             (the tab was closed). Only help_request, completed, needs_input, stopped_without_report and \
-             exited wake you up while you are idle; started and fact are delivered with the next call.",
-            json!({
-                "timeout_secs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_WAIT_SECS,
-                    "description": "Maximum wait in seconds. Default 90. Claude Code moves calls longer than 2 minutes to the background: keep the value under 110 and call the tool again."
-                }
-            }),
+            "get_events",
+            "Return the new events from your automated sessions and drain the queue. It never waits: \
+             if nothing happened `events` is empty. Call it when cli-companion types \"New events from \
+             your automated sessions\" into your prompt, handle the events, then end your turn: do not \
+             call it in a loop and do not wait, sleep or poll for workers. You are woken while idle at \
+             the prompt only by help_request, completed, needs_input, stopped_without_report and exited; \
+             started and fact stay queued until the next call. Each event has: seq, session, title, \
+             kind, text (optional), worker status, at (unix ms). kind: started (the worker read the \
+             task), fact (reported fact), help_request (question: answer with send_message), completed \
+             (final outcome in text), needs_input (the worker is waiting for a permission from the user \
+             in its tab), stopped_without_report (it stopped without complete_task, even after being \
+             nudged), exited (the tab was closed).",
+            json!({}),
             &[],
         ),
     ]
@@ -268,8 +260,11 @@ fn instructions(role: Option<Role>, workspace: Option<&str>, ceiling: Option<&st
         Some(Role::Orchestrator) => {
             let mut text = "cli-companion: you can start automated sessions, but only in the workspace of your own tab: \
                 workers open there and spawn_session cannot pick another one. Flow: spawn_session for \
-                each task, then wait_for_events in a loop; answer help_requests with send_message and \
-                use close_session only when needed. Write task and message texts for workers in English."
+                each task, then end your turn. Never wait for workers (no sleep, no polling, no \
+                repeated tool calls): when they need you cli-companion types a message into your \
+                prompt; then call get_events, handle the events (answer help_requests with \
+                send_message) and end your turn again. Use close_session only when needed. Write task \
+                and message texts for workers in English."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));
@@ -392,21 +387,6 @@ fn call_tool(server: &mut Server, params: &Value, backend: &dyn Backend) -> Valu
 // Backend reale (TCP verso l'app)
 // ---------------------------------------------------------------------------
 
-/// Attesa massima della risposta RPC: per `wait_for_events` il suo timeout
-/// (limitato a 1..=600, default 90) piu' un margine, altrimenti 30 s.
-fn read_timeout(method: &str, params: &Value) -> Duration {
-    if method == "wait_for_events" {
-        let secs = params
-            .get("timeout_secs")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_WAIT_SECS)
-            .clamp(1, MAX_WAIT_SECS);
-        Duration::from_secs(secs + WAIT_MARGIN_SECS)
-    } else {
-        Duration::from_secs(RPC_TIMEOUT_SECS)
-    }
-}
-
 /// Riga RPC da spedire al listener dell'app.
 fn request_line(session: &str, token: &str, method: &str, params: &Value) -> String {
     let req = RpcRequest {
@@ -448,7 +428,7 @@ impl TcpBackend {
 impl Backend for TcpBackend {
     fn rpc(&self, method: &str, params: &Value) -> Result<Value, String> {
         let line = request_line(&self.session, &self.token, method, params);
-        let answer = rpc_call(NOTIFY_PORT, &line, read_timeout(method, params))?;
+        let answer = rpc_call(NOTIFY_PORT, &line, RPC_TIMEOUT)?;
         parse_response(&answer)
     }
 }
@@ -574,7 +554,7 @@ mod tests {
         let r = send(&mut s, &Fake::new("orchestrator"), json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
         assert_eq!(
             names(&r),
-            ["list_agents", "spawn_session", "list_sessions", "send_message", "close_session", "wait_for_events"]
+            ["list_agents", "spawn_session", "list_sessions", "send_message", "close_session", "get_events"]
         );
         let mut s = Server::default();
         let r = send(&mut s, &Fake::new("worker"), json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
@@ -678,23 +658,17 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_events_params_pass_through_and_timeout_is_clamped() {
-        let b = Fake::new("orchestrator");
-        let mut s = Server::default();
-        send(
-            &mut s,
-            &b,
-            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_events","arguments":{"timeout_secs":5000}}}),
-        );
-        // Il valore grezzo arriva all'app (che lo valida); l'attesa del client e' limitata.
-        assert_eq!(b.calls.borrow().last().unwrap().1, json!({"timeout_secs":5000}));
-        let wait = |p: Value| read_timeout("wait_for_events", &p).as_secs();
-        assert_eq!(wait(json!({})), 90 + 30);
-        assert_eq!(wait(json!({"timeout_secs": 5000})), 600 + 30);
-        assert_eq!(wait(json!({"timeout_secs": 0})), 1 + 30);
-        assert_eq!(wait(json!({"timeout_secs": 45})), 45 + 30);
-        assert_eq!(wait(Value::Null), 90 + 30);
-        assert_eq!(read_timeout("spawn_session", &json!({"timeout_secs": 500})).as_secs(), 30);
+    fn orchestrator_is_told_to_end_its_turn_instead_of_waiting() {
+        let tools = orchestrator_tools();
+        let get = tools.iter().find(|t| t["name"] == "get_events").unwrap();
+        assert_eq!(get["inputSchema"]["properties"], json!({}));
+        let desc = get["description"].as_str().unwrap();
+        assert!(desc.contains("never waits") && desc.contains("end your turn"));
+        let text = instructions(Some(Role::Orchestrator), None, None);
+        assert!(text.contains("end your turn") && text.contains("Never wait"));
+        // Nessun testo per il modello nomina ancora il vecchio long-poll.
+        let all = serde_json::to_string(&tools).unwrap() + &text;
+        assert!(!all.contains("wait_for_events") && !all.contains("timeout_secs"));
     }
 
     #[test]

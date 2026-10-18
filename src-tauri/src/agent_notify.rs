@@ -60,8 +60,7 @@ const FRONTEND_EVENT: &str = "agent-event";
 /// Tetto di una riga RPC in ingresso e di una risposta letta dal client.
 const RPC_MAX_BYTES: u64 = 1024 * 1024;
 const RPC_RESPONSE_MAX_BYTES: u64 = 8 * 1024 * 1024;
-/// Timeout di lettura della riga di richiesta (non della risposta, che per
-/// `wait_for_events` puo' arrivare molto dopo).
+/// Timeout di lettura della riga di richiesta (non della risposta).
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// Tetti: stdin degli hook (il JSON di Claude Code puo' contenere l'ultimo
 /// messaggio dell'assistente), riga sul socket, campi del payload.
@@ -402,7 +401,7 @@ pub fn run_notify(event: &str, agent: &str) -> Result<(), String> {
 
 /// Client RPC: spedisce `line` (una riga JSON, `\n` aggiunto qui) al listener
 /// su `port` e ritorna la riga di risposta. `timeout` e' l'attesa massima
-/// della risposta (per `wait_for_events` va portato oltre il suo timeout).
+/// della risposta.
 pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, String> {
     let mut stream = TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}").parse().unwrap(),
@@ -433,7 +432,7 @@ pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, Stri
 }
 
 /// Legge una riga dal socket (tetto `max` byte) e la classifica. Il timeout
-/// di lettura vale solo qui: la risposta puo' arrivare anche molto dopo.
+/// di lettura vale solo qui, non per il tempo di elaborazione.
 fn read_wire(stream: &mut TcpStream) -> Result<Wire, String> {
     stream
         .set_read_timeout(Some(REQUEST_READ_TIMEOUT))
@@ -446,28 +445,12 @@ fn read_wire(stream: &mut TcpStream) -> Result<Wire, String> {
     parse_wire(&line)
 }
 
-/// Il client e' ancora connesso? (peek non bloccante: 0 byte = chiuso). Serve
-/// alle attese lunghe per non drenare eventi verso una connessione morta.
-fn peer_alive(stream: &TcpStream) -> bool {
-    if stream.set_nonblocking(true).is_err() {
-        return false;
-    }
-    let mut b = [0u8; 1];
-    let alive = match stream.peek(&mut b) {
-        Ok(0) => false,
-        Ok(_) => true,
-        Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
-    };
-    let _ = stream.set_nonblocking(false);
-    alive
-}
-
-/// Serve una connessione: legge una riga, inoltra le RPC a `on_rpc` (con un
-/// controllo di vitalita' del client) e scrive la risposta; le notifiche
-/// vanno a `on_notify`, che decide la riga di risposta.
+/// Serve una connessione: legge una riga, inoltra le RPC a `on_rpc` e scrive
+/// la risposta; le notifiche vanno a `on_notify`, che decide la riga di
+/// risposta.
 fn serve_conn<R, N>(stream: &mut TcpStream, on_rpc: R, on_notify: N) -> Result<(), String>
 where
-    R: FnOnce(RpcRequest, &dyn Fn() -> bool) -> RpcResponse,
+    R: FnOnce(RpcRequest) -> RpcResponse,
     N: FnOnce(NotifyPayload) -> Result<NotifyReply, String>,
 {
     match read_wire(stream)? {
@@ -482,8 +465,7 @@ where
             result.map(|_| ())
         }
         Wire::Rpc(req) => {
-            let probe = stream.try_clone().map_err(|e| e.to_string())?;
-            let resp = on_rpc(req, &|| peer_alive(&probe));
+            let resp = on_rpc(req);
             stream
                 .set_write_timeout(Some(Duration::from_secs(10)))
                 .map_err(|e| e.to_string())?;
@@ -505,7 +487,7 @@ fn is_paused_stop(payload: &NotifyPayload, blocked: bool) -> bool {
 fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
     serve_conn(
         stream,
-        |req, alive| crate::automation::handle_rpc(app, &req, alive),
+        |req| crate::automation::handle_rpc(app, &req),
         |mut payload| {
             // Il token resta nel backend: al frontend non deve arrivare.
             let token_ok = crate::automation::token_matches(payload.token.as_deref());
@@ -740,8 +722,7 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             serve_conn(
                 &mut s,
-                |req, alive| {
-                    assert!(alive());
+                |req| {
                     std::thread::sleep(Duration::from_millis(2300));
                     RpcResponse::success(serde_json::json!({"echo": req.method, "session": req.session}))
                 },
@@ -772,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn notify_goes_to_notify_handler_and_peer_liveness() {
+    fn notify_goes_to_notify_handler() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let mut sent = sample("needs-input");
@@ -780,20 +761,12 @@ mod tests {
         send_to(port, &sent).unwrap();
         let (mut s, _) = listener.accept().unwrap();
         let mut got = None;
-        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |p| {
+        serve_conn(&mut s, |_| panic!("attesa una notifica"), |p| {
             got = Some(p);
             Ok(NotifyReply::default())
         })
         .unwrap();
         assert_eq!(got.unwrap().token.as_deref(), Some("secret"));
-
-        // Liveness: connesso = vivo, dopo la chiusura del client = morto.
-        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let (server_side, _) = listener.accept().unwrap();
-        assert!(peer_alive(&server_side));
-        drop(client);
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!peer_alive(&server_side));
     }
 
     #[test]
@@ -900,7 +873,7 @@ mod tests {
             send_for_reply(port, &finished_with_token(), Duration::from_secs(2)).unwrap()
         });
         let (mut s, _) = listener.accept().unwrap();
-        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |_| {
+        serve_conn(&mut s, |_| panic!("attesa una notifica"), |_| {
             Ok(NotifyReply { block: Some("r".into()) })
         })
         .unwrap();
@@ -909,7 +882,7 @@ mod tests {
         send_to(port, &finished_with_token()).unwrap();
         let (mut s, _) = listener.accept().unwrap();
         std::thread::sleep(Duration::from_millis(100));
-        serve_conn(&mut s, |_, _| panic!("attesa una notifica"), |_| {
+        serve_conn(&mut s, |_| panic!("attesa una notifica"), |_| {
             Ok(NotifyReply { block: Some("r".into()) })
         })
         .unwrap();

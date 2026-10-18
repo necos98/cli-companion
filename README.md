@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.6.2**.
+Versione corrente: **0.6.3**.
 
 ## Release e aggiornamenti
 
@@ -113,8 +113,8 @@ Tool dell'orchestratore:
 - `list_sessions` — i propri worker con stato e ultimo report.
 - `send_message` — scrive un messaggio nel prompt di un worker (es. la risposta a una richiesta d'aiuto).
 - `close_session` — chiude il tab di un worker.
-- `wait_for_events` — attende eventi dai worker (default 90 s, max 600 s; ritorna
-  subito se ce ne sono già, lista vuota allo scadere).
+- `get_events` — restituisce e svuota la coda degli eventi dei worker. Non attende
+  mai: lista vuota se non è successo nulla.
 
 Tool del worker:
 
@@ -139,13 +139,16 @@ ha chiuso il turno senza `complete_task`, cli-companion risponde all'hook con un
 il promemoria si ferma senza riferire diventa `idle` e l'orchestratore riceve
 `stopped_without_report`. La notifica `idle_prompt` di un worker viene ignorata.
 
-Risveglio: se arrivano eventi *azionabili* (`help_request`, `completed`, `needs_input`,
-`stopped_without_report`, `exited`) mentre l'orchestratore è fermo al prompt (non dentro
-`wait_for_events`), cli-companion digita nel suo prompt il messaggio
-“New events from your automated sessions: call wait_for_events”. `started` e `fact`
-restano in coda e arrivano con la prossima `wait_for_events`. Il risveglio avviene una
-sola volta per gruppo di eventi azionabili nuovi, e mai se l'orchestratore sta
-aspettando una risposta a un permesso.
+Risveglio: l'orchestratore non resta in attesa dei worker. Dopo gli spawn chiude il
+turno (le istruzioni MCP gli vietano attese, `sleep` e polling), così il suo tab resta
+libero e non consuma richieste. Se arrivano eventi *azionabili* (`help_request`,
+`completed`, `needs_input`, `stopped_without_report`, `exited`) mentre è fermo al
+prompt, cli-companion digita nel suo prompt il messaggio “New events from your
+automated sessions: call get_events, handle them, then end your turn”. `started` e
+`fact` restano in coda e arrivano con la prossima `get_events`. Il risveglio avviene
+una sola volta per gruppo di eventi azionabili nuovi, e mai se l'orchestratore sta
+aspettando una risposta a un permesso. La notifica `idle_prompt` dell'orchestratore
+(~60 s dopo la fine del turno) conferma che è al prompt e non blocca il risveglio.
 
 Lingua: tutto ciò che legge il modello (prompt di avvio, istruzioni del worker, messaggio
 di risveglio, promemoria dello Stop, descrizioni dei tool MCP ed errori RPC) è in
