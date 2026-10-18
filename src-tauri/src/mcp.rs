@@ -264,7 +264,9 @@ fn instructions(role: Option<Role>, workspace: Option<&str>, ceiling: Option<&st
                 repeated tool calls): when they need you cli-companion types a message into your \
                 prompt; then call get_events, handle the events (answer help_requests with \
                 send_message) and end your turn again. Use close_session only when needed. Write task \
-                and message texts for workers in English."
+                and message texts for workers in English. Before orchestrating a batch of tasks, load \
+                the orchestrate skill (cli-companion-notify:orchestrate) if your agent supports skills: \
+                it has the full method (planning, task template, isolation, review and merge)."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));
@@ -666,6 +668,7 @@ mod tests {
         assert!(desc.contains("never waits") && desc.contains("end your turn"));
         let text = instructions(Some(Role::Orchestrator), None, None);
         assert!(text.contains("end your turn") && text.contains("Never wait"));
+        assert!(text.contains("cli-companion-notify:orchestrate"));
         // Nessun testo per il modello nomina ancora il vecchio long-poll.
         let all = serde_json::to_string(&tools).unwrap() + &text;
         assert!(!all.contains("wait_for_events") && !all.contains("timeout_secs"));

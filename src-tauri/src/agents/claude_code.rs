@@ -7,6 +7,7 @@
 //! plugins/cli-companion-notify/.claude-plugin/plugin.json
 //! plugins/cli-companion-notify/hooks/hooks.json
 //! plugins/cli-companion-notify/.mcp.json
+//! plugins/cli-companion-notify/skills/orchestrate/SKILL.md
 //! ```
 //! Il marketplace locale e' caricato sul posto: la cartella deve restare su
 //! disco finche' il plugin e' installato.
@@ -32,6 +33,14 @@ const MCP_SERVER: &str = "cli-companion";
 /// (`mcp__plugin_<plugin>_<server>__<tool>`; senza nome tool = tutti).
 /// `acceptEdits` non approva i tool MCP, quindi serve sempre.
 const MCP_ALLOW_RULE: &str = "mcp__plugin_cli-companion-notify_cli-companion";
+/// Skill `orchestrate` (`/cli-companion-notify:orchestrate`): il metodo
+/// dell'orchestratore. La legge il modello: in inglese.
+const ORCHESTRATE_SKILL: &str = include_str!("orchestrate_skill.md");
+
+/// Testo della skill con fine riga LF, qualunque sia il checkout.
+fn orchestrate_skill() -> String {
+    ORCHESTRATE_SKILL.replace("\r\n", "\n")
+}
 
 fn marketplace_json() -> String {
     let v = serde_json::json!({
@@ -86,16 +95,16 @@ fn fnv32(s: &str) -> u32 {
         .fold(0x811c9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x01000193))
 }
 
-/// La versione dipende da hook e server MCP: Claude Code copia il plugin in una cache
-/// per versione, quindi se cambia il percorso dell'exe (app spostata o
-/// aggiornata) la versione deve cambiare, altrimenti resterebbe la copia
-/// vecchia con l'exe sbagliato.
-fn plugin_json(hooks: &str, mcp: &str) -> String {
+/// La versione dipende da hook, server MCP e skill: Claude Code copia il plugin in una
+/// cache per versione, quindi se cambia il percorso dell'exe (app spostata o
+/// aggiornata) o il testo della skill la versione deve cambiare, altrimenti
+/// resterebbe la copia vecchia.
+fn plugin_json(hooks: &str, mcp: &str, skill: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
         "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta \
-                        e fornisce i tool MCP per orchestrare sessioni automatiche.",
-        "version": format!("1.1.{}", fnv32(&format!("{hooks}\n{mcp}")) % 1_000_000),
+                        e fornisce i tool MCP e la skill per orchestrare sessioni automatiche.",
+        "version": format!("1.2.{}", fnv32(&format!("{hooks}\n{mcp}\n{skill}")) % 1_000_000),
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
@@ -105,14 +114,16 @@ fn plugin_json(hooks: &str, mcp: &str) -> String {
 fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let hooks = hooks_json(exe);
     let mcp = mcp_json(exe);
+    let skill = orchestrate_skill();
     vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (
             format!("plugins/{PLUGIN}/.claude-plugin/plugin.json"),
-            plugin_json(&hooks, &mcp),
+            plugin_json(&hooks, &mcp, &skill),
         ),
         (format!("plugins/{PLUGIN}/hooks/hooks.json"), hooks),
         (format!("plugins/{PLUGIN}/.mcp.json"), mcp),
+        (format!("plugins/{PLUGIN}/skills/orchestrate/SKILL.md"), skill),
     ]
 }
 
@@ -341,10 +352,11 @@ mod tests {
     fn files(exe: &str) -> std::collections::HashMap<String, Value> {
         plugin_files(exe)
             .into_iter()
-            .map(|(p, c)| {
+            .filter(|(p, c)| {
                 assert_ne!(c.as_bytes().first(), Some(&0xEF), "BOM in {p}");
-                (p, serde_json::from_str(&c).expect("JSON valido"))
+                p.ends_with(".json")
             })
+            .map(|(p, c)| (p, serde_json::from_str(&c).expect("JSON valido")))
             .collect()
     }
 
@@ -414,13 +426,36 @@ mod tests {
     }
 
     #[test]
-    fn version_depends_on_hooks_and_mcp() {
-        let hooks = hooks_json("C:/a.exe");
-        let v1 = plugin_json(&hooks, &mcp_json("C:/a.exe"));
-        assert_eq!(v1, plugin_json(&hooks, &mcp_json("C:/a.exe")));
+    fn version_depends_on_hooks_mcp_and_skill() {
+        let (hooks, mcp, skill) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"), orchestrate_skill());
+        let v1 = plugin_json(&hooks, &mcp, &skill);
+        assert_eq!(v1, plugin_json(&hooks, &mcp, &skill));
         // Stessi hook, MCP diverso => versione diversa.
-        assert_ne!(v1, plugin_json(&hooks, &mcp_json("C:/b.exe")));
-        assert_ne!(v1, plugin_json(&hooks_json("C:/b.exe"), &mcp_json("C:/a.exe")));
+        assert_ne!(v1, plugin_json(&hooks, &mcp_json("C:/b.exe"), &skill));
+        assert_ne!(v1, plugin_json(&hooks_json("C:/b.exe"), &mcp, &skill));
+        assert_ne!(v1, plugin_json(&hooks, &mcp, "altra skill"));
+    }
+
+    #[test]
+    fn plugin_ships_the_orchestrate_skill() {
+        let files = plugin_files("C:/a.exe");
+        let (_, skill) = files
+            .iter()
+            .find(|(p, _)| p == "plugins/cli-companion-notify/skills/orchestrate/SKILL.md")
+            .expect("SKILL.md nel plugin");
+        assert!(!skill.contains('\r'));
+        // Frontmatter: name uguale alla cartella e description su una riga.
+        let front = skill.strip_prefix("---\n").and_then(|s| s.split_once("\n---\n")).unwrap().0;
+        let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
+        assert_eq!(field("name:"), Some("orchestrate"));
+        let desc = field("description:").unwrap();
+        assert!(desc.contains("cli-companion") && desc.len() <= 1024);
+        // Testo per il modello: inglese (ASCII) e allineato ai tool di oggi.
+        assert!(skill.is_ascii());
+        for t in ["spawn_session", "get_events", "send_message", "end your turn", ".worktrees"] {
+            assert!(skill.contains(t), "{t}");
+        }
+        assert!(!skill.contains("wait_for_events"));
     }
 
     fn req<'a>(mode: PermissionMode, model: Option<&'a str>, prompt: &'a str) -> AutomationRequest<'a> {

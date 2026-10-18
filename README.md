@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.6.3**.
+Versione corrente: **0.6.4**.
 
 ## Release e aggiornamenti
 
@@ -101,6 +101,17 @@ Setup: reinstalla il plugin da **Impostazioni → Coding agent** (per ogni
 ambiente: Windows e ogni distro WSL). Il plugin ora dichiara anche il server MCP
 `cli-companion` (`cli-companion --mcp`); fuori dai terminali di cli-companion, o
 con l'app chiusa, non espone alcun tool.
+
+Skill `orchestrate` (richiede la reinstallazione del plugin): il metodo
+dell'orchestratore, caricato solo quando serve invece di occupare il contesto di ogni
+sessione. Si invoca con `/cli-companion-notify:orchestrate` (o la carica il modello
+quando gli chiedi di orchestrare dei task) e copre: pianificazione con l'utente, scelta
+di task indipendenti, isolamento con `.worktrees/<id>`, modello di task autosufficiente
+(Goal, Context, Constraints, Done when, Verify, Report), fine turno dopo gli spawn,
+gestione di ogni evento, verifica e merge dei risultati uno alla volta, resoconto
+finale. È generica: le regole di un progetto (build, gate, roadmap) vanno nel suo
+`CLAUDE.md`. Per il worker non c'è una skill: le sue istruzioni arrivano sempre da
+`get_task`.
 
 Tool dell'orchestratore:
 

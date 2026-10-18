@@ -217,11 +217,14 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     `timeout` 10): `SessionStart` -> `session-start`, `Stop` -> `finished`,
     `Notification` (matcher `permission_prompt|idle_prompt|elicitation_dialog`) ->
     `needs-input`. Il plugin contiene anche `.mcp.json` con il server `cli-companion`
-    (`command` = exe come sopra, `args` = `["--mcp"]`). Passi: `plugin validate`,
+    (`command` = exe come sopra, `args` = `["--mcp"]`) e la skill
+    `skills/orchestrate/SKILL.md` (sorgente `agents/orchestrate_skill.md`, inclusa con
+    `include_str!` e normalizzata a LF; in inglese: metodo dell'orchestratore, invocabile
+    come `/cli-companion-notify:orchestrate`). Passi: `plugin validate`,
     pulizia best-effort, `plugin marketplace add`, `plugin install --scope user`. La
-    versione del plugin deriva da hook + `.mcp.json` (Claude cache per versione: exe
-    spostato = versione nuova; il contenuto MCP nuovo richiede la reinstallazione). La cartella e'
-    caricata sul posto e deve restare su disco.
+    versione del plugin (`1.2.<hash>`) deriva da hook + `.mcp.json` + skill (Claude cache
+    per versione: exe spostato o skill cambiata = versione nuova; serve la
+    reinstallazione). La cartella e' caricata sul posto e deve restare su disco.
   - stato installato: `claude plugin list --json` contiene `id` ==
     `cli-companion-notify@cli-companion-local` (array o oggetto con `plugins`).
   - rimozione: `plugin uninstall` + `marketplace remove` + cartella generata.
