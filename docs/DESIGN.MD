@@ -38,16 +38,21 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 
 ### `workspaces.rs` — store JSON + CRUD
 
-- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches }`
+- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches, worker_permission }`
   - `kind`: `"windows"` o `"wsl"`
   - `path`: percorso Windows (`C:\...`) oppure percorso Linux assoluto (`/...`)
   - `distro`: solo per WSL; `shell`: override opzionale
   - `launches`: `Launch { id, name, command, is_default }` (`#[serde(default)]`,
     id `ln-<millis>-<n>`), salvati dentro `workspaces.json`; al massimo uno
     predefinito per workspace; rimossi insieme al workspace.
+  - `worker_permission`: tetto dei permessi dei worker automatici, `"plan" | "default" |
+    "accept-edits" | "bypass"` (vocabolario di `agents::PermissionMode`);
+    `#[serde(default)]` -> `"accept-edits"`, cosi' i vecchi `workspaces.json` non diventano
+    piu' permissivi.
 - Stato condiviso `WorkspaceStore` (in memoria + salvataggio su ogni modifica).
 - File: `<app_data>/workspaces.json`. Se corrotto, backup in `.json.bak` e riparto vuoto.
 - Comandi: `list_workspaces`, `add_workspace`, `rename_workspace`, `remove_workspace`,
+  `set_worker_permission(id, mode)` (valida il valore, ritorna il `Workspace`),
   `add_launch`, `update_launch`, `remove_launch` (ritornano il `Workspace`
   aggiornato; nome 1-80 caratteri, comando 1-1000, trim come `src/lib/launch.ts`),
   `open_workspace_folder` (`explorer.exe`; per WSL il percorso UNC
@@ -257,6 +262,10 @@ hot reload). Il comando di avvio e' `agents::automation_command`; l'isolamento (
 git worktree + `cwd`) e' deciso dall'orchestratore, ma solo dentro il suo workspace:
 `spawn_session` non accetta `workspace` (errore esplicito), il worker si apre nel
 workspace del tab dell'orchestratore (`pty::workspace_of_tab`, `Host::tab_workspace`) e il
+permessi: ordine `plan < default < accept-edits < bypass`; `permission_mode` di
+`spawn_session` e' opzionale, assente = `Workspace.worker_permission`, presente = ammesso solo se
+<= al tetto (`automation::resolve_permission`), altrimenti errore; `whoami` espone il tetto
+(`workspace.worker_permission`) e le istruzioni MCP lo riportano; il
 `cwd` opzionale deve essere assoluto, senza `..`, uguale o sotto il path del workspace
 (Windows: senza maiuscole e con ``/`/` equivalenti; WSL: per segmenti su `/`).
 

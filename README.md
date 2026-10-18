@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.6.0**.
+Versione corrente: **0.6.1**.
 
 ## Release e aggiornamenti
 
@@ -136,10 +136,13 @@ Risveglio: se arrivano eventi mentre l'orchestratore è fermo al prompt (non den
 sola volta per gruppo di eventi nuovi, e mai se l'orchestratore sta aspettando una
 risposta a un permesso.
 
-Permessi del worker (`permission_mode` di `spawn_session`): `accept-edits`
-(default), `default` (chiede conferma per ogni azione: il worker resta fermo in
-attesa dell'utente), `plan` (sola lettura), `bypass` (nessun permesso: usalo con
-cautela). Con `bypass` il primo avvio interattivo di Claude Code mostra una
+Permessi del worker: li decide un'impostazione per workspace (Impostazioni ->
+Avvii personalizzati -> "Permessi dei worker automatici", default `accept-edits`).
+L'orchestratore può solo restringerli: `permission_mode` di `spawn_session`, se
+assente, vale l'impostazione; se più permissivo del massimo la chiamata fallisce.
+Ordine dal più restrittivo: `plan` (sola lettura), `default` (chiede conferma per ogni azione: il worker resta fermo in
+attesa dell'utente), `accept-edits` (approva le modifiche ai file), `bypass`
+(nessun permesso: usalo con cautela). Con `bypass` il primo avvio interattivo di Claude Code mostra una
 finestra di conferma, che non compare solo se in `~/.claude/settings.json` c'è
 `skipDangerousModePermissionPrompt: true`.
 

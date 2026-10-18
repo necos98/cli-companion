@@ -47,7 +47,10 @@ pub struct Server {
     role: Option<Role>,
     /// Workspace dell'orchestratore (da `whoami`), a parole: serve alle istruzioni.
     workspace: Option<String>,
+    /// Tetto dei permessi dei worker nel workspace (da `whoami`).
+    worker_permission: Option<String>,
 }
+
 
 impl Server {
     fn role(&mut self, backend: &dyn Backend) -> Result<Role, String> {
@@ -64,6 +67,11 @@ impl Server {
             let field = |k: &str| w.get(k).and_then(Value::as_str);
             Some(format!("{} ({}, {})", field("name")?, field("kind")?, field("path")?))
         });
+        self.worker_permission = v
+            .get("workspace")
+            .and_then(|w| w.get("worker_permission"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         self.role = Some(role);
         Ok(role)
     }
@@ -127,7 +135,7 @@ fn orchestrator_tools() -> Vec<Value> {
                 "permission_mode": {
                     "type": "string",
                     "enum": ["default", "accept-edits", "plan", "bypass"],
-                    "description": "Permessi del worker. Default: accept-edits. 'default' chiede conferma per ogni azione (il worker resta fermo in attesa dell'utente), 'plan' sola lettura. 'bypass' salta tutti i permessi, usalo con cautela: al primo avvio Claude Code mostra una finestra di conferma, che non compare solo se in ~/.claude/settings.json c'e' skipDangerousModePermissionPrompt: true."
+                    "description": "Permessi del worker. Default: l'impostazione del workspace (`worker_permission`, vedi istruzioni). Puoi solo restringerla, mai allargarla: oltre il massimo del workspace la chiamata fallisce. Ordine dal piu' restrittivo: 'plan' (sola lettura), 'default' (chiede conferma per ogni azione: il worker resta fermo in attesa dell'utente), 'accept-edits' (approva le modifiche ai file), 'bypass' (salta tutti i permessi, usalo con cautela). Con 'bypass' al primo avvio Claude Code mostra una finestra di conferma, che non compare solo se in ~/.claude/settings.json c'e' skipDangerousModePermissionPrompt: true."
                 },
                 "model": {
                     "type": "string",
@@ -251,7 +259,7 @@ fn tools_for(role: Role) -> Vec<Value> {
 }
 
 /// Istruzioni generali restituite in `initialize`.
-fn instructions(role: Option<Role>, workspace: Option<&str>) -> String {
+fn instructions(role: Option<Role>, workspace: Option<&str>, ceiling: Option<&str>) -> String {
     match role {
         Some(Role::Orchestrator) => {
             let mut text = "cli-companion: puoi avviare sessioni automatiche, ma solo nel workspace del tuo tab: \
@@ -261,6 +269,13 @@ fn instructions(role: Option<Role>, workspace: Option<&str>) -> String {
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Il tuo workspace: {w}."));
+            }
+            if let Some(c) = ceiling {
+                text.push_str(&format!(
+                    " Permessi massimi dei worker in questo workspace: {c}. Senza permission_mode i worker partono \
+                     con questo livello; puoi solo restringerlo, non allargarlo (lo cambia l'utente nelle \
+                     impostazioni del workspace)."
+                ));
             }
             text
         }
@@ -323,7 +338,7 @@ pub fn handle_message(server: &mut Server, msg: &Value, backend: &dyn Backend) -
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "cli-companion", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": instructions(role, server.workspace.as_deref()),
+                    "instructions": instructions(role, server.workspace.as_deref(), server.worker_permission.as_deref()),
                 }),
             )
         }
@@ -492,7 +507,7 @@ mod tests {
             if method == "whoami" {
                 let mut v = json!({ "role": self.role, "session": "t1" });
                 if self.role == "orchestrator" {
-                    v["workspace"] = json!({"id":"w1","name":"Proj","kind":"wsl","path":"/home/u/app"});
+                    v["workspace"] = json!({"id":"w1","name":"Proj","kind":"wsl","path":"/home/u/app","worker_permission":"accept-edits"});
                 }
                 return Ok(v);
             }
@@ -538,6 +553,7 @@ mod tests {
         let r = send(&mut Server::default(), &b, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
         let text = r["result"]["instructions"].as_str().unwrap();
         assert!(text.contains("Proj (wsl, /home/u/app)") && !text.contains("list_workspaces"));
+        assert!(text.contains("Permessi massimi dei worker in questo workspace: accept-edits"));
         let w = Fake::new("worker");
         let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
         assert!(!r["result"]["instructions"].as_str().unwrap().contains("Proj"));
@@ -574,7 +590,9 @@ mod tests {
         assert_eq!(spawn["inputSchema"]["required"], json!(["task"]));
         assert!(!props.contains_key("workspace"));
         assert!(props["cwd"]["description"].as_str().unwrap().contains(".worktrees"));
-        assert!(props["permission_mode"]["description"].as_str().unwrap().contains("skipDangerousModePermissionPrompt"));
+        let pm = props["permission_mode"]["description"].as_str().unwrap();
+        assert!(pm.contains("skipDangerousModePermissionPrompt"));
+        assert!(pm.contains("impostazione del workspace") && pm.contains("solo restringerla"));
     }
 
     #[test]

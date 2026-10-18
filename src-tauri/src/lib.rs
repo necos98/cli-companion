@@ -87,6 +87,7 @@ pub fn run() {
             workspaces::list_workspaces,
             workspaces::add_workspace,
             workspaces::rename_workspace,
+            workspaces::set_worker_permission,
             workspaces::remove_workspace,
             workspaces::add_launch,
             workspaces::update_launch,

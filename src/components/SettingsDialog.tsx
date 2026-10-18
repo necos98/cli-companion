@@ -18,6 +18,12 @@ import {
   LAUNCH_NAME_MAX,
   sanitizeLaunchCommand,
 } from "../lib/launch";
+import {
+  WORKER_PERMISSIONS,
+  normalizeWorkerPermission,
+  workerPermissionLabel,
+} from "../lib/workerPermission";
+import type { WorkerPermission } from "../lib/workerPermission";
 import { cn } from "../lib/utils";
 
 export type SettingsTab = "launches" | "agents" | "updates";
@@ -226,6 +232,37 @@ export default function SettingsDialog({
                 Gli avvii compaiono nel menu “⋯” del workspace. Quello
                 predefinito parte con “+ Terminale”.
               </p>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-semibold">Permessi dei worker automatici</p>
+              <select
+                value={normalizeWorkerPermission(selected.worker_permission)}
+                disabled={saving}
+                onChange={(e) =>
+                  void run(() =>
+                    api.setWorkerPermission(selected.id, e.target.value as WorkerPermission),
+                  )
+                }
+                className={selectClass}
+              >
+                {WORKER_PERMISSIONS.map((m) => (
+                  <option key={m} value={m}>
+                    {workerPermissionLabel(m)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Livello massimo delle sessioni avviate da un orchestratore in
+                questo workspace: l’orchestratore può solo restringerlo.
+              </p>
+              {normalizeWorkerPermission(selected.worker_permission) === "bypass" && (
+                <p className="mt-1 text-[11px] text-destructive">
+                  I worker eseguiranno qualsiasi comando senza conferma. Claude
+                  Code mostra una conferma una tantum, a meno che in
+                  ~/.claude/settings.json ci sia skipDangerousModePermissionPrompt: true.
+                </p>
+              )}
             </div>
 
             <div className="flex max-h-[240px] flex-col gap-2 overflow-y-auto">

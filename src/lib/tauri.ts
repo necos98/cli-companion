@@ -1,5 +1,6 @@
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { WorkerPermission } from "./workerPermission";
 import type {
   DownloadResult,
   InstallResult,
@@ -24,6 +25,8 @@ export interface Workspace {
   shell?: string | null;
   created_at: number;
   launches: Launch[];
+  /** Tetto dei permessi dei worker automatici (vedi `Workspace` in workspaces.rs). */
+  worker_permission: WorkerPermission;
 }
 
 /** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */
@@ -114,6 +117,9 @@ export const api = {
 
   renameWorkspace: (id: string, name: string) =>
     invoke<Workspace>("rename_workspace", { id, name }),
+
+  setWorkerPermission: (id: string, mode: WorkerPermission) =>
+    invoke<Workspace>("set_worker_permission", { id, mode }),
 
   removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
 

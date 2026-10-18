@@ -166,9 +166,19 @@ mod tests {
     assert!(out.contains('\u{7}'), "BEL mancante: {out:?}");
 
     // Mirror: un titolo impostato via API Win32 (come fanno gli agenti)
-    // viene riemesso come OSC al prompt successivo.
-    let out = run("", "; $Host.UI.RawUI.WindowTitle = 'AGENTE-123'; prompt");
-    assert!(out.contains("]0;AGENTE-123\x07"), "mirror mancante: {out:?}");
+    // viene riemesso come OSC al prompt successivo. Titolo unico per
+    // esecuzione: la console e' condivisa con chi lancia i test e il titolo
+    // resta impostato, quindi al giro dopo sarebbe gia' quello "iniziale".
+    let title = format!(
+      "AGENTE-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+    );
+    let out = run("", &format!("; $Host.UI.RawUI.WindowTitle = '{title}'; prompt"));
+    assert!(out.contains(&format!("]0;{title}\x07")), "mirror mancante: {out:?}");
 
     // Chaining: un prompt definito dal profilo viene preservato.
     let out = run("function prompt { 'CUSTOM> ' }; ", "; prompt");

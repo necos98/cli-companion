@@ -767,9 +767,27 @@ pub struct SpawnParams {
     pub title: String,
     pub agent: String,
     pub cwd: Option<String>,
-    pub permission_mode: PermissionMode,
+    /// `None` = non richiesto: vale il tetto del workspace.
+    pub permission_mode: Option<PermissionMode>,
     pub model: Option<String>,
     pub keep_open: bool,
+}
+
+/// Permesso effettivo di un worker: assente = il tetto del workspace;
+/// richiesto = ammesso solo se non piu' permissivo del tetto.
+pub fn resolve_permission(
+    requested: Option<PermissionMode>,
+    max: PermissionMode,
+) -> Result<PermissionMode, String> {
+    match requested {
+        None => Ok(max),
+        Some(m) if m.rank() <= max.rank() => Ok(m),
+        Some(m) => Err(format!(
+            "permission_mode '{}' non consentito: il massimo per questo workspace e' '{}' (si cambia nelle impostazioni del workspace in cli-companion)",
+            m.as_str(),
+            max.as_str()
+        )),
+    }
 }
 
 /// Campo stringa opzionale: assente o `null` = `None`; di altro tipo = errore.
@@ -825,10 +843,10 @@ pub fn parse_spawn_params(p: &Value) -> Result<SpawnParams, String> {
         None => None,
     };
     let permission_mode = match opt_str(p, "permission_mode")? {
-        None => PermissionMode::AcceptEdits,
-        Some(m) => PermissionMode::parse(m).ok_or_else(|| {
+        None => None,
+        Some(m) => Some(PermissionMode::parse(m).ok_or_else(|| {
             "permission_mode non valido (usa default, accept-edits, plan o bypass)".to_string()
-        })?,
+        })?),
     };
     let model = match opt_str(p, "model")?.map(str::trim).filter(|m| !m.is_empty()) {
         Some(m) if !valid_model(m) => {
@@ -1052,8 +1070,10 @@ pub fn dispatch<H: Host>(
             let mut out = json!({ "role": role, "session": session });
             if role == Role::Orchestrator {
                 if let Some(w) = host.tab_workspace(session) {
-                    out["workspace"] =
-                        json!({ "id": w.id, "name": w.name, "kind": w.kind, "path": w.path });
+                    out["workspace"] = json!({
+                        "id": w.id, "name": w.name, "kind": w.kind, "path": w.path,
+                        "worker_permission": w.worker_permission_mode().as_str(),
+                    });
                 }
             }
             Ok(out)
@@ -1134,9 +1154,10 @@ fn rpc_spawn<H: Host>(
             return Err(format!("cartella non trovata: {cwd}"));
         }
     }
+    let permission_mode = resolve_permission(p.permission_mode, ws.worker_permission_mode())?;
     let req = AutomationRequest {
         bootstrap_prompt: BOOTSTRAP_PROMPT,
-        permission_mode: p.permission_mode,
+        permission_mode,
         model: p.model.as_deref(),
     };
     let command = host.launch_command(&p.agent, &ws.kind, &req)?;
@@ -1633,7 +1654,7 @@ mod tests {
     fn spawn_params_validation() {
         let ok = parse_spawn_params(&json!({"task":"  fai   una cosa  molto lunga con tante parole davvero tante "})).unwrap();
         assert_eq!(ok.agent, "claude-code");
-        assert_eq!(ok.permission_mode, PermissionMode::AcceptEdits);
+        assert_eq!(ok.permission_mode, None);
         assert!(!ok.keep_open && ok.cwd.is_none() && ok.model.is_none());
         assert_eq!(ok.title, "fai una cosa molto lunga con tante parole");
 
@@ -1643,7 +1664,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(full.title, "Titolo");
-        assert_eq!(full.permission_mode, PermissionMode::Bypass);
+        assert_eq!(full.permission_mode, Some(PermissionMode::Bypass));
         assert_eq!(full.model.as_deref(), Some("claude-opus-4.1_x"));
         assert!(full.keep_open);
 
@@ -1678,7 +1699,30 @@ mod tests {
             shell: None,
             created_at: 0,
             launches: Vec::new(),
+            worker_permission: "accept-edits".to_string(),
         }
+    }
+
+    #[test]
+    fn resolve_permission_covers_every_combination() {
+        use PermissionMode::*;
+        let all = [Plan, Default, AcceptEdits, Bypass];
+        for max in all {
+            // Assente: vale il tetto.
+            assert_eq!(resolve_permission(None, max), Ok(max));
+            for req in all {
+                let r = resolve_permission(Some(req), max);
+                if req.rank() <= max.rank() {
+                    assert_eq!(r, Ok(req), "{req:?} <= {max:?}");
+                } else {
+                    let e = r.unwrap_err();
+                    assert!(e.contains(&format!("'{}' non consentito", req.as_str())), "{e}");
+                    assert!(e.contains(&format!("e' '{}'", max.as_str())), "{e}");
+                }
+            }
+        }
+        assert!(resolve_permission(Some(Bypass), AcceptEdits).is_err());
+        assert_eq!(resolve_permission(Some(Plan), Bypass), Ok(Plan));
     }
 
     #[test]
@@ -1777,7 +1821,10 @@ mod tests {
 
         assert_eq!(call(&st, &h, ORCH, "whoami", Value::Null).unwrap()["role"], "orchestrator");
         let me = call(&st, &h, ORCH, "whoami", Value::Null).unwrap();
-        assert_eq!(me["workspace"], json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p"}));
+        assert_eq!(
+            me["workspace"],
+            json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p","worker_permission":"accept-edits"})
+        );
         // Orchestratore senza workspace noto: whoami funziona, senza il campo.
         assert!(call(&st, &h, "orch-2", "whoami", Value::Null).unwrap().get("workspace").is_none());
         assert!(call(&st, &h, ORCH, "list_workspaces", json!({})).is_err());
@@ -1799,7 +1846,17 @@ mod tests {
         // Orchestratore senza workspace noto.
         let err = call(&st, &h, "orch-2", "spawn_session", json!({"task":"t"})).unwrap_err();
         assert_eq!(err, "workspace dell'orchestratore non trovato");
+        // Piu' permissivo del tetto del workspace (accept-edits): rifiutato.
+        let err = call(&st, &h, ORCH, "spawn_session", json!({"task":"t","permission_mode":"bypass"})).unwrap_err();
+        assert!(err.contains("non consentito"), "{err}");
         assert!(h.log().is_empty());
+
+        // Senza permission_mode: il tetto del workspace.
+        {
+            let (st, h) = (AutomationState::default(), FakeHost::default());
+            call(&st, &h, "orch-wsl", "spawn_session", json!({"task":"l"})).unwrap();
+            assert!(h.log()[0].contains("fake wsl AcceptEdits"), "{:?}", h.log());
+        }
 
         // Un orchestratore WSL: il worker eredita il suo workspace (ambiente wsl).
         {

@@ -1,3 +1,4 @@
+use crate::agents::PermissionMode;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,6 +39,22 @@ pub struct Workspace {
     /// Avvii personalizzati del workspace (vuoto = solo shell semplice).
     #[serde(default)]
     pub launches: Vec<Launch>,
+    /// Tetto dei permessi dei worker automatici: "plan" | "default" |
+    /// "accept-edits" | "bypass". L'orchestratore puo' solo restringerlo.
+    #[serde(default = "default_worker_permission")]
+    pub worker_permission: String,
+}
+
+fn default_worker_permission() -> String {
+    PermissionMode::AcceptEdits.as_str().to_string()
+}
+
+impl Workspace {
+    /// Tetto dei permessi dei worker; un valore illeggibile nel file vale
+    /// quanto il default (mai piu' permissivo del solito).
+    pub fn worker_permission_mode(&self) -> PermissionMode {
+        PermissionMode::parse(&self.worker_permission).unwrap_or(PermissionMode::AcceptEdits)
+    }
 }
 
 #[derive(Default)]
@@ -196,6 +213,7 @@ fn add_workspace_blocking(
             .filter(|s| !s.is_empty()),
         created_at: now_millis(),
         launches: Vec::new(),
+        worker_permission: default_worker_permission(),
     };
     data.workspaces.push(ws.clone());
     save_to_disk(app, &data.workspaces)?;
@@ -220,6 +238,28 @@ pub fn rename_workspace(
         .find(|w| w.id == id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
     ws.name = name.to_string();
+    let out = ws.clone();
+    save_to_disk(&app, &data.workspaces)?;
+    Ok(out)
+}
+
+/// Imposta il tetto dei permessi dei worker automatici del workspace.
+#[tauri::command]
+pub fn set_worker_permission(
+    app: AppHandle,
+    state: State<WorkspaceStore>,
+    id: String,
+    mode: String,
+) -> Result<Workspace, String> {
+    let mode = PermissionMode::parse(mode.trim())
+        .ok_or_else(|| "permesso non valido (usa plan, default, accept-edits o bypass)".to_string())?;
+    let mut data = state.inner.lock().unwrap();
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "workspace non trovato".to_string())?;
+    ws.worker_permission = mode.as_str().to_string();
     let out = ws.clone();
     save_to_disk(&app, &data.workspaces)?;
     Ok(out)
@@ -507,6 +547,18 @@ mod tests {
         let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
         let ws: Workspace = serde_json::from_str(raw).unwrap();
         assert!(ws.launches.is_empty());
+        // Senza il campo: il default storico, mai piu' permissivo.
+        assert_eq!(ws.worker_permission, "accept-edits");
+        assert_eq!(ws.worker_permission_mode(), PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn worker_permission_roundtrips_and_bad_value_falls_back() {
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,"worker_permission":"plan"}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert_eq!(ws.worker_permission_mode(), PermissionMode::Plan);
+        ws.worker_permission = "boh".to_string();
+        assert_eq!(ws.worker_permission_mode(), PermissionMode::AcceptEdits);
     }
 
     #[test]

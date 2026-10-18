@@ -291,6 +291,26 @@ impl PermissionMode {
             _ => None,
         }
     }
+
+    /// Inverso di `parse`: stesso vocabolario di RPC, impostazioni e UI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PermissionMode::Plan => "plan",
+            PermissionMode::Default => "default",
+            PermissionMode::AcceptEdits => "accept-edits",
+            PermissionMode::Bypass => "bypass",
+        }
+    }
+
+    /// Permissivita' crescente: plan < default < accept-edits < bypass.
+    pub fn rank(self) -> u8 {
+        match self {
+            PermissionMode::Plan => 0,
+            PermissionMode::Default => 1,
+            PermissionMode::AcceptEdits => 2,
+            PermissionMode::Bypass => 3,
+        }
+    }
 }
 
 /// Richiesta di avvio di una sessione automatica.
