@@ -1,6 +1,6 @@
-import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
+import { Bot, Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
-import { statusWord as workerStatusWord } from "../lib/automation";
+import { automationBadge, statusWord as workerStatusWord } from "../lib/automation";
 import { cn } from "../lib/utils";
 import StatusIcon from "./StatusIcon";
 
@@ -10,7 +10,7 @@ interface Props {
   prefix?: string;
   status: TabStatus;
   /** Sessione automatica (worker): stato e tooltip; assente = tab normale. */
-  automation?: { status: string; tooltip: string };
+  automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
   /** Il pannello riceve la tastiera. */
   focused?: boolean;
   maximized: boolean;
@@ -82,8 +82,17 @@ export default function PaneHeader({
         {label}
       </span>
       {automation && (
-        <span className="flex-shrink-0 rounded-[4px] border px-1 font-mono text-[9px] font-medium leading-[14px] tracking-wide text-muted-foreground">
-          AUTO
+        <span
+          title={automationBadge(automation.role).title}
+          className={cn(
+            "flex flex-shrink-0 items-center gap-0.5 rounded-[4px] border px-1 font-mono text-[9px] font-medium leading-[14px] tracking-wide",
+            automation.role === "orchestrator"
+              ? "border-primary/50 text-primary"
+              : "text-muted-foreground",
+          )}
+        >
+          {automation.role === "orchestrator" && <Bot className="h-[10px] w-[10px]" />}
+          {automationBadge(automation.role).text}
         </span>
       )}
       {word && (

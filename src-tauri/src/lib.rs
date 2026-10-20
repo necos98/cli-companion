@@ -1,8 +1,11 @@
 pub mod agent_notify;
 mod agents;
 pub mod automation;
+mod awake;
+pub mod board;
 pub mod mcp;
 mod pty;
+pub mod schedule;
 mod session;
 mod toast;
 pub mod updater;
@@ -80,6 +83,8 @@ pub fn run() {
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
+            automation::load_boards(app);
+            automation::auto::init(app);
             agent_notify::start_listener(app.handle());
             Ok(())
         })
@@ -88,6 +93,9 @@ pub fn run() {
             workspaces::add_workspace,
             workspaces::rename_workspace,
             workspaces::set_worker_permission,
+            workspaces::set_worker_model,
+            workspaces::set_worktree_setup,
+            workspaces::set_auto_orchestrate,
             workspaces::remove_workspace,
             workspaces::add_launch,
             workspaces::update_launch,
@@ -106,6 +114,14 @@ pub fn run() {
             agent_notify::test_agent_notify,
             automation::automation_tab_closed,
             automation::automation_sessions,
+            automation::board_get,
+            automation::board_set,
+            automation::board_task_action,
+            automation::board_task_set_model,
+            automation::auto::schedule_get,
+            automation::auto::schedule_set,
+            automation::auto::workflow_get,
+            automation::auto::workflow_save,
             toast::show_agent_notification,
             agents::agent_env_status,
             agents::agent_profiles,
@@ -118,6 +134,12 @@ pub fn run() {
             session::delete_scrollback,
             session::prune_scrollback,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Salvataggi di board ancora in coda (coalescenza).
+            if let tauri::RunEvent::Exit = event {
+                automation::flush_on_exit(app);
+            }
+        });
 }

@@ -2,6 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyAutomationUpdate,
+  automationBadge,
+  isOrchestrator,
+  normalizeRole,
   automationTooltip,
   isAutomated,
   persistableTabs,
@@ -136,5 +139,35 @@ describe("layout: apertura in secondo piano", () => {
   it("tab gia' presente: stessa istanza", () => {
     const l = openTab(EMPTY_LAYOUT, "w1", "a");
     assert.equal(openTabBackground(l, "w1", "a"), l);
+  });
+});
+
+describe("automazione: orchestratore automatico", () => {
+  it("ruolo: assente o sconosciuto = worker", () => {
+    assert.equal(normalizeRole(undefined), "worker");
+    assert.equal(normalizeRole("boh"), "worker");
+    assert.equal(normalizeRole("orchestrator"), "orchestrator");
+    assert.equal(isOrchestrator(meta({ role: "orchestrator" })), true);
+    assert.equal(isOrchestrator(meta()), false);
+  });
+  it("tooltip dedicato, senza titolo del task ne' padre", () => {
+    const tip = automationTooltip(meta({ role: "orchestrator", status: "running" }), "Claude");
+    assert.match(tip, /^Orchestratore automatico/);
+    assert.ok(!tip.includes("Sessione automatica"));
+    assert.ok(!tip.includes("Orchestratore: "));
+    assert.match(tip, /Stato: in corso/);
+  });
+  it("badge per ruolo", () => {
+    assert.equal(automationBadge("orchestrator").text, "ORCH");
+    assert.equal(automationBadge("worker").text, "AUTO");
+    assert.equal(automationBadge(undefined).text, "AUTO");
+  });
+  it("non si persiste, come i worker", () => {
+    const tabs = [{ k: 1 }, { k: 2, automation: meta({ role: "orchestrator" }) }];
+    assert.deepEqual(persistableTabs(tabs), [{ k: 1 }]);
+  });
+  it("l'aggiornamento conserva il ruolo", () => {
+    const next = applyAutomationUpdate(meta({ role: "orchestrator" }), { status: "running", title: "" });
+    assert.equal(next.role, "orchestrator");
   });
 });

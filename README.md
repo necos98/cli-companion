@@ -30,7 +30,7 @@ La versione vive in 3 file da tenere sincronizzati manualmente
 - `src-tauri/Cargo.toml` → `version`
 - `src-tauri/tauri.conf.json` → `version`
 
-Versione corrente: **0.6.4**.
+Versione corrente: **0.7.0**.
 
 ## Release e aggiornamenti
 
@@ -39,6 +39,8 @@ Versione corrente: **0.6.4**.
 - [docs/UPDATER.MD](docs/UPDATER.MD) — come l'updater interroga
   `releases/latest`, sceglie l'installer e verifica i checksum.
 - [docs/DESIGN.MD](docs/DESIGN.MD) — note di design del progetto.
+- [docs/BOARD.MD](docs/BOARD.MD) — la Board dei task: modello dati, scheduler, worktree, tool MCP.
+- [docs/SCHEDULE.MD](docs/SCHEDULE.MD) — finestre di esecuzione, orchestratore automatico e workflow per workspace.
 
 Stato: repo GitHub non ancora creata (`updater.config.json` ha
 `owner = "REPLACE_ME_OWNER"`); segui `docs/RELEASE.MD` §1–2 per attivare
@@ -106,17 +108,45 @@ Skill `orchestrate` (richiede la reinstallazione del plugin): il metodo
 dell'orchestratore, caricato solo quando serve invece di occupare il contesto di ogni
 sessione. Si invoca con `/cli-companion-notify:orchestrate` (o la carica il modello
 quando gli chiedi di orchestrare dei task) e copre: pianificazione con l'utente, scelta
-di task indipendenti, isolamento con `.worktrees/<id>`, modello di task autosufficiente
-(Goal, Context, Constraints, Done when, Verify, Report), fine turno dopo gli spawn,
-gestione di ogni evento, verifica e merge dei risultati uno alla volta, resoconto
-finale. È generica: le regole di un progetto (build, gate, roadmap) vanno nel suo
+di task con dipendenze e aree toccate (`touches`), modello di task autosufficiente
+(Goal, Context, Constraints, Done when, Verify, Report), invio del piano alla Board, fine turno,
+gestione di ogni evento, integrazione dei risultati (merge uno alla volta, test di regressione,
+`set_task_status done`), resoconto finale. È generica: le regole di un progetto (build, gate, roadmap) vanno nel suo
 `CLAUDE.md`. Per il worker non c'è una skill: le sue istruzioni arrivano sempre da
 `get_task`.
 
+### Board dei task
+
+Ogni workspace ha una **Board**: un piano di task con dipendenze, salvato su disco e
+mostrato come grafo (React Flow). Si apre dal pulsante **Board** sulla card del workspace
+(con il numero di task attivi) o con **Ctrl+Maiusc+B** sul workspace attivo; non esiste nella
+vista Globale. Dal grafo vedi lo stato di ogni task, apri i dettagli (testo, report, test,
+diffstat) e puoi trattenere, riprovare, annullare o segnare come fatto un task, regolare i
+worker in parallelo (`max_parallel`) e mettere in pausa la board.
+
+Chi fa cosa:
+
+- l'**orchestratore** (skill `orchestrate`) pianifica con te, crea i task con `submit_plan`
+  (dipendenze, `touches`, isolamento, priorità), poi **integra**: controlla il lavoro, fa il
+  merge dei branch dei task uno alla volta, risolve i conflitti, lancia i test di regressione e
+  segna il task come fatto (`set_task_status done`);
+- l'**app** fa lo scheduler: avvia i worker quando un task è pronto (dipendenze fatte, nessun
+  conflitto di aree, entro `max_parallel`), crea e pulisce i **git worktree**
+  (`.worktrees/<task>`, branch `task/<task>`), raccoglie i report strutturati e sveglia
+  l'orchestratore solo quando serve una decisione.
+
+Setup del worktree: in **Impostazioni → Avvii personalizzati** puoi indicare per workspace un
+comando (es. `npm ci`) che il worker esegue per primo in un worktree nuovo. I task con
+`isolation: none` lavorano nella cartella del workspace (solo lettura o modifiche minime). Al
+riavvio dell'app i task in corso risultano falliti e si possono rilanciare. Dettagli in
+[docs/BOARD.MD](docs/BOARD.MD).
+
 Tool dell'orchestratore:
 
+- `submit_plan`, `get_board`, `update_task`, `set_task_status`, `set_board` — la Board
+  (vedi sopra e `docs/BOARD.MD`).
 - `list_agents` — coding agent con supporto all'automazione.
-- `spawn_session` — avvia un worker (`task`, opz. `title`, `agent`, `cwd`,
+- `spawn_session` — avvia un worker ad-hoc, fuori dalla board (`task`, opz. `title`, `agent`, `cwd`,
   `permission_mode`, `model`, `keep_open`). L'orchestratore lavora solo nel proprio
   workspace: il worker si apre nel workspace del suo tab (non si sceglie) e `cwd`, se
   indicato, deve essere assoluto, esistente e dentro la cartella del workspace (niente
@@ -132,12 +162,15 @@ Tool del worker:
 - `get_task` — legge task e istruzioni (da chiamare per primo).
 - `report_fact` — segnala all'orchestratore un fatto utile.
 - `request_help` — pone una domanda all'orchestratore; la risposta arriva come messaggio nel prompt.
-- `complete_task` — chiude il lavoro con `status` (`completed`, `failed`, `blocked`) e riassunto;
-  il tab si chiude dopo ~1,5 s, salvo `keep_open`.
+- `complete_task` — chiude il lavoro con `status` (`completed`, `failed`, `blocked`) e riassunto,
+  più campi strutturati facoltativi (`commit`, `files_changed`, `tests`, `follow_ups`); per un task
+  di board lo porta in `review`/`failed`/`blocked`. Il tab si chiude dopo ~1,5 s, salvo `keep_open`.
 
 Eventi ricevuti dall'orchestratore (`kind`): `started`, `fact`, `help_request`,
 `completed`, `needs_input` (il worker aspetta un permesso), `stopped_without_report`
-(il worker ha finito il turno senza `complete_task`), `exited` (shell uscita o tab chiuso).
+(il worker ha finito il turno senza `complete_task`), `exited` (shell uscita o tab chiuso) e, per la
+board, `start_failed` (avvio del task fallito), `plan_completed` (piano concluso) e `user_action`
+(azione dell'utente dalla Board).
 Stati di un worker: `starting`, `running`, `background` (turno chiuso in attesa di
 un comando in background: Claude Code riprende da solo), `needs_input`, `idle`,
 `completed`, `failed`, `blocked`, `closed`.
@@ -153,7 +186,7 @@ il promemoria si ferma senza riferire diventa `idle` e l'orchestratore riceve
 Risveglio: l'orchestratore non resta in attesa dei worker. Dopo gli spawn chiude il
 turno (le istruzioni MCP gli vietano attese, `sleep` e polling), così il suo tab resta
 libero e non consuma richieste. Se arrivano eventi *azionabili* (`help_request`,
-`completed`, `needs_input`, `stopped_without_report`, `exited`) mentre è fermo al
+`completed`, `needs_input`, `stopped_without_report`, `exited`, `start_failed`, `plan_completed`) mentre è fermo al
 prompt, cli-companion digita nel suo prompt il messaggio “New events from your
 automated sessions: call get_events, handle them, then end your turn”. `started` e
 `fact` restano in coda e arrivano con la prossima `get_events`. Il risveglio avviene
@@ -176,14 +209,52 @@ attesa dell'utente), `accept-edits` (approva le modifiche ai file), `bypass`
 finestra di conferma, che non compare solo se in `~/.claude/settings.json` c'è
 `skipDangerousModePermissionPrompt: true`.
 
-L'isolamento è compito dell'orchestratore: cli-companion non crea worktree. Per
-lavori paralleli sullo stesso repository l'orchestratore crea (ad esempio) un
-git worktree per worker e lo passa come `cwd`.
+Modello del worker: l'orchestratore sceglie il modello di ogni task (`model`), di norma
+`sonnet` per il lavoro ben definito e `opus` per design, modifiche rischiose o trasversali e
+bug difficili, salvo regole diverse nel workflow del workspace. Se il task non indica un
+modello vale "Modello dei worker" del workspace (Impostazioni, sotto i permessi), altrimenti
+il modello predefinito dell'agente. Finché un task non è partito (in coda, fallito, bloccato o
+annullato) il modello si cambia dal dettaglio del task nella Board, o l'orchestratore lo
+cambia con `update_task`.
+
+Isolamento: per i task della Board i worktree git li crea e li pulisce l'app. Per le sessioni
+ad-hoc (`spawn_session`) resta compito dell'orchestratore: per lavori paralleli sullo stesso
+repository crea (ad esempio) un git worktree per worker e lo passa come `cwd`.
 
 I tab dei worker non vengono salvati nella sessione né ripristinati al riavvio.
 
 Limiti: 16 worker attivi per orchestratore, 32 terminali in totale, coda di 1000
 eventi per orchestratore (i più vecchi vengono scartati).
+
+### Esecuzione automatica e workflow
+
+Per far lavorare i workspace da soli (ad esempio di notte, evitando le ore di punta) puoi
+definire delle **fasce orarie** e un **orchestratore automatico** per workspace. Dettagli in
+[docs/SCHEDULE.MD](docs/SCHEDULE.MD).
+
+- **Fasce orarie**: in **Impostazioni → Esecuzione automatica** attivi la funzione e aggiungi
+  una o più fasce (ora di inizio e fine, ora locale; una fascia come 20:00–13:00 attraversa la
+  mezzanotte). Vedi se la finestra è aperta e quando cambia.
+- **Orchestratore automatico**: nelle impostazioni del workspace lo attivi scegliendo agente e
+  modello. I permessi sono il tetto dei worker del workspace: per lavorare senza nessuno
+  davanti serve un livello che non apra dialoghi di conferma.
+- **All'apertura della finestra** la board riparte e, se c'è lavoro (task in coda o da
+  integrare) e nessun orchestratore è già attivo, l'app apre un orchestratore automatico in un
+  nuovo tab. Non duplica quello aperto da te.
+- **Alla chiusura** non parte più nessun task: i worker in corso finiscono, l'orchestratore
+  integra quello che completa, scrive il resoconto e il suo tab si chiude. Un orchestratore
+  aperto da te non viene mai chiuso. Aprire o chiudere la finestra non cambia la pausa della board.
+- **Standby**: con "Impedisci lo standby" il PC non va in sospensione finché un workspace
+  automatico ha la finestra aperta con lavoro da fare o task in corso.
+- **Workflow**: ogni workspace può avere un `workflow.md` che dà all'orchestratore identità e
+  metodo su misura (branch e merge, comandi di verifica, dimensione dei task, parallelismo e
+  modelli, aree da non toccare, cosa decidere da solo, cosa fare senza utente, formato del
+  report). L'orchestratore lo legge con `get_workflow` prima di pianificare e ha la precedenza
+  sul suo metodo generico (mai su sicurezza: niente push o azioni distruttive non consentite).
+  Lo crei con il wizard, `/cli-companion-notify:workflow` in un terminale del workspace oppure
+  il pulsante **Crea con il wizard** nelle impostazioni del workspace (richiede Claude Code
+  con il plugin): ti intervista nella tua lingua proponendo default ricavati dal repository. Dalle
+  impostazioni puoi anche leggerlo e modificarlo a mano.
 
 ## Migrazione da muse-companion (v0.4.0)
 

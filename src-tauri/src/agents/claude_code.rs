@@ -8,6 +8,7 @@
 //! plugins/cli-companion-notify/hooks/hooks.json
 //! plugins/cli-companion-notify/.mcp.json
 //! plugins/cli-companion-notify/skills/orchestrate/SKILL.md
+//! plugins/cli-companion-notify/skills/workflow/SKILL.md
 //! ```
 //! Il marketplace locale e' caricato sul posto: la cartella deve restare su
 //! disco finche' il plugin e' installato.
@@ -40,6 +41,14 @@ const ORCHESTRATE_SKILL: &str = include_str!("orchestrate_skill.md");
 /// Testo della skill con fine riga LF, qualunque sia il checkout.
 fn orchestrate_skill() -> String {
     ORCHESTRATE_SKILL.replace("\r\n", "\n")
+}
+
+/// Skill `workflow` (`/cli-companion-notify:workflow`): wizard che intervista
+/// l'utente e salva il `workflow.md` del workspace. La legge il modello: in inglese.
+const WORKFLOW_SKILL: &str = include_str!("workflow_skill.md");
+
+fn workflow_skill() -> String {
+    WORKFLOW_SKILL.replace("\r\n", "\n")
 }
 
 fn marketplace_json() -> String {
@@ -99,12 +108,12 @@ fn fnv32(s: &str) -> u32 {
 /// cache per versione, quindi se cambia il percorso dell'exe (app spostata o
 /// aggiornata) o il testo della skill la versione deve cambiare, altrimenti
 /// resterebbe la copia vecchia.
-fn plugin_json(hooks: &str, mcp: &str, skill: &str) -> String {
+fn plugin_json(hooks: &str, mcp: &str, skills: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
         "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta \
                         e fornisce i tool MCP e la skill per orchestrare sessioni automatiche.",
-        "version": format!("1.2.{}", fnv32(&format!("{hooks}\n{mcp}\n{skill}")) % 1_000_000),
+        "version": format!("1.2.{}", fnv32(&format!("{hooks}\n{mcp}\n{skills}")) % 1_000_000),
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
@@ -115,15 +124,18 @@ fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let hooks = hooks_json(exe);
     let mcp = mcp_json(exe);
     let skill = orchestrate_skill();
+    let workflow = workflow_skill();
+    let version = plugin_json(&hooks, &mcp, &format!("{skill}\n{workflow}"));
     vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (
             format!("plugins/{PLUGIN}/.claude-plugin/plugin.json"),
-            plugin_json(&hooks, &mcp, &skill),
+            version,
         ),
         (format!("plugins/{PLUGIN}/hooks/hooks.json"), hooks),
         (format!("plugins/{PLUGIN}/.mcp.json"), mcp),
         (format!("plugins/{PLUGIN}/skills/orchestrate/SKILL.md"), skill),
+        (format!("plugins/{PLUGIN}/skills/workflow/SKILL.md"), workflow),
     ]
 }
 
@@ -427,7 +439,8 @@ mod tests {
 
     #[test]
     fn version_depends_on_hooks_mcp_and_skill() {
-        let (hooks, mcp, skill) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"), orchestrate_skill());
+        let (hooks, mcp) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"));
+        let skill = format!("{}\n{}", orchestrate_skill(), workflow_skill());
         let v1 = plugin_json(&hooks, &mcp, &skill);
         assert_eq!(v1, plugin_json(&hooks, &mcp, &skill));
         // Stessi hook, MCP diverso => versione diversa.
@@ -452,10 +465,36 @@ mod tests {
         assert!(desc.contains("cli-companion") && desc.len() <= 1024);
         // Testo per il modello: inglese (ASCII) e allineato ai tool di oggi.
         assert!(skill.is_ascii());
-        for t in ["spawn_session", "get_events", "send_message", "end your turn", ".worktrees"] {
+        for t in [
+            "spawn_session", "get_events", "send_message", "end your turn", "submit_plan", "set_task_status",
+            "get_workflow", "cli-companion-notify:workflow", "execution window",
+        ] {
             assert!(skill.contains(t), "{t}");
         }
         assert!(!skill.contains("wait_for_events"));
+    }
+
+    #[test]
+    fn plugin_ships_the_workflow_skill() {
+        let files = plugin_files("C:/a.exe");
+        let (_, skill) = files
+            .iter()
+            .find(|(p, _)| p == "plugins/cli-companion-notify/skills/workflow/SKILL.md")
+            .expect("SKILL.md del workflow nel plugin");
+        assert!(!skill.contains('\r'));
+        let front = skill.strip_prefix("---\n").and_then(|s| s.split_once("\n---\n")).unwrap().0;
+        let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
+        assert_eq!(field("name:"), Some("workflow"));
+        let desc = field("description:").unwrap();
+        assert!(desc.contains("cli-companion") && desc.len() <= 1024);
+        assert!(skill.is_ascii());
+        for t in [
+            "get_workflow", "save_workflow", "AskUserQuestion", "Identity", "Goals", "Branching & merge",
+            "Verification", "Task design", "Parallelism & models", "Boundaries", "Escalation",
+            "Unattended runs", "Reporting",
+        ] {
+            assert!(skill.contains(t), "{t}");
+        }
     }
 
     fn req<'a>(mode: PermissionMode, model: Option<&'a str>, prompt: &'a str) -> AutomationRequest<'a> {

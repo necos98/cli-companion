@@ -6,7 +6,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn wsl_command() -> Command {
+pub(crate) fn wsl_command() -> Command {
     let mut cmd = Command::new("wsl.exe");
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -61,6 +61,22 @@ pub fn wsl_dir_exists(distro: &str, path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Comando `argv` nella distro, con `dir` come cartella corrente. `-e`
+/// (exec) e' indispensabile: con `--` wsl.exe passa la riga alla shell di
+/// default della distro, che rompe spazi, `;` e apici negli argomenti.
+pub fn wsl_run_command(distro: &str, dir: &str, argv: &[&str]) -> Command {
+    let mut cmd = wsl_command();
+    cmd.args(["-d", distro, "--cd", dir, "-e"]).args(argv).stdin(std::process::Stdio::null());
+    cmd
+}
+
+/// `git <args>` nella distro, in `dir` (vedi `wsl_run_command`).
+pub fn wsl_git_command(distro: &str, dir: &str, args: &[&str]) -> Command {
+    let mut argv = vec!["git"];
+    argv.extend_from_slice(args);
+    wsl_run_command(distro, dir, &argv)
+}
+
 /// Converte path Windows in path Linux WSL:
 /// - `C:\Users\me\proj` -> `/mnt/c/Users/me/proj`
 /// - `\\wsl$\Ubuntu\home\me` -> `/home/me`
@@ -109,4 +125,18 @@ pub async fn check_wsl_path(distro: String, path: String) -> Result<bool, String
         return Ok(false);
     };
     crate::blocking(move || Ok(wsl_dir_exists(distro.trim(), &linux_path))).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_and_git_use_exec_so_argv_skips_the_distro_shell() {
+        let args = |c: &Command| c.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let c = wsl_run_command("Ubuntu", "/p q", &["sh", "-c", "echo $1", "sh", "a b;c"]);
+        assert_eq!(args(&c), ["-d", "Ubuntu", "--cd", "/p q", "-e", "sh", "-c", "echo $1", "sh", "a b;c"]);
+        let g = wsl_git_command("Ubuntu", "/p", &["worktree", "add", "/p/.worktrees/a b"]);
+        assert_eq!(args(&g), ["-d", "Ubuntu", "--cd", "/p", "-e", "git", "worktree", "add", "/p/.worktrees/a b"]);
+    }
 }

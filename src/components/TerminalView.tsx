@@ -82,7 +82,7 @@ interface Props {
    * Tab automatico: stato del worker e tooltip dell'intestazione. Presente =
    * lo scrollback non viene salvato (il tab non e' mai ripristinato).
    */
-  automation?: { status: string; tooltip: string };
+  automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
 }
 
 export default function TerminalView({

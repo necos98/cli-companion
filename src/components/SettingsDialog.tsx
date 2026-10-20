@@ -11,8 +11,10 @@ import {
 import { Input } from "./ui/input";
 import AgentSettingsTab from "./AgentSettingsTab";
 import UpdateCheck from "./UpdateCheck";
+import ScheduleSettings from "./ScheduleSettings";
+import WorkspaceAutomationSettings from "./WorkspaceAutomationSettings";
 import { api } from "../lib/tauri";
-import type { AgentEnvStatus, Launch, Workspace } from "../lib/tauri";
+import type { AgentEnvStatus, AgentProfile, Launch, Workspace } from "../lib/tauri";
 import {
   LAUNCH_COMMAND_MAX,
   LAUNCH_NAME_MAX,
@@ -24,9 +26,11 @@ import {
   workerPermissionLabel,
 } from "../lib/workerPermission";
 import type { WorkerPermission } from "../lib/workerPermission";
+import { modelError, sanitizeModel } from "../lib/workflow";
+import { WORKTREE_SETUP_MAX, sanitizeWorktreeSetup } from "../lib/board";
 import { cn } from "../lib/utils";
 
-export type SettingsTab = "launches" | "agents" | "updates";
+export type SettingsTab = "launches" | "automation" | "agents" | "updates";
 
 interface Props {
   isOpen: boolean;
@@ -40,6 +44,12 @@ interface Props {
   onUpdateAvailable?: (available: boolean) => void;
   /** Elenco aggiornato degli ambienti dei coding agent (per la barra di stato). */
   onAgentEnvs?: (envs: AgentEnvStatus[]) => void;
+  /** Agenti noti (per la scelta dell'orchestratore automatico). */
+  agentProfiles?: AgentProfile[];
+  /** Ambienti dei coding agent già noti (per il wizard del workflow). */
+  agentEnvs?: AgentEnvStatus[];
+  /** Apre il terminale del wizard del workflow nel workspace. */
+  onCreateWorkflow?: (ws: Workspace) => void;
 }
 
 const selectClass =
@@ -54,6 +64,9 @@ export default function SettingsDialog({
   onWorkspaceUpdated,
   onUpdateAvailable,
   onAgentEnvs,
+  agentProfiles = [],
+  agentEnvs = [],
+  onCreateWorkflow,
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -69,6 +82,10 @@ export default function SettingsDialog({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCommand, setEditCommand] = useState("");
+
+  // Comando di setup dei worktree del workspace selezionato (bozza).
+  const [setupDraft, setSetupDraft] = useState("");
+  const [workerModelDraft, setWorkerModelDraft] = useState("");
 
   // All'apertura: tab e workspace richiesti, form puliti.
   useEffect(() => {
@@ -86,6 +103,15 @@ export default function SettingsDialog({
   // Se il workspace selezionato sparisce, ripiega sul primo disponibile.
   const selected =
     workspaces.find((w) => w.id === workspaceId) ?? workspaces[0] ?? undefined;
+
+  // La bozza segue il workspace selezionato e il valore salvato.
+  useEffect(() => {
+    setSetupDraft(selected?.worktree_setup ?? "");
+  }, [selected?.id, selected?.worktree_setup]);
+
+  useEffect(() => {
+    setWorkerModelDraft(selected?.worker_model ?? "");
+  }, [selected?.id, selected?.worker_model]);
 
   const run = async (op: () => Promise<Workspace>): Promise<boolean> => {
     setError(null);
@@ -157,7 +183,7 @@ export default function SettingsDialog({
       }}
     >
       <DialogContent
-        className="sm:max-w-[560px]"
+        className="max-h-[90vh] overflow-y-auto sm:max-w-[560px]"
         onCloseAutoFocus={(e) => {
           // Nessun trigger a cui tornare: il focus va al terminale attivo.
           e.preventDefault();
@@ -182,6 +208,7 @@ export default function SettingsDialog({
           {(
             [
               { id: "launches", label: "Avvii personalizzati" },
+              { id: "automation", label: "Esecuzione automatica" },
               { id: "agents", label: "Coding agent" },
               { id: "updates", label: "Aggiornamenti" },
             ] as const
@@ -201,7 +228,9 @@ export default function SettingsDialog({
           ))}
         </div>
 
-        {tab === "agents" ? (
+        {tab === "automation" ? (
+          <ScheduleSettings />
+        ) : tab === "agents" ? (
           <AgentSettingsTab onEnvs={onAgentEnvs} />
         ) : tab === "updates" ? (
           <UpdateCheck onAvailable={onUpdateAvailable} />
@@ -264,6 +293,92 @@ export default function SettingsDialog({
                 </p>
               )}
             </div>
+
+            <div>
+              <p className="mb-1 text-xs font-semibold">Modello dei worker</p>
+              <div className="flex gap-2">
+                <Input
+                  value={workerModelDraft}
+                  onChange={(e) => setWorkerModelDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  placeholder="predefinito dell'agente (es. sonnet, opus)"
+                  className="h-8 font-mono text-[12px]"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={
+                    saving ||
+                    modelError(workerModelDraft) !== null ||
+                    sanitizeModel(workerModelDraft) === (selected.worker_model ?? null)
+                  }
+                  onClick={() =>
+                    void run(() =>
+                      api.setWorkerModel(selected.id, sanitizeModel(workerModelDraft)),
+                    )
+                  }
+                >
+                  Salva
+                </Button>
+              </div>
+              {modelError(workerModelDraft) && (
+                <p className="mt-1 text-[11px] text-destructive">{modelError(workerModelDraft)}</p>
+              )}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Modello dei worker automatici di questo workspace. Vuoto = predefinito
+                dell’agente. L’orchestratore può comunque scegliere un modello per
+                singolo task.
+              </p>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-semibold">Setup dei worktree</p>
+              <div className="flex gap-2">
+                <Input
+                  value={setupDraft}
+                  onChange={(e) => setSetupDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  placeholder="npm ci"
+                  maxLength={WORKTREE_SETUP_MAX}
+                  className="h-8 font-mono text-[12px]"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={saving || sanitizeWorktreeSetup(setupDraft) === (selected.worktree_setup ?? "")}
+                  onClick={() =>
+                    void run(() =>
+                      api.setWorktreeSetup(selected.id, sanitizeWorktreeSetup(setupDraft) || null),
+                    )
+                  }
+                >
+                  Salva
+                </Button>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Comando dato ai worker come primo passo nei nuovi worktree dei
+                task della board (es. installare le dipendenze). Vuoto = nessuno.
+              </p>
+            </div>
+
+            <WorkspaceAutomationSettings
+              workspace={selected}
+              agents={
+                // Le sessioni automatiche sono supportate solo da Claude Code: i
+                // profili non espongono un flag di capacita', quindi si filtra per id.
+                (agentProfiles.length > 0
+                  ? agentProfiles.map((p) => ({ id: p.agent_id, name: p.agent_name }))
+                  : [{ id: "claude-code", name: "Claude Code" }]
+                ).filter((a) => a.id === "claude-code")
+              }
+              agentEnvs={agentEnvs}
+              onWorkspaceUpdated={onWorkspaceUpdated}
+              onCreateWorkflow={(ws) => onCreateWorkflow?.(ws)}
+            />
 
             <div className="flex max-h-[240px] flex-col gap-2 overflow-y-auto">
               {selected.launches.length === 0 && (

@@ -145,3 +145,19 @@ body {
   width: 0;
   height: 0;
 }
+
+/* React Flow (board): colori del tema dell'app al posto di quelli predefiniti. */
+.board-flow {
+  --xy-background-color: var(--pane-area);
+  --xy-node-border-radius: 9px;
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--surface-2);
+  --xy-controls-button-color: var(--text-secondary);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border-strong);
+  --xy-controls-box-shadow: none;
+  --xy-edge-stroke: #3a4857;
+}
+.board-flow .react-flow__node {
+  cursor: pointer;
+}

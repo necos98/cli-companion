@@ -22,7 +22,7 @@ const toCamel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 
 function rustCommands() {
   const out = new Map();
-  for (const file of ["pty.rs", "workspaces.rs", "wsl.rs", "updater.rs", "agent_notify.rs", "toast.rs", "agents/mod.rs", "session.rs", "automation.rs"]) {
+  for (const file of ["pty.rs", "workspaces.rs", "wsl.rs", "updater.rs", "agent_notify.rs", "toast.rs", "agents/mod.rs", "session.rs", "automation.rs", "automation/auto.rs"]) {
     const src = readFileSync(path.join(RS, file), "utf8");
     const re = /#\[tauri::command\]\s*pub (?:async )?fn (\w+)\s*\(([^)]*)\)/g;
     for (const m of src.matchAll(re)) {
@@ -68,7 +68,7 @@ describe("contratto invoke frontend <-> comandi Rust", () => {
     const libRs = readFileSync(path.join(RS, "lib.rs"), "utf8");
     const handler = libRs.match(/generate_handler!\s*\[([\s\S]*?)\]/);
     assert.ok(handler, "generate_handler! non trovato in lib.rs");
-    const registered = [...handler[1].matchAll(/(\w+)::(\w+)/g)].map((m) => m[2]);
+    const registered = [...handler[1].matchAll(/(?:\w+::)+(\w+)/g)].map((m) => m[1]);
 
     const rust = rustCommands();
     const js = frontendInvokes();

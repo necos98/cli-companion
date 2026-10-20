@@ -447,6 +447,7 @@ fn spawn_blocking_session(
 
     // Thread di lettura: inoltra l'output al frontend sul canale della sessione.
     let sessions = pty.sessions.clone();
+    let (app, exit_tab) = (app.clone(), tab_id.to_string());
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 8192];
@@ -467,6 +468,13 @@ fn spawn_blocking_session(
         if !pending.is_empty() {
             let text = String::from_utf8_lossy(&pending).into_owned();
             let _ = on_event.send(PtyEvent::Output { data: text });
+        }
+        // Ancora in mappa: nessun `pty_close`, il processo e' uscito da solo.
+        // Lo si dice al backend prima di togliere la sessione e prima
+        // dell'evento Exit (cosi' un giro del timer non lo scambia per una
+        // chiusura dell'utente e il report del frontend arriva dopo).
+        if sessions.lock().unwrap().contains_key(&session_id) {
+            crate::automation::pty_exited(&app, &exit_tab);
         }
         let session = sessions.lock().unwrap().remove(&session_id);
         if let Some(sess) = session {

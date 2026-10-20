@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Ellipsis, FolderOpen, Pin, Plus, Star } from "lucide-react";
+import {
+  ChevronDown,
+  Ellipsis,
+  FolderOpen,
+  LayoutDashboard,
+  Moon,
+  Pin,
+  Plus,
+  Star,
+} from "lucide-react";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -35,6 +44,14 @@ interface Props {
   activeWorkspaceId: string | null;
   /** Terminali aperti per id di workspace (ordine della griglia). */
   terminals: Record<string, SidebarTerminal[]>;
+  /** Task attivi (in corso + da integrare) della board di ogni workspace. */
+  boardActive: Record<string, number>;
+  /** Workspace con l'orchestratore automatico attivo: testo di stato per il tooltip. */
+  autoStatus: Record<string, string>;
+  /** Workspace di cui è mostrata la board al posto dei terminali (se c'è). */
+  boardShownId: string | null;
+  /** Mostra/nasconde la board del workspace. */
+  onToggleBoard: (id: string) => void;
   /** Click sulla riga (non sui suoi pulsanti): seleziona il gruppo, se ha terminali. */
   onSelect: (id: string) => void;
   /** Click su un terminale della lista: lo porta in primo piano. */
@@ -117,6 +134,10 @@ export default function Sidebar({
   workspaces,
   activeWorkspaceId,
   terminals,
+  boardActive,
+  autoStatus,
+  boardShownId,
+  onToggleBoard,
   onSelect,
   onFocusTerminal,
   onSpawn,
@@ -279,6 +300,11 @@ export default function Sidebar({
             >
               {ws.name}
             </span>
+            {autoStatus[ws.id] !== undefined && (
+              <span title={autoStatus[ws.id]} role="img" aria-label={autoStatus[ws.id]} className="flex flex-shrink-0 text-primary">
+                <Moon className="h-3 w-3" />
+              </span>
+            )}
             {expanded ? (
               <>
                 <button
@@ -295,6 +321,14 @@ export default function Sidebar({
             ) : (
               <>
                 {indicator !== "none" && <StatusIcon status={GROUP_STATUS[indicator]} />}
+                {(boardActive[ws.id] ?? 0) > 0 && (
+                  <span
+                    className="rounded bg-status-running/15 px-1 font-mono text-[10px] text-status-running"
+                    title={`Board: ${boardActive[ws.id]} task attivi`}
+                  >
+                    {boardActive[ws.id]}
+                  </span>
+                )}
                 {list.length > 0 && (
                   <span className="font-mono text-[11px] text-faint group-focus-within:hidden group-hover:hidden">
                     {list.length}
@@ -381,6 +415,30 @@ export default function Sidebar({
                 ))}
               </ul>
             )}
+
+            {/* Board dei task del workspace (Ctrl+Maiusc+B). */}
+            <div className="mx-1.5 mt-1.5">
+              <button
+                type="button"
+                aria-pressed={boardShownId === ws.id}
+                title={boardShownId === ws.id ? "Torna ai terminali (Ctrl+Maiusc+B)" : "Mostra la board (Ctrl+Maiusc+B)"}
+                onClick={() => onToggleBoard(ws.id)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 transition-colors",
+                  boardShownId === ws.id
+                    ? "border-primary/50 bg-surface-2 text-foreground"
+                    : "border-border-strong text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                )}
+              >
+                <LayoutDashboard className="h-3 w-3 flex-shrink-0" />
+                <span className="text-xs">Board</span>
+                {(boardActive[ws.id] ?? 0) > 0 && (
+                  <span className="ml-auto rounded bg-status-running/15 px-1.5 font-mono text-[11px] text-status-running">
+                    {boardActive[ws.id]}
+                  </span>
+                )}
+              </button>
+            </div>
 
             {/* Pulsante diviso: avvio predefinito + scelta dell'avvio. */}
             <div className="mx-1.5 mt-1.5 flex gap-1">

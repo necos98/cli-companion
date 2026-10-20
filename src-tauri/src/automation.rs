@@ -14,6 +14,9 @@
 //! L'orchestratore non resta mai in attesa dentro un tool: dopo gli spawn
 //! chiude il turno e, quando arrivano eventi azionabili, cli-companion digita
 //! `WAKE_TEXT` nel suo prompt; `get_events` gli consegna la coda.
+//! Le board dei task (`board`, `boards`) seguono lo stesso schema: decisioni
+//! pure nel `Registry` (scheduler incluso), avvio dei task (git + spawn) e
+//! salvataggio come `Effect` eseguiti fuori dal lock.
 //! - `Host`: gli effetti verso l'esterno (eventi Tauri, scrittura nel PTY,
 //!   timer, workspace). `TauriHost` e' l'implementazione reale; i test usano
 //!   un host finto, cosi' anche `dispatch` si prova senza finestra.
@@ -23,12 +26,14 @@
 
 use crate::agent_notify::{is_valid_tab_id, RpcRequest, RpcResponse};
 use crate::agents::{self, AutomationRequest, PermissionMode};
+use crate::board::{Board, BoardView};
+use crate::schedule::{Schedule, ScheduleState};
 use crate::workspaces::{Workspace, WorkspaceStore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -36,6 +41,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const SPAWN_EVENT: &str = "automation-spawn";
 const CLOSE_EVENT: &str = "automation-close";
 const UPDATE_EVENT: &str = "automation-update";
+const BOARD_EVENT: &str = "board-update";
+
+mod boards;
+pub mod auto;
+pub use auto::{ORCHESTRATOR_BOOTSTRAP_PROMPT, WINDOW_CLOSED_TEXT};
+pub use boards::{GitOut, StartJob};
 
 /// Tetti e tempi.
 pub const MAX_WORKERS_PER_ORCHESTRATOR: usize = 16;
@@ -47,13 +58,13 @@ pub const CLOSE_DELAY: Duration = Duration::from_millis(1500);
 /// Pausa tra l'incolla e l'Invio: la TUI deve aver chiuso il bracketed paste.
 pub const ENTER_DELAY: Duration = Duration::from_millis(300);
 
-const TITLE_MAX: usize = 80;
-const TASK_MAX: usize = 100_000;
+pub(crate) const TITLE_MAX: usize = 80;
+pub(crate) const TASK_MAX: usize = 100_000;
 const MESSAGE_MAX: usize = 20_000;
-const SUMMARY_MAX: usize = 50_000;
+pub(crate) const SUMMARY_MAX: usize = 50_000;
 const LAST_REPORT_MAX: usize = 200;
 const CWD_MAX: usize = 1024;
-const DEFAULT_AGENT: &str = "claude-code";
+pub(crate) const DEFAULT_AGENT: &str = "claude-code";
 
 /// Prompt passato in riga di comando: ASCII semplice, sicuro in ogni shell
 /// (niente virgolette, `$`, backtick, `%`, `!`, `\`). Lo legge il modello:
@@ -76,7 +87,8 @@ You are an automated cli-companion session, started by an orchestrator that assi
 - Nobody reads your terminal output: communicate ONLY through the cli-companion MCP tools.\n\
 - report_fact: tell the orchestrator about useful facts that emerge (findings, decisions, important progress).\n\
 - request_help: if you are blocked, ask the orchestrator a question and then wait; the answer will arrive as a message in your prompt.\n\
-- complete_task: ALWAYS end the work with this tool, giving a status (completed, failed or blocked) and a full summary: what you did, files touched, test results.\n\
+- complete_task: ALWAYS end the work with this tool, giving a status (completed, failed or blocked) and a full summary: what you did, files touched, test results. When you can, also fill the optional structured fields: commit, files_changed, tests (command, result, details) and follow_ups.\n\
+- If get_task returns an `environment` section, follow it exactly (working folder, setup command, git rules).\n\
 - Background commands are fine: if you start one and wait for it, your session resumes automatically when it finishes. The task must still always end with complete_task.\n\
 If you finish without calling complete_task the orchestrator will not know the outcome.";
 
@@ -146,7 +158,7 @@ pub enum Role {
     Worker,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStatus {
     /// Spawnato, task non ancora letto.
@@ -196,14 +208,20 @@ pub enum EventKind {
     NeedsInput,
     StoppedWithoutReport,
     Exited,
+    /// Board: l'avvio di un task e' fallito (git, comando di lancio).
+    StartFailed,
+    /// Board: tutti i task sono `done` o `cancelled`.
+    PlanCompleted,
+    /// Board: l'utente ha agito dalla vista Board.
+    UserAction,
 }
 
 impl EventKind {
     /// Eventi che richiedono l'attenzione dell'orchestratore e possono
-    /// svegliarlo; `started` e `fact` restano in coda fino al prossimo
-    /// `get_events`.
+    /// svegliarlo; `started`, `fact` e `user_action` restano in coda fino al
+    /// prossimo `get_events`.
     fn is_actionable(self) -> bool {
-        !matches!(self, EventKind::Started | EventKind::Fact)
+        !matches!(self, EventKind::Started | EventKind::Fact | EventKind::UserAction)
     }
 }
 
@@ -220,6 +238,13 @@ pub struct Event {
     pub status: WorkerStatus,
     /// Unix ms.
     pub at: i64,
+    /// Id del task, se il worker (o l'evento) e' di una board.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// Workspace della board (non esposto): serve a spostare gli eventi al
+    /// cambio di proprietario.
+    #[serde(skip)]
+    pub board: Option<String>,
 }
 
 /// Stato di un worker per il frontend (evento `automation-update` e comando
@@ -245,6 +270,9 @@ pub struct SpawnEvent {
     pub title: String,
     pub parent_tab_id: String,
     pub agent_id: String,
+    /// `worker` (task) oppure `orchestrator` (orchestratore automatico di
+    /// una finestra di esecuzione: nessun genitore, metadati automatici).
+    pub role: Role,
 }
 
 /// Voce di `list_sessions`.
@@ -258,6 +286,9 @@ pub struct SessionInfo {
     pub updated_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_report: Option<String>,
+    /// Id del task, per i worker di una board.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// Dati di un worker da registrare (gia' validati e con il comando pronto).
@@ -281,6 +312,24 @@ pub enum Effect {
     Close { tab_id: String, delay: Duration },
     /// Digitare `WAKE_TEXT` nel prompt di questo tab.
     Wake(String),
+    /// Avviare un task di board (git + spawn) su un thread separato.
+    StartTask(Box<StartJob>),
+    /// Salvare su disco e notificare al frontend la board (`board-update`).
+    Publish(Box<Board>),
+    /// La board del workspace e' stata rimossa: cancellare il file. `rev` e'
+    /// una revisione di rimozione: salvataggi piu' vecchi in ritardo vengono
+    /// scartati (niente file resuscitato).
+    DeleteBoard(String, u64),
+    /// Digitare `text` nel prompt del tab (l'orchestratore e' idle).
+    Type { tab: String, text: &'static str },
+    /// Aprire il tab dell'orchestratore automatico (`automation-spawn`).
+    SpawnTab(Box<SpawnEvent>),
+    /// Prendere (`on`) o rilasciare il blocco dello standby. `seq` ordina gli
+    /// effetti applicati fuori dal lock da thread diversi: uno vecchio in
+    /// ritardo viene scartato.
+    KeepAwake { on: bool, seq: u64 },
+    /// Emettere `schedule-state`.
+    Schedule(Box<ScheduleState>),
 }
 
 struct Worker {
@@ -299,6 +348,8 @@ struct Worker {
     help_pending: bool,
     /// Il tab esiste ancora.
     tab_open: bool,
+    /// (workspace, id task) se il worker lavora per un task di board.
+    board_task: Option<(String, String)>,
 }
 
 impl Worker {
@@ -346,10 +397,21 @@ pub struct Registry {
     next_seq: u64,
     next_worker: u64,
     effects: Vec<Effect>,
+    /// Board per workspace (vedi `boards`).
+    boards: HashMap<String, Board>,
+    /// Eventi delle board senza proprietario: passano al prossimo owner.
+    board_queues: HashMap<String, VecDeque<Event>>,
+    /// Workspace con board modificata da schedulare/salvare/notificare.
+    dirty: Vec<String>,
+    /// Ultima revisione assegnata alle board (contatore globale monotono:
+    /// resta crescente anche se una board sparisce e ricompare).
+    next_rev: u64,
+    /// Finestre di esecuzione e orchestratori automatici (vedi `auto`).
+    auto: auto::AutoCore,
 }
 
 /// Testo obbligatorio: trim, 1..=`max` caratteri.
-fn req_text(label: &str, s: &str, max: usize) -> Result<String, String> {
+pub(crate) fn req_text(label: &str, s: &str, max: usize) -> Result<String, String> {
     let t = s.trim();
     if t.is_empty() {
         return Err(format!("{label} is missing"));
@@ -360,7 +422,7 @@ fn req_text(label: &str, s: &str, max: usize) -> Result<String, String> {
     Ok(t.to_string())
 }
 
-fn clip_chars(s: &str, max: usize) -> String {
+pub(crate) fn clip_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
@@ -407,6 +469,18 @@ impl Registry {
     /// Registra un nuovo worker figlio di `orch`.
     pub fn spawn(&mut self, orch: &str, new: NewWorker, now: i64) -> Result<SpawnEvent, String> {
         self.check_spawn(orch)?;
+        Ok(self.spawn_inner(orch, new, now, None))
+    }
+
+    /// Registra il worker senza controlli. `orch` vuoto = task di una board
+    /// senza proprietario (gli eventi aspettano nella coda della board).
+    fn spawn_inner(
+        &mut self,
+        orch: &str,
+        new: NewWorker,
+        now: i64,
+        board_task: Option<(String, String)>,
+    ) -> SpawnEvent {
         self.next_worker += 1;
         let id = format!("auto-{now}-{}", self.next_worker);
         let ev = SpawnEvent {
@@ -417,6 +491,7 @@ impl Registry {
             title: new.title.clone(),
             parent_tab_id: orch.to_string(),
             agent_id: new.agent_id.clone(),
+            role: Role::Worker,
         };
         self.workers.insert(
             id.clone(),
@@ -434,10 +509,11 @@ impl Registry {
                 started_sent: false,
                 help_pending: false,
                 tab_open: true,
+                board_task,
             },
         );
         self.prune();
-        Ok(ev)
+        ev
     }
 
     /// Scarta i worker chiusi piu' vecchi oltre il tetto di memoria.
@@ -479,13 +555,20 @@ impl Registry {
             let info = w.info();
             self.effects.push(Effect::Update(info));
         }
+        self.sync_task(session, now);
     }
 
     fn push_event(&mut self, session: &str, kind: EventKind, text: Option<String>, now: i64) {
         let Some(w) = self.workers.get(session) else {
             return;
         };
-        let orch = w.orchestrator.clone();
+        // Worker di board senza proprietario: l'evento aspetta nella coda
+        // della board (orchestratore vuoto).
+        let target = Some(w.orchestrator.clone()).filter(|o| !o.is_empty());
+        let (board, task) = match &w.board_task {
+            Some((ws, t)) => (Some(ws.clone()), Some(t.clone())),
+            None => (None, None),
+        };
         self.next_seq += 1;
         let ev = Event {
             seq: self.next_seq,
@@ -495,13 +578,34 @@ impl Registry {
             text,
             status: w.status,
             at: now,
+            task,
+            board,
         };
-        let q = self.queues.entry(orch.clone()).or_default();
-        q.events.push_back(ev);
-        while q.events.len() > MAX_QUEUE_EVENTS {
-            q.events.pop_front();
+        self.enqueue(target, ev);
+    }
+
+    /// Mette l'evento nella coda dell'orchestratore (o, senza, in quella
+    /// della board) e valuta il risveglio.
+    fn enqueue(&mut self, target: Option<String>, ev: Event) {
+        match target {
+            Some(orch) => {
+                let q = self.queues.entry(orch.clone()).or_default();
+                q.events.push_back(ev);
+                while q.events.len() > MAX_QUEUE_EVENTS {
+                    q.events.pop_front();
+                }
+                self.check_wake(&orch);
+            }
+            None => {
+                if let Some(ws) = ev.board.clone() {
+                    let q = self.board_queues.entry(ws).or_default();
+                    q.push_back(ev);
+                    while q.len() > MAX_QUEUE_EVENTS {
+                        q.pop_front();
+                    }
+                }
+            }
         }
-        self.check_wake(&orch);
     }
 
     /// Decide se svegliare l'orchestratore `tab`: ci sono eventi azionabili
@@ -537,14 +641,27 @@ impl Registry {
     /// `get_task`: il worker legge il task. La prima volta passa a `running`
     /// e avvisa l'orchestratore.
     pub fn get_task(&mut self, session: &str, now: i64) -> Result<Value, String> {
+        self.get_task_in(session, now, None)
+    }
+
+    /// Come `get_task`; `ws` (il workspace della board) permette di
+    /// descrivere l'ambiente di un task di board.
+    pub fn get_task_in(&mut self, session: &str, now: i64, ws: Option<&Workspace>) -> Result<Value, String> {
+        let env = self.board_environment(session, ws);
         let w = self.worker_mut(session)?;
-        let out = json!({
+        let mut out = json!({
             "session": w.session,
             "title": w.title,
             "task": w.task,
             "orchestrator": w.orchestrator,
             "instructions": WORKER_INSTRUCTIONS,
         });
+        if let Some((_, tid)) = &w.board_task {
+            out["task_id"] = json!(tid);
+        }
+        if let Some(env) = env {
+            out["environment"] = json!(env);
+        }
         let first = !w.started_sent;
         w.started_sent = true;
         if w.status == WorkerStatus::Starting {
@@ -608,6 +725,21 @@ impl Registry {
         summary: &str,
         now: i64,
     ) -> Result<bool, String> {
+        self.complete_task_report(session, status, summary, crate::board::ReportFields::default(), None, now)
+    }
+
+    /// `complete_task` con i campi strutturati e il diffstat calcolato
+    /// dall'app (task di board con worktree).
+    pub fn complete_task_report(
+        &mut self,
+        session: &str,
+        status: &str,
+        summary: &str,
+        fields: crate::board::ReportFields,
+        diffstat: Option<String>,
+        now: i64,
+    ) -> Result<bool, String> {
+        let status_str = status;
         let status = WorkerStatus::from_final(status)
             .ok_or_else(|| "invalid status (use completed, failed or blocked)".to_string())?;
         let summary = req_text("summary", summary, SUMMARY_MAX)?;
@@ -615,8 +747,11 @@ impl Registry {
         w.status = status;
         w.last_report = Some(clip_chars(&summary, LAST_REPORT_MAX));
         let closing = !w.keep_open;
-        self.push_event(session, EventKind::Completed, Some(summary), now);
+        self.push_event(session, EventKind::Completed, Some(summary.clone()), now);
         self.touch(session, now);
+        self.finish_board_task(session, status_str, &summary, fields, diffstat, now);
+        let orch = self.workers.get(session).map(|w| w.orchestrator.clone()).unwrap_or_default();
+        self.mark_owner_boards_dirty(&orch);
         if closing {
             self.effects.push(Effect::Close {
                 tab_id: session.to_string(),
@@ -693,6 +828,7 @@ impl Registry {
                 created_at: w.created_at,
                 updated_at: w.updated_at,
                 last_report: w.last_report.clone(),
+                task: w.board_task.as_ref().map(|t| t.1.clone()),
             })
             .collect()
     }
@@ -720,6 +856,9 @@ impl Registry {
         let last = if hook.notification_type == Some("idle_prompt") { "finished" } else { hook.event };
         self.last_hook.insert(tab.to_string(), last.to_string());
         let Some(w) = self.workers.get_mut(tab) else {
+            // Orchestratore automatico: testo di chiusura / drain prima del
+            // risveglio (il testo di chiusura chiede gia' get_events).
+            self.auto_hook(tab, hook.event);
             self.check_wake(tab);
             return None;
         };
@@ -771,6 +910,9 @@ impl Registry {
                 w.status = WorkerStatus::Closed;
                 self.push_event(tab, EventKind::Exited, None, now);
                 self.touch(tab, now);
+                self.fail_board_task(tab, "the session ended without a complete_task report", now);
+                let orch = self.workers.get(tab).map(|w| w.orchestrator.clone()).unwrap_or_default();
+                self.mark_owner_boards_dirty(&orch);
             }
             _ => {}
         }
@@ -781,6 +923,7 @@ impl Registry {
     /// shell uscita). `exited` solo se non era gia' finito o chiuso.
     pub fn tab_closed(&mut self, tab: &str, now: i64) {
         let Some(w) = self.workers.get_mut(tab) else {
+            self.auto_tab_closed(tab);
             return;
         };
         if !w.tab_open {
@@ -793,6 +936,11 @@ impl Registry {
             self.push_event(tab, EventKind::Exited, None, now);
         }
         self.touch(tab, now);
+        self.fail_board_task(tab, "the tab was closed before complete_task", now);
+        // Il tab libera un posto nel tetto di worker: i task in coda
+        // tornati indietro per il tetto pieno possono ripartire.
+        let orch = self.workers.get(tab).map(|w| w.orchestrator.clone()).unwrap_or_default();
+        self.mark_owner_boards_dirty(&orch);
     }
 
     // --- coda ---
@@ -843,7 +991,7 @@ pub fn resolve_permission(
 }
 
 /// Campo stringa opzionale: assente o `null` = `None`; di altro tipo = errore.
-fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+pub(crate) fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.as_str())),
@@ -851,17 +999,17 @@ fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     }
 }
 
-fn req_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(crate) fn req_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
     opt_str(p, key)?.ok_or_else(|| format!("{key} is missing"))
 }
 
 /// Titolo di ripiego: le prime parole del task.
-fn default_title(task: &str) -> String {
+pub(crate) fn default_title(task: &str) -> String {
     let words: Vec<&str> = task.split_whitespace().take(8).collect();
     clip_chars(&words.join(" "), TITLE_MAX).trim().to_string()
 }
 
-fn valid_model(m: &str) -> bool {
+pub(crate) fn valid_model(m: &str) -> bool {
     !m.is_empty()
         && m.len() <= 64
         && m.chars()
@@ -981,30 +1129,204 @@ pub trait Host: Clone + Send + 'static {
     fn write_to_tab(&self, tab_id: &str, data: &str) -> Result<(), String>;
     /// Esegue `job` dopo `delay` su un altro thread.
     fn defer(&self, delay: Duration, job: Box<dyn FnOnce() + Send>);
+    /// Workspace per id.
+    fn workspace(&self, id: &str) -> Option<Workspace>;
+    /// Esegue `git <args>` in `dir` nell'ambiente del workspace (argv, mai
+    /// una shell). `Err` solo se git non parte.
+    fn git(&self, ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut, String>;
+    /// Aggiunge `line` al file `file` (info/exclude) se manca.
+    fn append_exclude(&self, ws: &Workspace, file: &str, line: &str) -> Result<(), String>;
+    fn save_board(&self, board: &Board) -> Result<(), String>;
+    fn delete_board(&self, ws_id: &str);
+    fn emit_board(&self, view: &BoardView);
+    /// Tutti i workspace.
+    fn workspaces(&self) -> Vec<Workspace>;
+    /// Minuti locali del giorno all'istante `now` (unix ms).
+    fn local_minute(&self, now: i64) -> u16;
+    fn emit_schedule(&self, state: &ScheduleState);
+    fn save_schedule(&self, s: &Schedule) -> Result<(), String>;
+    /// Prende o rilascia il blocco dello standby.
+    fn set_keep_awake(&self, on: bool);
+    fn workflow_read(&self, ws_id: &str) -> Result<Option<String>, String>;
+    /// `None` elimina il workflow.
+    fn workflow_write(&self, ws_id: &str, content: Option<&str>) -> Result<(), String>;
 }
 
-/// Managed state Tauri.
+/// Salvataggi coalescenti: al massimo uno per board ogni `SAVE_EVERY_MS`,
+/// sempre con l'ultimo stato (un report_fact dopo l'altro non riscrive il
+/// JSON intero ogni volta). L'evento `board-update` non e' coalescente.
+pub(super) const SAVE_EVERY_MS: i64 = 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SaveDecision {
+    /// Salvare subito.
+    Now,
+    /// Un salvataggio e' in coda: armare un timer fra `Duration`.
+    Arm(Duration),
+    /// Gia' in coda con un timer armato: lo stato nuovo lo sostituisce.
+    Queued,
+}
+
 #[derive(Default)]
+struct SaveSlot {
+    last_at: Option<i64>,
+    pending: Option<Board>,
+    armed: bool,
+}
+
+/// Parte pura della coalescenza (tempo iniettato).
+#[derive(Default)]
+pub(super) struct SaveGate {
+    slots: HashMap<String, SaveSlot>,
+}
+
+impl SaveGate {
+    pub(super) fn offer(&mut self, board: &Board, now: i64) -> SaveDecision {
+        let s = self.slots.entry(board.workspace_id.clone()).or_default();
+        let since = s.last_at.map_or(i64::MAX, |t| now - t);
+        if s.pending.is_none() && !s.armed && since >= SAVE_EVERY_MS {
+            s.last_at = Some(now);
+            return SaveDecision::Now;
+        }
+        s.pending = Some(board.clone());
+        if s.armed {
+            SaveDecision::Queued
+        } else {
+            s.armed = true;
+            SaveDecision::Arm(Duration::from_millis((SAVE_EVERY_MS - since).clamp(0, SAVE_EVERY_MS) as u64))
+        }
+    }
+
+    /// Il timer e' scattato: l'ultimo stato da salvare, se c'e'.
+    pub(super) fn take(&mut self, ws: &str, now: i64) -> Option<Board> {
+        let s = self.slots.get_mut(ws)?;
+        s.armed = false;
+        s.last_at = Some(now);
+        s.pending.take()
+    }
+
+    pub(super) fn take_all(&mut self) -> Vec<Board> {
+        self.slots.values_mut().filter_map(|s| s.pending.take()).collect()
+    }
+
+    pub(super) fn forget(&mut self, ws: &str) {
+        self.slots.remove(ws);
+    }
+}
+
+/// Managed state Tauri. `Clone` (Arc): i thread di avvio dei task lo portano
+/// con se' per rientrare dopo il lavoro git.
+#[derive(Default, Clone)]
 pub struct AutomationState {
-    inner: Mutex<Registry>,
+    inner: Arc<Mutex<Registry>>,
+    /// Ultima revisione pubblicata (emessa) per board: una pubblicazione in
+    /// ritardo non ne sovrascrive una piu' recente. Alla rimozione di una
+    /// board ci resta la revisione di rimozione (lapide). Ordine dei lock:
+    /// `published` poi `saves`; mai con `inner` in mano.
+    published: Arc<Mutex<HashMap<String, u64>>>,
+    saves: Arc<Mutex<SaveGate>>,
+    /// Ultimo `seq` di `KeepAwake` applicato.
+    awake_applied: Arc<Mutex<u64>>,
+    /// Un avvio alla volta per task (git worktree sullo stesso path).
+    starts: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl AutomationState {
-    /// Esegue `f` sul registro, poi applica gli effetti fuori dal lock.
+    /// Esegue `f` sul registro, poi schedula le board modificate e applica
+    /// gli effetti fuori dal lock.
     pub fn run<H: Host, T>(&self, host: &H, f: impl FnOnce(&mut Registry) -> T) -> T {
         let (out, effects) = {
             let mut reg = self.inner.lock().unwrap();
             let out = f(&mut reg);
+            let now = now_millis();
+            reg.flush_boards(now, host.local_minute(now), &|id| host.workspace(id));
             (out, reg.take_effects())
         };
-        apply_effects(host, effects);
+        apply_effects(self, host, effects);
         out
+    }
+
+    fn save<H: Host>(host: &H, board: &Board) {
+        if let Err(e) = host.save_board(board) {
+            eprintln!("board {}: {e}", board.workspace_id);
+        }
+    }
+
+    /// Emette la board se e' piu' recente dell'ultima pubblicata e la salva
+    /// (coalescendo i salvataggi ravvicinati).
+    fn publish<H: Host>(&self, host: &H, board: &Board) {
+        let decision = {
+            let mut map = self.published.lock().unwrap();
+            if board.rev <= map.get(&board.workspace_id).copied().unwrap_or(0) {
+                return;
+            }
+            map.insert(board.workspace_id.clone(), board.rev);
+            host.emit_board(&board.view());
+            let d = self.saves.lock().unwrap().offer(board, now_millis());
+            if d == SaveDecision::Now {
+                Self::save(host, board);
+            }
+            d
+        };
+        // Il timer fuori dal lock: un host sincrono lo eseguirebbe subito.
+        if let SaveDecision::Arm(delay) = decision {
+            let (st, h, ws) = (self.clone(), host.clone(), board.workspace_id.clone());
+            host.defer(delay, Box::new(move || st.flush_save(&h, &ws)));
+        }
+    }
+
+    /// Timer di salvataggio scattato.
+    fn flush_save<H: Host>(&self, host: &H, ws: &str) {
+        let map = self.published.lock().unwrap();
+        let Some(b) = self.saves.lock().unwrap().take(ws, now_millis()) else {
+            return;
+        };
+        // Board rimossa nel frattempo (lapide): niente file resuscitato.
+        if map.get(ws) == Some(&b.rev) {
+            Self::save(host, &b);
+        }
+    }
+
+    /// Chiusura dell'app: salva i salvataggi ancora in coda.
+    pub fn flush_pending_saves<H: Host>(&self, host: &H) {
+        let map = self.published.lock().unwrap();
+        for b in self.saves.lock().unwrap().take_all() {
+            if map.get(&b.workspace_id) == Some(&b.rev) {
+                Self::save(host, &b);
+            }
+        }
+    }
+
+    /// Il workspace e' stato rimosso: via la sua board e il file.
+    pub fn remove_board<H: Host>(&self, host: &H, ws_id: &str) {
+        self.run(host, |r| {
+            r.remove_board(ws_id);
+            r.auto_forget(ws_id);
+        });
+        let _ = host.workflow_write(ws_id, None);
     }
 }
 
-fn apply_effects<H: Host>(host: &H, effects: Vec<Effect>) {
+fn apply_effects<H: Host>(st: &AutomationState, host: &H, effects: Vec<Effect>) {
     for e in effects {
         match e {
+            Effect::StartTask(job) => {
+                // Git e' lento: mai sul thread corrente (puo' essere il main).
+                let (st, h) = (st.clone(), host.clone());
+                host.defer(Duration::ZERO, Box::new(move || boards::run_start_job(&st, &h, *job)));
+            }
+            Effect::Publish(board) => st.publish(host, &board),
+            Effect::DeleteBoard(ws_id, rev) => {
+                {
+                    let mut map = st.published.lock().unwrap();
+                    st.saves.lock().unwrap().forget(&ws_id);
+                    map.insert(ws_id.clone(), rev);
+                    host.delete_board(&ws_id);
+                }
+                let mut view = Board::new(&ws_id).view();
+                view.rev = rev;
+                host.emit_board(&view);
+            }
             Effect::Update(info) => host.emit_update(&info),
             Effect::Close { tab_id, delay } if delay.is_zero() => host.emit_close(&tab_id),
             Effect::Close { tab_id, delay } => {
@@ -1014,6 +1336,19 @@ fn apply_effects<H: Host>(host: &H, effects: Vec<Effect>) {
             Effect::Wake(tab) => {
                 let _ = type_message(host, &tab, WAKE_TEXT);
             }
+            Effect::Type { tab, text } => {
+                let _ = type_message(host, &tab, text);
+            }
+            Effect::SpawnTab(ev) => host.emit_spawn(&ev),
+            Effect::KeepAwake { on, seq } => {
+                // Un effetto vecchio, arrivato dopo uno piu' nuovo, si scarta.
+                let mut last = st.awake_applied.lock().unwrap();
+                if seq > *last {
+                    *last = seq;
+                    host.set_keep_awake(on);
+                }
+            }
+            Effect::Schedule(state) => host.emit_schedule(&state),
         }
     }
 }
@@ -1036,13 +1371,20 @@ fn type_message<H: Host>(host: &H, tab: &str, text: &str) -> Result<(), String> 
 // Dispatch RPC
 // ---------------------------------------------------------------------------
 
-const ORCHESTRATOR_METHODS: [&str; 6] = [
+const ORCHESTRATOR_METHODS: [&str; 13] = [
     "list_agents",
     "spawn_session",
     "list_sessions",
     "send_message",
     "close_session",
     "get_events",
+    "submit_plan",
+    "get_board",
+    "update_task",
+    "set_task_status",
+    "set_board",
+    "get_workflow",
+    "save_workflow",
 ];
 const WORKER_METHODS: [&str; 4] = ["get_task", "report_fact", "request_help", "complete_task"];
 
@@ -1082,6 +1424,7 @@ pub fn dispatch<H: Host>(
                     out["workspace"] = json!({
                         "id": w.id, "name": w.name, "kind": w.kind, "path": w.path,
                         "worker_permission": w.worker_permission_mode().as_str(),
+                        "worker_model": w.worker_model,
                     });
                 }
             }
@@ -1114,7 +1457,14 @@ pub fn dispatch<H: Host>(
             let events = st.run(host, |r| r.drain(session));
             Ok(json!({ "events": events }))
         }
-        "get_task" => st.run(host, |r| r.get_task(session, now)),
+        "submit_plan" | "get_board" | "update_task" | "set_task_status" | "set_board" => {
+            boards::rpc_board(st, host, session, method, params, now)
+        }
+        "get_workflow" | "save_workflow" => auto::rpc_workflow(host, session, method, params),
+        "get_task" => {
+            let ws = st.board_workspace_of(session).and_then(|id| host.workspace(&id));
+            st.run(host, |r| r.get_task_in(session, now, ws.as_ref()))
+        }
         "report_fact" => {
             let text = req_str(params, "text")?;
             st.run(host, |r| r.report_fact(session, text, now))?;
@@ -1128,7 +1478,14 @@ pub fn dispatch<H: Host>(
         "complete_task" => {
             let status = req_str(params, "status")?;
             let summary = req_str(params, "summary")?;
-            let closing = st.run(host, |r| r.complete_task(session, status, summary, now))?;
+            let fields = crate::board::parse_report_fields(params)?;
+            // Diffstat dei task con worktree: git fuori dal lock.
+            let diffstat = st.board_worktree_of(session).and_then(|(ws_id, wt)| {
+                let ws = host.workspace(&ws_id)?;
+                boards::compute_diffstat(host, &ws, &wt)
+            });
+            let closing =
+                st.run(host, |r| r.complete_task_report(session, status, summary, fields, diffstat, now))?;
             Ok(json!({ "closing": closing }))
         }
         _ => Err(format!("unknown method: {method}")),
@@ -1166,7 +1523,7 @@ fn rpc_spawn<H: Host>(
     let req = AutomationRequest {
         bootstrap_prompt: BOOTSTRAP_PROMPT,
         permission_mode,
-        model: p.model.as_deref(),
+        model: p.model.as_deref().or(ws.worker_model.as_deref()),
     };
     let command = host.launch_command(&p.agent, &ws.kind, &req)?;
     let new = NewWorker {
@@ -1243,6 +1600,71 @@ impl Host for TauriHost {
             job();
         });
     }
+
+    fn workspace(&self, id: &str) -> Option<Workspace> {
+        self.0.state::<WorkspaceStore>().find(id)
+    }
+
+    fn git(&self, ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut, String> {
+        boards::run_git(ws, dir, args)
+    }
+
+    fn append_exclude(&self, ws: &Workspace, file: &str, line: &str) -> Result<(), String> {
+        boards::append_exclude_line(ws, file, line)
+    }
+
+    fn save_board(&self, board: &Board) -> Result<(), String> {
+        let dir = boards::boards_dir(&self.0)?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("impossibile creare cartella board: {e}"))?;
+        let raw = serde_json::to_string_pretty(board).map_err(|e| e.to_string())?;
+        let file = boards::board_file(&dir, &board.workspace_id)?;
+        crate::write_atomic(&file, &raw).map_err(|e| format!("impossibile salvare la board: {e}"))
+    }
+
+    fn delete_board(&self, ws_id: &str) {
+        if let Ok(dir) = boards::boards_dir(&self.0) {
+            if let Ok(file) = boards::board_file(&dir, ws_id) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+    }
+
+    fn emit_board(&self, view: &BoardView) {
+        let _ = self.0.emit(BOARD_EVENT, view);
+    }
+
+    fn workspaces(&self) -> Vec<Workspace> {
+        self.0.state::<WorkspaceStore>().all()
+    }
+
+    fn local_minute(&self, now: i64) -> u16 {
+        use chrono::{Local, TimeZone, Timelike};
+        Local
+            .timestamp_millis_opt(now)
+            .single()
+            .map(|t| (t.hour() * 60 + t.minute()) as u16)
+            .unwrap_or(0)
+    }
+
+    fn emit_schedule(&self, state: &ScheduleState) {
+        auto::emit_schedule(&self.0, state);
+    }
+
+    fn save_schedule(&self, s: &Schedule) -> Result<(), String> {
+        crate::schedule::save_schedule(&auto::data_dir(&self.0)?, s)
+    }
+
+    fn set_keep_awake(&self, on: bool) {
+        crate::awake::set(on);
+    }
+
+    fn workflow_read(&self, ws_id: &str) -> Result<Option<String>, String> {
+        crate::schedule::read_workflow(&auto::workflows_dir(&self.0)?, ws_id)
+    }
+
+    fn workflow_write(&self, ws_id: &str, content: Option<&str>) -> Result<(), String> {
+        crate::schedule::write_workflow(&auto::workflows_dir(&self.0)?, ws_id, content)
+    }
 }
 
 /// Punto d'ingresso delle RPC dal socket: autentica e smista.
@@ -1290,6 +1712,97 @@ pub fn automation_tab_closed(
     }
     state.run(&TauriHost(app), |r| r.tab_closed(&tab_id, now_millis()));
     Ok(())
+}
+
+/// Il pty di un tab e' terminato da solo (chiamato dal thread di lettura
+/// solo se nessuno aveva chiamato `pty_close`: non e' una chiusura
+/// dell'utente). Per l'orchestratore automatico significa crash/uscita.
+pub fn pty_exited(app: &AppHandle, tab_id: &str) {
+    let st = app.state::<AutomationState>();
+    st.run(&TauriHost(app.clone()), |r| r.auto_tab_exited(tab_id, now_millis()));
+}
+
+/// Chiusura dell'app: salva le board con un salvataggio ancora in coda.
+pub fn flush_on_exit(app: &AppHandle) {
+    app.state::<AutomationState>().flush_pending_saves(&TauriHost(app.clone()));
+}
+
+/// Carica le board salvate (all'avvio dell'app). I task `running` diventano
+/// `failed`; un file corrotto va in `.json.bak`.
+pub fn load_boards(app: &tauri::App) {
+    let Ok(dir) = boards::boards_dir(app.handle()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let st = app.state::<AutomationState>();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let loaded = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|raw| Board::from_json(&raw, now_millis()));
+        match loaded {
+            Ok(board) => st.inner.lock().unwrap().load_board(board),
+            Err(_) => {
+                let _ = std::fs::rename(&path, path.with_extension("json.bak"));
+            }
+        }
+    }
+}
+
+/// Board del workspace (vuota se non esiste).
+#[tauri::command]
+pub fn board_get(state: State<AutomationState>, workspace_id: String) -> BoardView {
+    state.inner.lock().unwrap().board_view(&workspace_id)
+}
+
+/// Imposta `max_parallel` e/o la pausa della board.
+#[tauri::command]
+pub async fn board_set(
+    app: AppHandle,
+    workspace_id: String,
+    max_parallel: Option<u8>,
+    paused: Option<bool>,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::board_set_cmd(&st, &TauriHost(app.clone()), &workspace_id, max_parallel, paused)
+    })
+    .await
+}
+
+/// Imposta (o azzera) il modello di un task della board dalla vista Board.
+#[tauri::command]
+pub async fn board_task_set_model(
+    app: AppHandle,
+    workspace_id: String,
+    task_id: String,
+    model: Option<String>,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::board_set_model(&st, &TauriHost(app.clone()), &workspace_id, &task_id, model.as_deref())
+    })
+    .await
+}
+
+/// Azione dell'utente dalla vista Board: hold, unhold, retry, cancel, done.
+#[tauri::command]
+pub async fn board_task_action(
+    app: AppHandle,
+    workspace_id: String,
+    task_id: String,
+    action: String,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::board_action(&st, &TauriHost(app.clone()), &workspace_id, &task_id, &action)
+    })
+    .await
 }
 
 /// Worker con tab aperto: il frontend ricostruisce lo stato (hot reload).
@@ -1954,6 +2467,9 @@ mod tests {
             created_at: 0,
             launches: Vec::new(),
             worker_permission: "accept-edits".to_string(),
+            worktree_setup: None,
+            worker_model: None,
+            auto_orchestrate: None,
         }
     }
 
@@ -2017,24 +2533,79 @@ mod tests {
     #[derive(Clone, Default)]
     struct FakeHost {
         log: Arc<Mutex<Vec<String>>>,
+        /// "<dir>|<args>" di ogni git eseguito.
+        git_log: Arc<Mutex<Vec<String>>>,
+        /// Risposte git forzate: la prima il cui testo e' contenuto in "<dir>|<args>".
+        git_rules: Arc<Mutex<Vec<(String, GitOut)>>>,
+        /// Cartelle che "esistono" oltre a quelle con "esiste" nel nome.
+        dirs: Arc<Mutex<Vec<String>>>,
+        spawns: Arc<Mutex<Vec<SpawnEvent>>>,
+        /// Board salvate (ultima per workspace) e viste emesse.
+        saved: Arc<Mutex<HashMap<String, Board>>>,
+        board_events: Arc<Mutex<Vec<BoardView>>>,
+        deleted: Arc<Mutex<Vec<String>>>,
+        excludes: Arc<Mutex<Vec<String>>>,
+        setup: Arc<Mutex<Option<String>>>,
+        /// Minuti locali "correnti" dell'host finto.
+        minute: Arc<Mutex<u16>>,
+        /// Configurazione dell'orchestratore automatico per workspace.
+        auto: Arc<Mutex<HashMap<String, crate::workspaces::AutoOrchestrate>>>,
+        /// Tab (oltre agli orchestratori fissi) con un pty "vivo".
+        live: Arc<Mutex<Vec<String>>>,
+        schedule_events: Arc<Mutex<Vec<ScheduleState>>>,
+        saved_schedule: Arc<Mutex<Option<Schedule>>>,
+        awake: Arc<Mutex<Vec<bool>>>,
+        workflows: Arc<Mutex<HashMap<String, String>>>,
+        /// Modello di default dei worker del workspace "ws-1".
+        worker_model: Arc<Mutex<Option<String>>>,
+        /// Errore forzato di `append_exclude`.
+        exclude_err: Arc<Mutex<Option<String>>>,
+        /// `true` = i `git worktree add` restano bloccati (prova della serializzazione).
+        add_hold: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        add_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        add_max_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl FakeHost {
         fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
         }
+        fn git_log(&self) -> Vec<String> {
+            self.git_log.lock().unwrap().clone()
+        }
+        fn git_rule(&self, needle: &str, ok: bool, stdout: &str, stderr: &str) {
+            let out = GitOut { ok, stdout: stdout.to_string(), stderr: stderr.to_string() };
+            self.git_rules.lock().unwrap().push((needle.to_string(), out));
+        }
+        fn spawns(&self) -> Vec<SpawnEvent> {
+            self.spawns.lock().unwrap().clone()
+        }
+        fn ws_for(&self, id: &str) -> Option<Workspace> {
+            match id {
+                "ws-1" => {
+                    let mut w = ws("ws-1", "Proj", "windows");
+                    w.worktree_setup = self.setup.lock().unwrap().clone();
+                    w.worker_model = self.worker_model.lock().unwrap().clone();
+                    w.auto_orchestrate = self.auto.lock().unwrap().get(id).cloned();
+                    Some(w)
+                }
+                "ws-2" => Some(ws("ws-2", "Linux", "wsl")),
+                _ => None,
+            }
+        }
     }
 
     impl Host for FakeHost {
         fn tab_workspace(&self, tab_id: &str) -> Option<Workspace> {
             match tab_id {
-                ORCH => Some(ws("ws-1", "Proj", "windows")),
-                "orch-wsl" => Some(ws("ws-2", "Linux", "wsl")),
+                ORCH | "orch-b" => self.ws_for("ws-1"),
+                "orch-wsl" => self.ws_for("ws-2"),
+                t if self.live.lock().unwrap().iter().any(|l| l == t) => self.ws_for("ws-1"),
                 _ => None,
             }
         }
         fn dir_exists(&self, _ws: &Workspace, path: &str) -> bool {
-            path.contains("esiste")
+            path.contains("esiste") || self.dirs.lock().unwrap().iter().any(|d| d == path)
         }
         fn agents(&self) -> Vec<(String, String)> {
             vec![("claude-code".to_string(), "Claude Code".to_string())]
@@ -2043,9 +2614,10 @@ mod tests {
             if agent != "claude-code" {
                 return Err(format!("unknown agent: {agent}"));
             }
-            Ok(format!("fake {env_kind} {:?} {}", req.permission_mode, req.bootstrap_prompt))
+            Ok(format!("fake {env_kind} {:?} {} model={}", req.permission_mode, req.bootstrap_prompt, req.model.unwrap_or("-")))
         }
         fn emit_spawn(&self, ev: &SpawnEvent) {
+            self.spawns.lock().unwrap().push(ev.clone());
             self.log.lock().unwrap().push(format!("spawn:{}:{}", ev.tab_id, ev.command));
         }
         fn emit_close(&self, tab_id: &str) {
@@ -2062,10 +2634,108 @@ mod tests {
             self.log.lock().unwrap().push(format!("defer:{}", delay.as_millis()));
             job();
         }
+        fn workspace(&self, id: &str) -> Option<Workspace> {
+            self.ws_for(id)
+        }
+        fn git(&self, _ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut, String> {
+            let line = format!("{dir}|{}", args.join(" "));
+            self.git_log.lock().unwrap().push(line.clone());
+            if args.starts_with(&["worktree", "add"]) {
+                use std::sync::atomic::Ordering::SeqCst;
+                let n = self.add_in_flight.fetch_add(1, SeqCst) + 1;
+                self.add_max_in_flight.fetch_max(n, SeqCst);
+                let (m, c) = &*self.add_hold;
+                let mut hold = m.lock().unwrap();
+                while *hold {
+                    hold = c.wait(hold).unwrap();
+                }
+                drop(hold);
+                self.add_in_flight.fetch_sub(1, SeqCst);
+            }
+            if let Some((_, out)) = self.git_rules.lock().unwrap().iter().find(|(n, _)| line.contains(n.as_str())) {
+                return Ok(out.clone());
+            }
+            let ok = |s: &str| GitOut { ok: true, stdout: s.to_string(), stderr: String::new() };
+            let a = args.join(" ");
+            Ok(match a.as_str() {
+                "rev-parse --is-inside-work-tree" => ok("true\n"),
+                "rev-parse --abbrev-ref HEAD" => ok("main\n"),
+                "rev-parse --git-path info/exclude" => ok(".git/info/exclude\n"),
+                s if s.starts_with("rev-parse --verify") => GitOut { ok: false, stdout: String::new(), stderr: String::new() },
+                s if s.starts_with("diff --stat") => ok(" 2 files changed, 10 insertions(+)\n"),
+                _ => ok(""),
+            })
+        }
+        fn append_exclude(&self, _ws: &Workspace, file: &str, line: &str) -> Result<(), String> {
+            if let Some(e) = self.exclude_err.lock().unwrap().clone() {
+                return Err(e);
+            }
+            self.excludes.lock().unwrap().push(format!("{file}|{line}"));
+            Ok(())
+        }
+        fn save_board(&self, board: &Board) -> Result<(), String> {
+            self.saved.lock().unwrap().insert(board.workspace_id.clone(), board.clone());
+            Ok(())
+        }
+        fn delete_board(&self, ws_id: &str) {
+            self.deleted.lock().unwrap().push(ws_id.to_string());
+            self.saved.lock().unwrap().remove(ws_id);
+        }
+        fn emit_board(&self, view: &BoardView) {
+            self.board_events.lock().unwrap().push(view.clone());
+        }
+        fn workspaces(&self) -> Vec<Workspace> {
+            ["ws-1", "ws-2"].iter().filter_map(|id| self.ws_for(id)).collect()
+        }
+        fn local_minute(&self, _now: i64) -> u16 {
+            *self.minute.lock().unwrap()
+        }
+        fn emit_schedule(&self, state: &ScheduleState) {
+            self.schedule_events.lock().unwrap().push(state.clone());
+        }
+        fn save_schedule(&self, s: &Schedule) -> Result<(), String> {
+            *self.saved_schedule.lock().unwrap() = Some(s.clone());
+            Ok(())
+        }
+        fn set_keep_awake(&self, on: bool) {
+            self.awake.lock().unwrap().push(on);
+        }
+        fn workflow_read(&self, ws_id: &str) -> Result<Option<String>, String> {
+            Ok(self.workflows.lock().unwrap().get(ws_id).cloned())
+        }
+        fn workflow_write(&self, ws_id: &str, content: Option<&str>) -> Result<(), String> {
+            let mut m = self.workflows.lock().unwrap();
+            match content {
+                Some(c) => m.insert(ws_id.to_string(), c.to_string()),
+                None => m.remove(ws_id),
+            };
+            Ok(())
+        }
     }
 
     fn call(st: &AutomationState, h: &FakeHost, session: &str, method: &str, params: Value) -> Result<Value, String> {
         dispatch(st, h, session, method, &params)
+    }
+
+    mod auto_flow;
+    mod board_flow;
+
+    #[test]
+    fn spawn_session_model_falls_back_to_workspace_worker_model() {
+        let st = AutomationState::default();
+        let h = FakeHost::default();
+        // Nessun modello ovunque: default dell'agente.
+        call(&st, &h, ORCH, "spawn_session", json!({"task":"t"})).unwrap();
+        assert!(h.spawns()[0].command.contains("model=-"), "{}", h.spawns()[0].command);
+        // Default del workspace.
+        *h.worker_model.lock().unwrap() = Some("sonnet".to_string());
+        let me = call(&st, &h, ORCH, "whoami", Value::Null).unwrap();
+        assert_eq!(me["workspace"]["worker_model"], "sonnet");
+        call(&st, &h, ORCH, "spawn_session", json!({"task":"t"})).unwrap();
+        assert!(h.spawns()[1].command.contains("model=sonnet"), "{}", h.spawns()[1].command);
+        // Il modello esplicito vince.
+        call(&st, &h, ORCH, "spawn_session", json!({"task":"t","model":"opus"})).unwrap();
+        assert!(h.spawns()[2].command.contains("model=opus"), "{}", h.spawns()[2].command);
     }
 
     #[test]
@@ -2077,7 +2747,7 @@ mod tests {
         let me = call(&st, &h, ORCH, "whoami", Value::Null).unwrap();
         assert_eq!(
             me["workspace"],
-            json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p","worker_permission":"accept-edits"})
+            json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p","worker_permission":"accept-edits","worker_model":null})
         );
         // Orchestratore senza workspace noto: whoami funziona, senza il campo.
         assert!(call(&st, &h, "orch-2", "whoami", Value::Null).unwrap().get("workspace").is_none());

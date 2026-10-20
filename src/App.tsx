@@ -19,10 +19,16 @@ import {
   onAutomationClose,
   onAutomationSpawn,
   onAutomationUpdate,
+  onBoardUpdate,
   onNotificationActivated,
 } from "./lib/tauri";
+import { activeCount, mergeBoard } from "./lib/board";
+import type { BoardView as BoardData } from "./lib/board";
+import BoardView from "./components/BoardView";
 import type { AgentEnvStatus, AgentProfile, Launch, Workspace } from "./lib/tauri";
 import { defaultLaunch } from "./lib/launch";
+import { WORKFLOW_WIZARD_COMMAND, WORKFLOW_WIZARD_TITLE, isAutoWorkspace } from "./lib/workflow";
+import { automationBadgeText } from "./lib/schedule";
 import {
   applyAgentEvent,
   GROUP_STATUS,
@@ -41,6 +47,8 @@ import {
   applyAutomationUpdate,
   automationTooltip,
   isAutomated,
+  normalizeRole,
+  ORCHESTRATOR_LABEL,
   persistableTabs,
 } from "./lib/automation";
 import type { AutomationMeta } from "./lib/automation";
@@ -104,6 +112,7 @@ interface Tab {
 
 /** Etichetta mostrata per un tab (titolo OSC > nome avvio > nome workspace). */
 function tabLabel(t: Tab): string {
+  if (t.automation?.role === "orchestrator") return t.automation.title || ORCHESTRATOR_LABEL;
   // Un worker mostra il titolo del task: il titolo OSC dell'agente cambia di continuo.
   if (t.automation?.title) return t.automation.title;
   const launchName = t.launchId
@@ -161,6 +170,14 @@ export default function App() {
   // volta, in background, dopo l'avvio; aggiornati dalle Impostazioni.
   const [agentEnvs, setAgentEnvs] = useState<AgentEnvStatus[]>([]);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  // Board dei task per workspace (riepilogo per la sidebar e vista a grafo).
+  const [boards, setBoards] = useState<Record<string, BoardData>>({});
+  const [boardErrors, setBoardErrors] = useState<Record<string, string>>({});
+  // Modalità per workspace: true = si mostra la board al posto dei terminali.
+  const [boardOpen, setBoardOpen] = useState<Record<string, boolean>>({});
+  // Workspace mostrato senza avere un gruppo di terminali (il layout non lo
+  // conosce): azzerato appena cambia la selezione del layout.
+  const [boardFocus, setBoardFocus] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -192,6 +209,56 @@ export default function App() {
   const paneLayouts = useMemo(() => computePaneLayouts(layout), [layout]);
   const paneLayoutsRef = useRef(paneLayouts);
   paneLayoutsRef.current = paneLayouts;
+
+  const storeBoard = useCallback((b: BoardData) => {
+    setBoards((prev) => ({ ...prev, [b.workspace_id]: mergeBoard(prev[b.workspace_id], b) }));
+  }, []);
+
+  // Caricamento (o ricaricamento, `force`) di una board. Con il backend assente
+  // o in errore il riepilogo resta vuoto; l'errore si mostra solo nella vista.
+  const loadBoard = useCallback(
+    (workspaceId: string) => {
+      api
+        .boardGet(workspaceId)
+        .then((b) => {
+          storeBoard(b);
+          setBoardErrors((prev) => {
+            if (!(workspaceId in prev)) return prev;
+            const next = { ...prev };
+            delete next[workspaceId];
+            return next;
+          });
+        })
+        .catch((e) => setBoardErrors((prev) => ({ ...prev, [workspaceId]: String(e) })));
+    },
+    [storeBoard],
+  );
+
+  // Riepilogo delle board all'avvio e per i workspace aggiunti dopo.
+  const boardRequestedRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const w of workspaces) {
+      if (boardRequestedRef.current.has(w.id)) continue;
+      boardRequestedRef.current.add(w.id);
+      loadBoard(w.id);
+    }
+  }, [workspaces, loadBoard]);
+
+  // Aggiornamenti della board dal backend.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    onBoardUpdate((b) => storeBoard(b))
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [storeBoard]);
 
   // Ripristino della sessione precedente, una volta sola dopo il caricamento
   // dei workspace. Stessi tabId di prima: così combaciano lo scrollback
@@ -338,6 +405,89 @@ export default function App() {
     };
   }, []);
 
+  // Workspace mostrato e modalità: la board copre l'area dei pannelli di quel
+  // workspace (mai nella vista Globale).
+  const viewWorkspaceId =
+    boardFocus ?? (layout.activeView === "global" ? null : layout.activeWorkspaceId);
+  const boardShown = viewWorkspaceId !== null && boardOpen[viewWorkspaceId] === true;
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = settingsOpen || dialogOpen;
+  const boardOpenRef = useRef(boardOpen);
+  boardOpenRef.current = boardOpen;
+  const viewWorkspaceIdRef = useRef<string | null>(null);
+  viewWorkspaceIdRef.current = viewWorkspaceId;
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  // Il layout cambia selezione (gruppo, vista globale): il focus "senza gruppo" decade.
+  useEffect(() => {
+    setBoardFocus(null);
+  }, [layout.activeWorkspaceId, layout.activeView]);
+
+  // Un terminale messo a fuoco riporta ai terminali del suo workspace: la
+  // board di quel workspace si chiude e il focus "senza gruppo" decade.
+  const showTerminalsOf = useCallback((owner: string | undefined) => {
+    if (owner) setBoardOpen((prev) => (prev[owner] ? { ...prev, [owner]: false } : prev));
+    setBoardFocus(null);
+  }, []);
+
+  // Mostra/nasconde la board di un workspace. Se il workspace non è quello
+  // mostrato lo seleziona e apre la board. Solo stato: i terminali restano montati.
+  const toggleBoard = useCallback(
+    (id: string) => {
+      const current = viewWorkspaceIdRef.current;
+      if (current === id) {
+        const open = boardOpenRef.current[id] !== true;
+        if (open) loadBoard(id);
+        setBoardOpen((prev) => ({ ...prev, [id]: open }));
+        return;
+      }
+      if (layoutRef.current.groups.some((g) => g.workspaceId === id)) {
+        setBoardFocus(null);
+        setLayout((l) => selectGroup(l, id));
+      } else {
+        setBoardFocus(id);
+      }
+      loadBoard(id);
+      setBoardOpen((prev) => ({ ...prev, [id]: true }));
+    },
+    [loadBoard],
+  );
+  const toggleBoardRef = useRef(toggleBoard);
+  toggleBoardRef.current = toggleBoard;
+
+  // La board copre i terminali: nessuno deve tenere il focus della tastiera.
+  useEffect(() => {
+    if (!boardShown) return;
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el.closest(".xterm")) el.blur();
+  }, [boardShown]);
+
+  // "Apri terminale" dai dettagli di un task: torna ai terminali e mette a
+  // fuoco il tab del worker (la chiave del tab è l'id di sessione).
+  const handleOpenTerminal = useCallback((sessionId: string) => {
+    const ws = viewWorkspaceIdRef.current;
+    if (ws) setBoardOpen((prev) => ({ ...prev, [ws]: false }));
+    setLayout((l) => focusTab(l, sessionId));
+  }, []);
+
+  // Ctrl+Maiusc+B: mostra/nasconde la board del workspace attivo (non nella
+  // vista Globale). In fase di cattura, come Ctrl+Maiusc+M.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+      if (e.key.toLowerCase() !== "b") return;
+      // Con un dialogo aperto la scorciatoia non fa nulla.
+      if (modalOpenRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = viewWorkspaceIdRef.current;
+      if (id) toggleBoardRef.current(id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   // Ctrl+Maiusc+M: massimizza/ripristina il pannello attivo della vista mostrata.
   // In fase di cattura, così xterm non vede il tasto. Niente Esc: serve alle CLI.
   useEffect(() => {
@@ -402,7 +552,11 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    onNotificationActivated((tabId) => setLayout((l) => focusTab(l, tabId)))
+    onNotificationActivated((tabId) => {
+      const owner = tabsRef.current.find((t) => t.key === tabId)?.workspace.id;
+      showTerminalsOf(owner);
+      setLayout((l) => focusTab(l, tabId));
+    })
       .then((u) => {
         if (cancelled) u();
         else unlisten = u;
@@ -412,7 +566,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [showTerminalsOf]);
 
   // Senza `launch` parte l'avvio predefinito del workspace, se esiste;
   // altrimenti una shell semplice. Il nuovo terminale attiva il suo gruppo.
@@ -420,12 +574,34 @@ export default function App() {
     const chosen = launch ?? defaultLaunch(ws);
     const key = newTabKey();
     const command = chosen?.command ?? "";
+    showTerminalsOf(ws.id);
     setTabs((prev) => [
       ...prev,
       { key, workspace: ws, launchId: chosen?.id, command, startCommand: command },
     ]);
     setLayout((l) => openTab(l, ws.id, key));
-  }, []);
+  }, [showTerminalsOf]);
+
+  // Wizard del workflow: chiude le impostazioni e apre in primo piano un
+  // terminale del workspace che esegue Claude Code con la skill del plugin.
+  const startWorkflowWizard = useCallback((ws: Workspace) => {
+    const key = newTabKey();
+    setSettingsOpen(false);
+    showTerminalsOf(ws.id);
+    setTabs((prev) => [
+      ...prev,
+      {
+        key,
+        workspace: ws,
+        // Al ripristino il tab riprende la conversazione (`claude --resume <id>`)
+        // invece di rilanciare l'intervista: si salva solo `claude`.
+        command: "claude",
+        startCommand: WORKFLOW_WIZARD_COMMAND,
+        title: WORKFLOW_WIZARD_TITLE,
+      },
+    ]);
+    setLayout((l) => openTab(l, ws.id, key));
+  }, [showTerminalsOf]);
 
   // Controllo silenzioso all'avvio: se c'e' un update compare il pallino su
   // "Impostazioni". Errori e repo non configurato non fanno rumore.
@@ -536,7 +712,8 @@ export default function App() {
           command: "",
           startCommand: ev.command,
           automation: {
-            parentTabId: ev.parent_tab_id,
+            role: normalizeRole(ev.role),
+            parentTabId: ev.parent_tab_id ?? "",
             title: ev.title,
             status: "starting",
             agentId: ev.agent_id,
@@ -679,6 +856,10 @@ export default function App() {
   );
 
   const handleSelectWorkspace = useCallback((id: string) => {
+    // Un workspace senza terminali non ha un gruppo: lo si "mostra" comunque
+    // (con la sua modalità, utile per aprirne la board).
+    const hasGroup = layoutRef.current.groups.some((g) => g.workspaceId === id);
+    setBoardFocus(hasGroup ? null : id);
     setLayout((l) => selectGroup(l, id));
   }, []);
 
@@ -764,10 +945,32 @@ export default function App() {
           ) : (
             <Sidebar
               workspaces={workspaces}
-              activeWorkspaceId={globalActive ? null : layout.activeWorkspaceId}
+              activeWorkspaceId={viewWorkspaceId}
               terminals={sidebarTerminals}
+              boardActive={Object.fromEntries(
+                Object.entries(boards).map(([id, b]) => [id, activeCount(b)]),
+              )}
+              autoStatus={Object.fromEntries(
+                workspaces.flatMap((w) =>
+                  isAutoWorkspace(w)
+                    ? [
+                        [
+                          w.id,
+                          automationBadgeText(boards[w.id]?.automation) ??
+                            "Orchestratore automatico attivo",
+                        ],
+                      ]
+                    : [],
+                ),
+              )}
+              boardShownId={boardShown ? viewWorkspaceId : null}
+              onToggleBoard={toggleBoard}
               onSelect={handleSelectWorkspace}
-              onFocusTerminal={(key) => setLayout((l) => focusTab(l, key))}
+              onFocusTerminal={(key) => {
+                // Un terminale scelto dalla sidebar riporta ai terminali del suo workspace.
+                showTerminalsOf(tabsRef.current.find((t) => t.key === key)?.workspace.id);
+                setLayout((l) => focusTab(l, key));
+              }}
               onSpawn={spawnTab}
               onManageLaunches={openLaunchSettings}
               onRename={handleRename}
@@ -811,7 +1014,17 @@ export default function App() {
               Il contenitore interno e' fisso (inset 3px + 3px per pannello =
               6px di margine e di spazio fra i pannelli). */}
           <div className="relative min-h-0 flex-1 bg-pane-area">
-            <div className="absolute inset-[3px]">
+            <div
+              className="absolute inset-[3px]"
+              aria-hidden={boardShown || undefined}
+              ref={(el) => {
+                // `inert` solo come attributo (niente remount): i terminali
+                // nascosti dalla board non restano raggiungibili con Tab.
+                if (!el) return;
+                if (boardShown) el.setAttribute("inert", "");
+                else el.removeAttribute("inert");
+              }}
+            >
               {!anyPaneVisible && (
                 <div className="absolute inset-[3px] flex flex-col items-center justify-center gap-3 rounded-[10px] border bg-pane-area p-5">
                   <Logo size={40} />
@@ -838,7 +1051,7 @@ export default function App() {
                     restore={t.restored}
                     rect={pl?.rect ?? null}
                     active={pl?.visible ?? false}
-                    focused={pl?.focused ?? false}
+                    focused={(pl?.focused ?? false) && !boardShown}
                     label={tabLabel(t)}
                     labelPrefix={
                       pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
@@ -848,6 +1061,7 @@ export default function App() {
                     automation={
                       t.automation
                         ? {
+                            role: t.automation.role,
                             status: t.automation.status,
                             tooltip: automationTooltip(
                               t.automation,
@@ -881,6 +1095,20 @@ export default function App() {
                 );
               })}
             </div>
+            {/* La board copre l'area dei pannelli senza toccarli: i TerminalView
+                qui sopra restano montati e al loro posto. */}
+            {boardShown && viewWorkspaceId && (
+              <div className="absolute inset-[3px] z-20 overflow-hidden rounded-[10px] border">
+                <BoardView
+                  key={viewWorkspaceId}
+                  workspaceId={viewWorkspaceId}
+                  board={boards[viewWorkspaceId] ?? null}
+                  loadError={boardErrors[viewWorkspaceId] ?? null}
+                  onBoard={storeBoard}
+                  onOpenTerminal={handleOpenTerminal}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -905,6 +1133,9 @@ export default function App() {
         onWorkspaceUpdated={handleWorkspaceUpdated}
         onUpdateAvailable={setUpdateAvailable}
         onAgentEnvs={setAgentEnvs}
+        agentProfiles={agentProfiles}
+        agentEnvs={agentEnvs}
+        onCreateWorkflow={startWorkflowWizard}
       />
     </div>
   );

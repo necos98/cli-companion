@@ -16,7 +16,11 @@ export type WorkerStatus =
   | "closed";
 
 /** Metadati di un tab automatico. `status` e' una stringa: il backend puo' aggiungerne. */
+export type AutomationRole = "worker" | "orchestrator";
+
 export interface AutomationMeta {
+  /** Ruolo del tab: worker di un task o orchestratore automatico (assente = worker). */
+  role?: AutomationRole;
   /** Tab dell'orchestratore che ha avviato il worker. */
   parentTabId: string;
   /** Titolo del task. */
@@ -25,6 +29,25 @@ export interface AutomationMeta {
   lastReport?: string;
   agentId: string;
   cwd?: string;
+}
+
+/** Etichetta del tab di un orchestratore automatico senza titolo. */
+export const ORCHESTRATOR_LABEL = "Orchestratore automatico";
+
+/** Normalizza il ruolo dell'evento `automation-spawn` (assente o sconosciuto = worker). */
+export function normalizeRole(role: string | null | undefined): AutomationRole {
+  return role === "orchestrator" ? "orchestrator" : "worker";
+}
+
+export function isOrchestrator(meta: Pick<AutomationMeta, "role"> | undefined | null): boolean {
+  return meta?.role === "orchestrator";
+}
+
+/** Badge dell'intestazione: sigla e nome breve per ruolo. */
+export function automationBadge(role: AutomationRole | undefined): { text: string; title: string } {
+  return role === "orchestrator"
+    ? { text: "ORCH", title: ORCHESTRATOR_LABEL }
+    : { text: "AUTO", title: "Sessione automatica" };
 }
 
 /** Lunghezza massima dell'ultimo report nel tooltip. */
@@ -79,6 +102,12 @@ export function truncateReport(text: string, max: number = REPORT_TOOLTIP_MAX): 
  * (`parentLabel`, se il suo tab esiste ancora) e ultimo report troncato.
  */
 export function automationTooltip(meta: AutomationMeta, parentLabel?: string): string {
+  if (isOrchestrator(meta)) {
+    const lines = [ORCHESTRATOR_LABEL, `Stato: ${statusWord(meta.status).text}`];
+    const report = meta.lastReport ? truncateReport(meta.lastReport) : "";
+    if (report) lines.push(`Ultimo report: ${report}`);
+    return lines.join("\n");
+  }
   const lines = [`Sessione automatica: ${meta.title}`, `Stato: ${statusWord(meta.status).text}`];
   if (parentLabel) lines.push(`Orchestratore: ${parentLabel}`);
   const report = meta.lastReport ? truncateReport(meta.lastReport) : "";

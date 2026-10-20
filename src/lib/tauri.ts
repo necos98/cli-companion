@@ -1,6 +1,9 @@
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPermission } from "./workerPermission";
+import type { BoardView, TaskAction } from "./board";
+import type { Schedule, ScheduleState } from "./schedule";
+import type { AutoOrchestrate } from "./workflow";
 import type {
   DownloadResult,
   InstallResult,
@@ -27,6 +30,12 @@ export interface Workspace {
   launches: Launch[];
   /** Tetto dei permessi dei worker automatici (vedi `Workspace` in workspaces.rs). */
   worker_permission: WorkerPermission;
+  /** Modello dei worker automatici; assente/null = predefinito dell'agente. */
+  worker_model?: string | null;
+  /** Comando di setup dei worktree dei task (assente = nessuno). */
+  worktree_setup?: string;
+  /** Orchestratore automatico del workspace (assente = non automatico). */
+  auto_orchestrate?: AutoOrchestrate | null;
 }
 
 /** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */
@@ -79,6 +88,8 @@ export interface AutomationSpawn {
   title: string;
   parent_tab_id: string;
   agent_id: string;
+  /** Assente = worker. */
+  role?: "worker" | "orchestrator";
 }
 
 /** Evento `automation-close`: chiudi il tab worker. */
@@ -118,8 +129,16 @@ export const api = {
   renameWorkspace: (id: string, name: string) =>
     invoke<Workspace>("rename_workspace", { id, name }),
 
+  setWorkerModel: (id: string, model: string | null) =>
+    invoke<Workspace>("set_worker_model", { id, model }),
   setWorkerPermission: (id: string, mode: WorkerPermission) =>
     invoke<Workspace>("set_worker_permission", { id, mode }),
+
+  setWorktreeSetup: (id: string, command: string | null) =>
+    invoke<Workspace>("set_worktree_setup", { id, command }),
+
+  setAutoOrchestrate: (id: string, config: AutoOrchestrate | null) =>
+    invoke<Workspace>("set_auto_orchestrate", { id, config }),
 
   removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
 
@@ -193,6 +212,32 @@ export const api = {
 
   automationSessions: () => invoke<AutomationTabInfo[]>("automation_sessions"),
 
+  // Board dei task (backend: src-tauri, contratto in docs/BOARD.MD).
+  boardGet: (workspaceId: string) => invoke<BoardView>("board_get", { workspaceId }),
+
+  boardSet: (workspaceId: string, settings: { maxParallel?: number; paused?: boolean }) =>
+    invoke<BoardView>("board_set", {
+      workspaceId,
+      maxParallel: settings.maxParallel ?? null,
+      paused: settings.paused ?? null,
+    }),
+
+  boardTaskSetModel: (workspaceId: string, taskId: string, model: string | null) =>
+    invoke<BoardView>("board_task_set_model", { workspaceId, taskId, model }),
+  boardTaskAction: (workspaceId: string, taskId: string, action: TaskAction) =>
+    invoke<BoardView>("board_task_action", { workspaceId, taskId, action }),
+
+  // Esecuzione automatica e workflow (contratto in docs/SCHEDULE.MD).
+  scheduleGet: () => invoke<ScheduleState>("schedule_get"),
+
+  scheduleSet: (schedule: Schedule) => invoke<ScheduleState>("schedule_set", { schedule }),
+
+  workflowGet: (workspaceId: string) => invoke<string | null>("workflow_get", { workspaceId }),
+
+  /** `content` null o vuoto = elimina il workflow. */
+  workflowSave: (workspaceId: string, content: string | null) =>
+    invoke<void>("workflow_save", { workspaceId, content }),
+
   // Persistenza della sessione (backend: src-tauri/src/session.rs).
   loadSession: () => invoke<string | null>("load_session"),
 
@@ -235,6 +280,14 @@ export function onAutomationClose(cb: (e: AutomationClose) => void) {
 
 export function onAutomationUpdate(cb: (e: AutomationTabInfo) => void) {
   return listen<AutomationTabInfo>("automation-update", (event) => cb(event.payload));
+}
+
+export function onScheduleState(cb: (s: ScheduleState) => void) {
+  return listen<ScheduleState>("schedule-state", (event) => cb(event.payload));
+}
+
+export function onBoardUpdate(cb: (b: BoardView) => void) {
+  return listen<BoardView>("board-update", (event) => cb(event.payload));
 }
 
 export function onAgentEvent(cb: (e: AgentEvent) => void) {

@@ -21,7 +21,7 @@ pub struct Launch {
     pub is_default: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
     pub name: String,
@@ -43,6 +43,31 @@ pub struct Workspace {
     /// "accept-edits" | "bypass". L'orchestratore puo' solo restringerlo.
     #[serde(default = "default_worker_permission")]
     pub worker_permission: String,
+    /// Comando di setup dei worktree (es. `npm ci`): non lo esegue l'app, lo
+    /// legge il worker nell'ambiente del task (`get_task`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_setup: Option<String>,
+    /// Modello di default dei worker automatici (None = quello dell'agente);
+    /// vale quando ne' il task ne' `spawn_session` ne indicano uno.
+    #[serde(default)]
+    pub worker_model: Option<String>,
+    /// Orchestratore automatico nelle finestre di esecuzione (vedi `schedule`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_orchestrate: Option<AutoOrchestrate>,
+}
+
+/// Configurazione dell'orchestratore automatico di un workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoOrchestrate {
+    pub enabled: bool,
+    #[serde(default = "default_auto_agent")]
+    pub agent: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+fn default_auto_agent() -> String {
+    crate::automation::DEFAULT_AGENT.to_string()
 }
 
 fn default_worker_permission() -> String {
@@ -69,6 +94,10 @@ struct StoreData {
 }
 
 impl WorkspaceStore {
+    pub fn all(&self) -> Vec<Workspace> {
+        self.inner.lock().unwrap().workspaces.clone()
+    }
+
     pub fn find(&self, id: &str) -> Option<Workspace> {
         self.inner
             .lock()
@@ -214,6 +243,9 @@ fn add_workspace_blocking(
         created_at: now_millis(),
         launches: Vec::new(),
         worker_permission: default_worker_permission(),
+        worktree_setup: None,
+        worker_model: None,
+        auto_orchestrate: None,
     };
     data.workspaces.push(ws.clone());
     save_to_disk(app, &data.workspaces)?;
@@ -265,19 +297,136 @@ pub fn set_worker_permission(
     Ok(out)
 }
 
+/// Imposta il modello di default dei worker automatici (vuoto = quello dell'agente).
+#[tauri::command]
+pub fn set_worker_model(
+    app: AppHandle,
+    state: State<WorkspaceStore>,
+    id: String,
+    model: Option<String>,
+) -> Result<Workspace, String> {
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    if model.as_deref().is_some_and(|m| !crate::automation::valid_model(m)) {
+        return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string());
+    }
+    let mut data = state.inner.lock().unwrap();
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "workspace non trovato".to_string())?;
+    ws.worker_model = model;
+    let out = ws.clone();
+    save_to_disk(&app, &data.workspaces)?;
+    Ok(out)
+}
+
+/// Comando di setup dei worktree del workspace (vuoto = nessuno).
+#[tauri::command]
+pub fn set_worktree_setup(
+    app: AppHandle,
+    state: State<WorkspaceStore>,
+    id: String,
+    command: Option<String>,
+) -> Result<Workspace, String> {
+    let command = normalize_setup(command)?;
+    let mut data = state.inner.lock().unwrap();
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "workspace non trovato".to_string())?;
+    ws.worktree_setup = command;
+    let out = ws.clone();
+    save_to_disk(&app, &data.workspaces)?;
+    Ok(out)
+}
+
+/// Trim; vuoto = nessun comando; massimo `MAX_COMMAND_LEN` caratteri.
+fn normalize_setup(command: Option<String>) -> Result<Option<String>, String> {
+    let Some(c) = command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) else {
+        return Ok(None);
+    };
+    if c.chars().count() > MAX_COMMAND_LEN {
+        return Err(format!("comando troppo lungo (max {MAX_COMMAND_LEN} caratteri)"));
+    }
+    if c.chars().any(|ch| ch.is_control() && ch != '\t') {
+        return Err("il comando non puo' contenere caratteri di controllo".to_string());
+    }
+    Ok(Some(c))
+}
+
+/// Valida la configurazione dell'orchestratore automatico: l'agente deve
+/// supportare le sessioni automatiche (`known` sono gli id), il modello deve
+/// avere il formato dei modelli dei task. Modello vuoto = quello dell'agente.
+fn normalize_auto(
+    config: Option<AutoOrchestrate>,
+    known: &[(String, String)],
+) -> Result<Option<AutoOrchestrate>, String> {
+    let Some(c) = config else {
+        return Ok(None);
+    };
+    let agent = c.agent.trim().to_string();
+    if !known.iter().any(|(id, _)| *id == agent) {
+        return Err(format!("agente non valido o senza supporto alle sessioni automatiche: {agent}"));
+    }
+    let model = match c.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) if crate::automation::valid_model(m) => Some(m.to_string()),
+        Some(_) => return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string()),
+        None => None,
+    };
+    Ok(Some(AutoOrchestrate { enabled: c.enabled, agent, model }))
+}
+
+/// Imposta l'orchestratore automatico del workspace (None = lo rimuove).
+#[tauri::command]
+pub fn set_auto_orchestrate(
+    app: AppHandle,
+    state: State<WorkspaceStore>,
+    id: String,
+    config: Option<AutoOrchestrate>,
+) -> Result<Workspace, String> {
+    let known: Vec<(String, String)> = crate::agents::automation_agents()
+        .into_iter()
+        .map(|(i, n)| (i.to_string(), n.to_string()))
+        .collect();
+    let config = normalize_auto(config, &known)?;
+    let out = {
+        let mut data = state.inner.lock().unwrap();
+        let ws = data
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == id)
+            .ok_or_else(|| "workspace non trovato".to_string())?;
+        ws.auto_orchestrate = config;
+        let out = ws.clone();
+        save_to_disk(&app, &data.workspaces)?;
+        out
+    };
+    // Fuori dal lock dei workspace: il riallineamento li rilegge.
+    let automation = app.state::<crate::automation::AutomationState>();
+    automation.reconcile(&crate::automation::TauriHost(app.clone()));
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn remove_workspace(
     app: AppHandle,
     state: State<WorkspaceStore>,
     id: String,
 ) -> Result<(), String> {
-    let mut data = state.inner.lock().unwrap();
-    let before = data.workspaces.len();
-    data.workspaces.retain(|w| w.id != id);
-    if data.workspaces.len() == before {
-        return Err("workspace non trovato".to_string());
+    {
+        let mut data = state.inner.lock().unwrap();
+        let before = data.workspaces.len();
+        data.workspaces.retain(|w| w.id != id);
+        if data.workspaces.len() == before {
+            return Err("workspace non trovato".to_string());
+        }
+        save_to_disk(&app, &data.workspaces)?;
     }
-    save_to_disk(&app, &data.workspaces)?;
+    // Fuori dal lock dei workspace: la board lo rilegge per schedulare.
+    let automation = app.state::<crate::automation::AutomationState>();
+    automation.remove_board(&crate::automation::TauriHost(app.clone()), &id);
     Ok(())
 }
 
@@ -553,12 +702,69 @@ mod tests {
     }
 
     #[test]
+    fn worktree_setup_is_trimmed_and_optional() {
+        assert_eq!(normalize_setup(None), Ok(None));
+        assert_eq!(normalize_setup(Some("   ".into())), Ok(None));
+        assert_eq!(normalize_setup(Some("  npm ci  ".into())), Ok(Some("npm ci".into())));
+        assert!(normalize_setup(Some("x".repeat(1000))).is_ok());
+        assert!(normalize_setup(Some("x".repeat(1001))).is_err());
+        assert!(normalize_setup(Some("a\nb".into())).is_err());
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert_eq!(ws.worktree_setup, None);
+        assert!(!serde_json::to_string(&ws).unwrap().contains("worktree_setup"));
+        ws.worktree_setup = Some("npm ci".into());
+        assert!(serde_json::to_string(&ws).unwrap().contains("\"worktree_setup\":\"npm ci\""));
+    }
+
+    #[test]
     fn worker_permission_roundtrips_and_bad_value_falls_back() {
         let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,"worker_permission":"plan"}"#;
         let mut ws: Workspace = serde_json::from_str(raw).unwrap();
         assert_eq!(ws.worker_permission_mode(), PermissionMode::Plan);
         ws.worker_permission = "boh".to_string();
         assert_eq!(ws.worker_permission_mode(), PermissionMode::AcceptEdits);
+    }
+
+
+    #[test]
+    fn worker_model_defaults_to_none_and_roundtrips() {
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert_eq!(ws.worker_model, None);
+        ws.worker_model = Some("opus".into());
+        let back: Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
+        assert_eq!(back.worker_model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn auto_orchestrate_is_validated_and_optional() {
+        let known = vec![("claude-code".to_string(), "Claude Code".to_string())];
+        let cfg = |agent: &str, model: Option<&str>| AutoOrchestrate {
+            enabled: true,
+            agent: agent.to_string(),
+            model: model.map(str::to_string),
+        };
+        assert_eq!(normalize_auto(None, &known), Ok(None));
+        assert_eq!(
+            normalize_auto(Some(cfg(" claude-code ", Some("  opus "))), &known),
+            Ok(Some(cfg("claude-code", Some("opus"))))
+        );
+        assert_eq!(normalize_auto(Some(cfg("claude-code", Some("  "))), &known), Ok(Some(cfg("claude-code", None))));
+        assert!(normalize_auto(Some(cfg("gemini", None)), &known).is_err());
+        assert!(normalize_auto(Some(cfg("claude-code", Some("a b"))), &known).is_err());
+        assert!(normalize_auto(Some(cfg("claude-code", Some(&"m".repeat(65)))), &known).is_err());
+        // Serde: campo assente = nessuna configurazione; modello null.
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert_eq!(ws.auto_orchestrate, None);
+        assert!(!serde_json::to_string(&ws).unwrap().contains("auto_orchestrate"));
+        ws.auto_orchestrate = Some(cfg("claude-code", None));
+        assert!(serde_json::to_string(&ws)
+            .unwrap()
+            .contains(r#""auto_orchestrate":{"enabled":true,"agent":"claude-code","model":null}"#));
+        let c: AutoOrchestrate = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
+        assert_eq!((c.enabled, c.agent.as_str(), c.model), (false, "claude-code", None));
     }
 
     #[test]
