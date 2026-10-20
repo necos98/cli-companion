@@ -80,7 +80,8 @@ Limiti: max 200 task per board, max 50 task per `submit_plan`.
 
 ### Colonna (derivata)
 
-Ogni task esposto (`get_board`, comandi Tauri, evento `board-update`) ha un
+Ogni task esposto (`get_task_details`, comandi Tauri, evento `board-update`; `get_board` lo
+riporta nelle righe compatte) ha un
 campo `column` calcolato dal backend:
 
 | status      | condizione                         | column      | etichetta UI   |
@@ -200,8 +201,8 @@ senza toccare aree fuori da `touches`.
 ## Proprietà della board
 
 - `owner` = tab dell'orchestratore che ha chiamato per ultimo un tool di
-  board (`submit_plan`, `get_board`, `update_task`, `set_task_status`,
-  `set_board`). I tool di board sono riservati agli orchestratori il cui tab
+  board (`submit_plan`, `get_board`, `get_task_details`, `update_task`,
+  `set_task_status`, `set_board`). I tool di board sono riservati agli orchestratori il cui tab
   appartiene al workspace della board.
 - I worker dei task vengono creati con `orchestrator = owner` (o senza owner:
   gli eventi restano in una coda della board). Al cambio di owner i worker
@@ -216,21 +217,37 @@ Nuovi (descrizioni in inglese, come gli altri):
   task alla board del workspace (le dipendenze possono riferirsi a task della
   stessa chiamata o già presenti), valida tutto prima di modificare (id unici,
   dipendenze esistenti, niente cicli, permessi entro il tetto, repo git se
-  serve), diventa owner, esegue lo scheduler. Ritorna la board.
+  serve), diventa owner, esegue lo scheduler. Ritorna la board compatta (come
+  `get_board`) più `added` (gli id aggiunti).
   `TaskSpec` = i campi di input del task: `id`, `title`, `task`,
   `depends_on`, `touches`, `isolation`, `base_branch`, `agent`, `model`,
   `permission_mode`, `priority`, `held`.
-- `get_board { include_task?: bool }` — la board con `column` per task; il
-  testo `task` solo con `include_task: true` (risparmia token).
+- `get_board { columns?: string[] }` — vista compatta della board (niente testo dei
+  task, risparmia token):
+  `{ workspace_id, rev, max_parallel, paused, base_branch, owner, updated_at,
+  automation, counts, tasks }`. `counts` = numero di task per colonna (solo le
+  colonne non vuote); `tasks` = una riga per ogni task non `done`/`cancelled`, nell'ordine
+  della board. Con `columns` (nomi tra `backlog`, `ready`, `running`, `review`, `done`,
+  `failed`, `blocked`, `cancelled`; un nome sconosciuto o un non-array è un errore che
+  elenca i nomi validi) le righe sono solo quelle delle colonne indicate, anche `done`.
+  Riga: `id`, `title`, `column`, `attempts` e, solo se significativi, `held`,
+  `worker_status`, `waiting_on` (solo in `backlog`: dipendenze non ancora `done`),
+  `priority` (se diversa da 0), `model`, `note` (max 200 caratteri) e `summary` (il
+  riassunto del report, max 300 caratteri); il taglio aggiunge "…".
+- `get_task_details { id }` — il dettaglio completo di un task: `{ task }` con tutti i campi,
+  testo, worktree, `last_report` e `report` strutturato (commit, files_changed, tests,
+  follow_ups, diffstat). Errore `unknown task: <id>` se non esiste. Da usare per rivedere un
+  task in `review`, `failed` o `blocked`.
 - `update_task { id, ...campi di TaskSpec tranne id }` — solo per task
   `queued`, `failed`, `blocked`, `cancelled`; `isolation` solo se non ha
-  ancora un worktree. Rivalida dipendenze e cicli.
+  ancora un worktree. Rivalida dipendenze e cicli. Ritorna `{ task }` senza il testo.
 - `set_task_status { id, status: "done" | "cancelled" | "queued", note?, cleanup? }`
   - `done`: da `review`, `failed`, `blocked` (non da `running`); sblocca i
     dipendenti; pulizia worktree se `cleanup != false`.
   - `cancelled`: da qualunque stato non `done`; se `running` chiude il tab.
   - `queued` (retry): da `failed`, `blocked`, `cancelled`, `review`.
-- `set_board { max_parallel?, paused? }`.
+  Ritorna `{ task, warnings? }` senza il testo del task.
+- `set_board { max_parallel?, paused? }` — ritorna la board compatta.
 
 Esistenti, estesi:
 

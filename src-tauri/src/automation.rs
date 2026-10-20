@@ -1371,7 +1371,7 @@ fn type_message<H: Host>(host: &H, tab: &str, text: &str) -> Result<(), String> 
 // Dispatch RPC
 // ---------------------------------------------------------------------------
 
-const ORCHESTRATOR_METHODS: [&str; 13] = [
+const ORCHESTRATOR_METHODS: [&str; 14] = [
     "list_agents",
     "spawn_session",
     "list_sessions",
@@ -1380,6 +1380,7 @@ const ORCHESTRATOR_METHODS: [&str; 13] = [
     "get_events",
     "submit_plan",
     "get_board",
+    "get_task_details",
     "update_task",
     "set_task_status",
     "set_board",
@@ -1457,7 +1458,7 @@ pub fn dispatch<H: Host>(
             let events = st.run(host, |r| r.drain(session));
             Ok(json!({ "events": events }))
         }
-        "submit_plan" | "get_board" | "update_task" | "set_task_status" | "set_board" => {
+        "submit_plan" | "get_board" | "get_task_details" | "update_task" | "set_task_status" | "set_board" => {
             boards::rpc_board(st, host, session, method, params, now)
         }
         "get_workflow" | "save_workflow" => auto::rpc_workflow(host, session, method, params),

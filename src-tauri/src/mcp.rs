@@ -282,7 +282,7 @@ fn orchestrator_tools() -> Vec<Value> {
              (unique ids, dependencies that exist, no cycles, permissions within the workspace maximum, a git \
              repository for worktree tasks): on error nothing is added. Dependencies may point to tasks of \
              the same call or already on the board. You become the owner of the board (the last orchestrator \
-             tab calling a board tool): worker events arrive in your queue. Returns the board; each task has a \
+             tab calling a board tool): worker events arrive in your queue. Returns the compact board (as get_board); each task has a \
              derived column: backlog (waiting for dependencies), ready (can start, waiting for a slot or for a \
              conflicting task), running, review (the worker finished: you integrate it), done, failed, \
              blocked, cancelled. After submitting, end your turn: never wait, sleep or poll; cli-companion \
@@ -318,21 +318,39 @@ fn orchestrator_tools() -> Vec<Value> {
         ),
         tool(
             "get_board",
-            "Return the task board of your workspace (and make you its owner): settings (max_parallel, paused, \
-             base_branch) and every task with its status, derived column (backlog, ready, running, review, \
-             done, failed, blocked, cancelled), held flag, worker status, attempts, worktree, last report, \
-             note and structured report (summary, commit, files_changed, tests, follow_ups, diffstat). `automation` is null for a normal workspace; for an automatic \
-             one it tells whether execution windows are enabled, whether the window is open now and when it \
-             changes (next_change_at, unix ms): while it is closed the scheduler starts no new task. It never \
-             waits. Do not call it in a loop: events tell you when something changes. Without include_task the \
-             task texts are left out to save tokens.",
+            "Return a compact summary of the task board of your workspace (and make you its owner): settings \
+             (max_parallel, paused, base_branch), `automation`, `counts` (tasks per derived column: backlog, \
+             ready, running, review, done, failed, blocked, cancelled; empty columns left out) and `tasks`, one \
+             short row per open task (id, title, column, attempts, plus held, worker_status, waiting_on for a \
+             backlog task, priority, model, note and the report summary when they apply; note and summary are \
+             truncated). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
+             [\"done\"]. Use get_task_details for the full text, report (commit, files_changed, tests, \
+             follow_ups, diffstat), worktree and note of one task. `automation` is null for a normal workspace; \
+             for an automatic one it tells whether execution windows are enabled, whether the window is open \
+             now and when it changes (next_change_at, unix ms): while it is closed the scheduler starts no new \
+             task. It never waits. Do not call it in a loop: events tell you when something changes.",
             json!({
-                "include_task": {
-                    "type": "boolean",
-                    "description": "Include the full text of each task (default false)."
+                "columns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["backlog", "ready", "running", "review", "done", "failed", "blocked", "cancelled"]
+                    },
+                    "description": "List only the tasks in these columns (default: every column except done and cancelled)."
                 }
             }),
             &[],
+        ),
+        tool(
+            "get_task_details",
+            "Return the full detail of one task of the board: its text, dependencies, touches, isolation, \
+             status and column, worker status, attempts, worktree, last report, note and the structured report \
+             (summary, commit, files_changed, tests, follow_ups, diffstat). Use it when you review a task in \
+             review, failed or blocked, before merging or retrying it. It never waits.",
+            json!({
+                "id": { "type": "string", "description": "Id of the task." }
+            }),
+            &["id"],
         ),
         tool(
             "update_task",
@@ -341,7 +359,7 @@ fn orchestrator_tools() -> Vec<Value> {
              cannot change once the task has a worktree. Dependencies are validated again (existing tasks, no \
              cycles). Use it to release a held task (held: false), fix the instructions before a retry, or \
              re-point the dependencies of a task whose dependency was cancelled. Fields you leave out stay as \
-             they are; null clears base_branch, model and permission_mode. Returns the updated task.",
+             they are; null clears base_branch, model and permission_mode. Returns the updated task (without its text).",
             update_task_properties(),
             &["id"],
         ),
@@ -354,7 +372,7 @@ fn orchestrator_tools() -> Vec<Value> {
              allowed for a running task. cancelled: from any status except done; a running task has its tab \
              closed and its work is lost; tasks depending on it stay in backlog until you update their \
              dependencies. queued: retry a failed, blocked, cancelled or review task; the scheduler starts it \
-             again when possible (the existing worktree is reused). Returns the task.",
+             again when possible (the existing worktree is reused). Returns the task (without its text).",
             json!({
                 "id": { "type": "string", "description": "Id of the task." },
                 "status": {
@@ -377,7 +395,7 @@ fn orchestrator_tools() -> Vec<Value> {
         tool(
             "set_board",
             "Change the settings of the board: max_parallel (how many board workers run at once, 1..16) and/or \
-             paused (true = the scheduler starts nothing new; running workers go on). Returns the board.",
+             paused (true = the scheduler starts nothing new; running workers go on). Returns the compact board (as get_board).",
             json!({
                 "max_parallel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Board workers running at the same time." },
                 "paused": { "type": "boolean", "description": "Pause or resume the scheduler." }
@@ -519,7 +537,7 @@ fn instructions(
                 and message texts for workers in English. For a batch of tasks with dependencies use the \
                 task board: submit_plan adds the tasks, cli-companion starts the workers when they are \
                 ready (it creates their git worktrees) and, when a task reaches review, you integrate it \
-                (merge, test) and call set_task_status done; get_board shows the state. For a single \
+                (merge, test) and call set_task_status done; get_board shows a compact state, get_task_details the full detail of one task. Tool results are already structured: read them directly, never parse them with shell scripts. For a single \
                 ad-hoc session use spawn_session. Before orchestrating a batch of tasks, load \
                 the orchestrate skill (cli-companion-notify:orchestrate) if your agent supports skills: \
                 it has the full method (planning, task template, isolation, review and merge). Before planning call \
@@ -835,6 +853,7 @@ mod tests {
                 "get_events",
                 "submit_plan",
                 "get_board",
+                "get_task_details",
                 "update_task",
                 "set_task_status",
                 "set_board",
@@ -893,7 +912,9 @@ mod tests {
         assert_eq!(keys(&by("set_task_status")["inputSchema"]["properties"]), ["cleanup", "id", "note", "status"]);
         assert_eq!(by("set_task_status")["inputSchema"]["properties"]["status"]["enum"], json!(["done", "cancelled", "queued"]));
         assert_eq!(keys(&by("set_board")["inputSchema"]["properties"]), ["max_parallel", "paused"]);
-        assert_eq!(keys(&by("get_board")["inputSchema"]["properties"]), ["include_task"]);
+        assert_eq!(keys(&by("get_board")["inputSchema"]["properties"]), ["columns"]);
+        assert_eq!(keys(&by("get_task_details")["inputSchema"]["properties"]), ["id"]);
+        assert_eq!(by("get_task_details")["inputSchema"]["required"], json!(["id"]));
         // Il modello non deve attendere; la colonna e l'integrazione sono spiegate.
         let d = plan["description"].as_str().unwrap();
         for t in ["never wait, sleep or poll", "review", "set_task_status", "owner", "backlog", "ready", "merge"] {

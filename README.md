@@ -143,7 +143,9 @@ riavvio dell'app i task in corso risultano falliti e si possono rilanciare. Dett
 
 Tool dell'orchestratore:
 
-- `submit_plan`, `get_board`, `update_task`, `set_task_status`, `set_board` — la Board
+- `submit_plan`, `get_board` (vista compatta; `columns` per le colonne `done`/`cancelled`),
+  `get_task_details` (dettaglio completo di un task), `update_task`, `set_task_status`,
+  `set_board` — la Board
   (vedi sopra e `docs/BOARD.MD`).
 - `list_agents` — coding agent con supporto all'automazione.
 - `spawn_session` — avvia un worker ad-hoc, fuori dalla board (`task`, opz. `title`, `agent`, `cwd`,

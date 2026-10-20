@@ -267,7 +267,7 @@ con RPC; i worker rispondono solo con tool MCP. Struttura a strati:
   chiusura, workspace). `TauriHost` e' la versione reale, i test usano un host finto.
 - `dispatch_rpc` smista per ruolo: orchestratore = `list_agents`, `spawn_session`,
   `list_sessions`, `send_message`, `close_session`, `get_events` e i tool di board
-  (`submit_plan`, `get_board`, `update_task`, `set_task_status`, `set_board`, delegati a `board.rs`);
+  (`submit_plan`, `get_board`, `get_task_details`, `update_task`, `set_task_status`, `set_board`, delegati a `board.rs`);
   worker = `get_task`, `report_fact`, `request_help`, `complete_task` (con campi strutturati opzionali, vedi `board.rs`) (`whoami` per
   entrambi; per l'orchestratore riporta anche il suo `workspace`). Un worker puo' usare solo i propri metodi; un orchestratore agisce solo
   sui propri worker.
@@ -343,8 +343,8 @@ avvia i worker, gestisce i worktree git e raccoglie i report. Dettagli completi
 - Worktree gestiti dall'app: `<root>/.worktrees/<task-id>`, branch `task/<task-id>`,
   `git` con `CREATE_NO_WINDOW` (WSL: `wsl.exe -d <distro> --cd <dir> -- git ...`); il comando
   `worktree_setup` del workspace e le regole del worker finiscono nell'`environment` di `get_task`.
-- Tool MCP dell'orchestratore: `submit_plan`, `get_board`, `update_task`, `set_task_status`,
-  `set_board`. `complete_task` del worker accetta `commit`, `files_changed`, `tests`, `follow_ups`.
+- Tool MCP dell'orchestratore: `submit_plan`, `get_board` (vista compatta, parametro `columns`), `get_task_details`
+  (dettaglio completo di un task), `update_task`, `set_task_status`, `set_board`. `complete_task` del worker accetta `commit`, `files_changed`, `tests`, `follow_ups`.
 - Comandi Tauri: `board_get`, `board_set`, `board_task_action` (`hold | unhold | retry |
   cancel | done`), `set_worktree_setup`; evento `board-update` (payload `BoardView`).
 
@@ -376,7 +376,7 @@ Dettagli completi: [SCHEDULE.MD](SCHEDULE.MD). Si appoggia alla board.
 - **Comandi Tauri**: `schedule_get`, `schedule_set` (valida formato, `start != end`, max 12),
   `set_auto_orchestrate`, `workflow_get`, `workflow_save` (None o vuoto = elimina).
   **Eventi**: `schedule-state` (`{schedule, window_open, next_change_at}`) a ogni transizione o
-  modifica; `get_board` e `BoardView` includono `automation` per i workspace automatici.
+  modifica; `get_board` (compatto) e `BoardView` includono `automation` per i workspace automatici.
 - **UI**: sezione "Esecuzione automatica" nelle Impostazioni globali; "Orchestratore
   automatico" e "Workflow" (editor, "Crea con il wizard") nelle impostazioni del workspace;
   badge nella Board.

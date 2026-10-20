@@ -19,7 +19,7 @@ there, and a task is not done until you have integrated and verified it.
 
 ## 0. Check the tools
 
-The cli-companion MCP tools (submit_plan, get_board, update_task, set_task_status,
+The cli-companion MCP tools (submit_plan, get_board, get_task_details, update_task, set_task_status,
 set_board, get_events, send_message, spawn_session, list_sessions, close_session,
 list_agents, get_workflow) must be available. If they are not, tell the user that
 orchestration only works in a cli-companion terminal, with the app running and the
@@ -94,8 +94,10 @@ this structure:
 After submit_plan, tell the user briefly what is going to run and end your turn. Do not
 wait, sleep, poll, or call get_events in a loop. When something needs you, cli-companion
 types "New events from your automated sessions" into your prompt: call get_events once,
-handle every event, then end your turn again. Use get_board for a status update (leave
-`include_task` off to save tokens). The user can talk to you in between.
+handle every event, then end your turn again. Use get_board for a status update (it is compact: counts and one short row per open
+task; done and cancelled tasks are only counted, pass `columns` to list them). Tool results
+are already structured: read them directly and never parse them with shell scripts
+(python, jq, PowerShell). The user can talk to you in between.
 
 ## 4. Handle the events
 
@@ -109,7 +111,8 @@ Each event carries the `task` id when the worker belongs to the board.
   which tab needs attention.
 - `completed` with status completed: the task is now in `review`. It is yours to
   integrate:
-  1. Read the report (summary, tests, files, follow-ups) and the diffstat, then inspect
+  1. Call get_task_details for the report (summary, tests, files, follow-ups) and the
+     diffstat, then inspect
      the real diff of `task/<id>` against the base branch. Do not trust the summary alone.
   2. Merge into the base branch, one task at a time. Resolve conflicts yourself; if a
      conflict shows a planning mistake, fix the dependencies or `touches` with

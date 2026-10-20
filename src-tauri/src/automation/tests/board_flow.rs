@@ -10,7 +10,14 @@ fn st_h() -> (AutomationState, FakeHost) {
 }
 
 fn board_json(st: &AutomationState, h: &FakeHost) -> Value {
-    call(st, h, ORCH, "get_board", json!({"include_task": true})).unwrap()
+    // Vista completa: tutte le colonne, poi il dettaglio di ogni task.
+    let all = json!(["backlog", "ready", "running", "review", "done", "failed", "blocked", "cancelled"]);
+    let mut b = call(st, h, ORCH, "get_board", json!({"columns": all})).unwrap();
+    let ids: Vec<String> = b["tasks"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+    let full: Vec<Value> =
+        ids.iter().map(|id| call(st, h, ORCH, "get_task_details", json!({"id": id})).unwrap()["task"].clone()).collect();
+    b["tasks"] = json!(full);
+    b
 }
 
 fn task_of(board: &Value, id: &str) -> Value {
@@ -67,7 +74,7 @@ fn submit_plan_runs_dependencies_through_review_and_done() {
     assert_eq!(board["owner"], ORCH);
     // a parte; b aspetta a; c confligge con a (area annidata).
     assert_eq!(task_of(&board, "a")["column"], "running");
-    assert_eq!(task_of(&board, "a")["status"], "running");
+    assert_eq!(task_of(&board, "a")["column"], "running");
     assert_eq!(task_of(&board, "a")["attempts"], 1);
     assert_eq!(task_of(&board, "b")["column"], "backlog");
     assert_eq!(task_of(&board, "c")["column"], "ready");
@@ -166,7 +173,7 @@ fn start_failure_marks_failed_and_wakes_the_owner() {
     st.run(&h, |r| hook(r, ORCH, "finished", None, 1));
     let b = submit(&st, &h, vec![t("a", &[]), t("b", &[])]);
     // Falliscono entrambi (stessa regola git), nessun worker.
-    assert_eq!(task_of(&b, "a")["status"], "failed");
+    assert_eq!(task_of(&b, "a")["column"], "failed");
     let a = task_of(&board_json(&st, &h), "a");
     assert!(a["note"].as_str().unwrap().contains("already exists"), "{a}");
     assert!(a["session"].is_null() && a["worker_status"].is_null());
@@ -189,7 +196,7 @@ fn start_failure_marks_failed_and_wakes_the_owner() {
 fn command_launch_error_is_a_start_failure_too() {
     let (st, h) = st_h();
     let b = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [{"id": "a", "task": "x", "isolation": "none"}]})).unwrap();
-    assert_eq!(task_of(&b, "a")["status"], "running");
+    assert_eq!(task_of(&b, "a")["column"], "running");
     // Agente sconosciuto: rifiutato prima di toccare la board.
     let err = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [{"id": "z", "task": "x", "agent": "altro"}]})).unwrap_err();
     assert!(err.contains("unknown agent"), "{err}");
@@ -368,7 +375,7 @@ fn non_git_workspace_rejects_worktree_tasks_only() {
     assert!(task_of(&board_json(&st, &h), "a").is_null());
     // Con isolation none va bene: lavora nella root.
     let b = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [{"id": "n", "task": "x", "isolation": "none"}]})).unwrap();
-    assert_eq!(task_of(&b, "n")["status"], "running");
+    assert_eq!(task_of(&b, "n")["column"], "running");
     let sp = h.spawns();
     assert_eq!(sp[0].cwd.as_deref(), Some("C:\\p"));
     assert!(!h.git_log().iter().any(|l| l.contains("worktree add")));
@@ -404,7 +411,7 @@ fn board_tools_are_for_orchestrators_of_the_workspace() {
     let (st, h) = st_h();
     submit(&st, &h, vec![t("a", &[])]);
     let w = session_of(&st, &h, "a");
-    for m in ["submit_plan", "get_board", "update_task", "set_task_status", "set_board"] {
+    for m in ["submit_plan", "get_board", "get_task_details", "update_task", "set_task_status", "set_board"] {
         let e = call(&st, &h, &w, m, json!({})).unwrap_err();
         assert!(e.contains("reserved for the orchestrator"), "{m}: {e}");
     }
@@ -416,11 +423,17 @@ fn board_tools_are_for_orchestrators_of_the_workspace() {
     assert_eq!(b["workspace_id"], "ws-2");
     assert_eq!(b["tasks"], json!([]));
     assert_eq!(call(&st, &h, ORCH, "get_board", json!({})).unwrap()["tasks"].as_array().unwrap().len(), 1);
-    // get_board senza include_task toglie il testo.
+    // get_board e' compatto: niente testo del task.
     let b = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
     assert!(task_of(&b, "a").get("task").is_none());
     assert_eq!(task_of(&b, "a")["title"], "do a");
-    assert!(call(&st, &h, ORCH, "get_board", json!({"include_task": "si"})).is_err());
+    // get_task_details da' il testo.
+    let d = call(&st, &h, ORCH, "get_task_details", json!({"id": "a"})).unwrap();
+    assert_eq!(d["task"]["task"], "do a");
+    assert_eq!(d["task"]["column"], "running");
+    let e = call(&st, &h, ORCH, "get_task_details", json!({"id": "zz"})).unwrap_err();
+    assert_eq!(e, "unknown task: zz");
+    assert!(call(&st, &h, ORCH, "get_task_details", json!({})).is_err());
 }
 
 #[test]
@@ -541,12 +554,12 @@ fn per_orchestrator_worker_cap_limits_the_scheduler() {
         json!({"max_parallel": 4, "tasks": [t("a", &[]), t("b", &[]), t("c", &[])]}),
     )
     .unwrap();
-    let running = b["tasks"].as_array().unwrap().iter().filter(|x| x["status"] == "running").count();
+    let running = b["tasks"].as_array().unwrap().iter().filter(|x| x["column"] == "running").count();
     assert_eq!(running, 1, "un solo posto libero sui 16");
     // Chiuso un worker ad-hoc, al prossimo giro ne parte un altro.
     st.run(&h, |r| r.tab_closed(&adhoc[0], 9));
     let b = call(&st, &h, ORCH, "set_board", json!({"max_parallel": 5})).unwrap();
-    let running = b["tasks"].as_array().unwrap().iter().filter(|x| x["status"] == "running").count();
+    let running = b["tasks"].as_array().unwrap().iter().filter(|x| x["column"] == "running").count();
     assert_eq!(running, 2);
 }
 
@@ -572,14 +585,14 @@ fn held_tasks_and_update_task() {
     let b = submit(&st, &h, vec![json!({"id": "a", "task": "x", "held": true}), t("b", &[])]);
     assert_eq!(task_of(&b, "a")["column"], "ready");
     assert_eq!(task_of(&b, "a")["held"], true);
-    assert_eq!(task_of(&b, "b")["status"], "running");
+    assert_eq!(task_of(&b, "b")["column"], "running");
     let err = call(&st, &h, ORCH, "update_task", json!({"id": "a", "foo": 1})).unwrap_err();
     assert!(err.contains("unknown field"));
     // update_task: rilascia, cambia priorita' e dipendenze; il task parte.
     let r = call(&st, &h, ORCH, "update_task", json!({"id": "a", "held": false, "priority": 3, "title": "Nuovo"})).unwrap();
     assert_eq!(r["task"]["title"], "Nuovo");
-    assert_eq!(r["task"]["task"], "x", "update_task ritorna il task completo");
-    assert_eq!(r["task"]["status"], "running");
+    assert!(r["task"].get("task").is_none(), "update_task ritorna il task senza testo");
+    assert_eq!(r["task"]["column"], "running");
     // Un task in esecuzione non si modifica.
     let err = call(&st, &h, ORCH, "update_task", json!({"id": "b", "title": "x"})).unwrap_err();
     assert!(err.contains("only queued, failed, blocked or cancelled"), "{err}");
@@ -661,7 +674,7 @@ fn remove_board_deletes_the_file_and_the_state() {
 fn wsl_worktrees_use_posix_paths() {
     let (st, h) = st_h();
     let b = call(&st, &h, "orch-wsl", "submit_plan", json!({"tasks": [t("a", &[])]})).unwrap();
-    assert_eq!(task_of(&b, "a")["status"], "running");
+    assert_eq!(task_of(&b, "a")["column"], "running");
     assert!(h.git_log().contains(&"/home/u|worktree add /home/u/.worktrees/a -b task/a main".to_string()), "{:?}", h.git_log());
     assert_eq!(h.spawns()[0].cwd.as_deref(), Some("/home/u/.worktrees/a"));
     assert!(h.excludes.lock().unwrap()[0].starts_with("/home/u/.git/info/exclude"));
@@ -717,16 +730,16 @@ fn touches_serialize_tasks_and_windows_ignores_case() {
         {"id": "b", "task": "x", "touches": ["src\\auth\\login"]},
         {"id": "c", "task": "x", "touches": ["docs"]},
     ]})).unwrap();
-    assert_eq!(task_of(&b, "a")["status"], "running");
-    assert_eq!(task_of(&b, "b")["status"], "queued");
-    assert_eq!(task_of(&b, "c")["status"], "running");
+    assert_eq!(task_of(&b, "a")["column"], "running");
+    assert_eq!(task_of(&b, "b")["column"], "ready");
+    assert_eq!(task_of(&b, "c")["column"], "running");
     // Su WSL le maiuscole contano.
     let b = call(&st, &h, "orch-wsl", "submit_plan", json!({"max_parallel": 4, "tasks": [
         {"id": "a", "task": "x", "touches": ["Src/Auth"]},
         {"id": "b", "task": "x", "touches": ["src/auth/login"]},
     ]})).unwrap();
-    assert_eq!(task_of(&b, "a")["status"], "running");
-    assert_eq!(task_of(&b, "b")["status"], "running");
+    assert_eq!(task_of(&b, "a")["column"], "running");
+    assert_eq!(task_of(&b, "b")["column"], "running");
 }
 
 // ---------------------------------------------------------------------------
@@ -995,4 +1008,46 @@ fn board_set_model_updates_task_and_notifies_orchestrator() {
     assert_eq!(ua.len(), 2, "{ev:?}");
     assert!(ua[0]["text"].as_str().unwrap().contains("set the model of task 'a' to 'opus'"));
     assert!(ua[1]["text"].as_str().unwrap().contains("cleared the model of task 'a'"));
+}
+
+#[test]
+fn get_board_is_compact_and_filters_columns() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![json!({"id": "a", "task": "do a", "held": true}), t("b", &["a"])]);
+    let b = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(b["counts"]["ready"], 1);
+    assert_eq!(b["counts"]["backlog"], 1);
+    assert!(b["counts"].get("done").is_none());
+    assert_eq!(task_of(&b, "b")["waiting_on"], json!(["a"]));
+    assert!(task_of(&b, "a").get("waiting_on").is_none());
+    for k in ["task", "worktree", "touches", "created_at", "report", "depends_on"] {
+        assert!(task_of(&b, "a").get(k).is_none(), "{k}");
+    }
+    // Un task cancelled esce dalle righe ma resta nei conteggi.
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "cancelled"})).unwrap();
+    let b = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert!(task_of(&b, "a").is_null());
+    assert_eq!(b["counts"]["cancelled"], 1);
+    let b = call(&st, &h, ORCH, "get_board", json!({"columns": ["cancelled"]})).unwrap();
+    assert_eq!(b["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(task_of(&b, "a")["column"], "cancelled");
+    // Validazione di `columns`.
+    let e = call(&st, &h, ORCH, "get_board", json!({"columns": ["nope"]})).unwrap_err();
+    assert!(e.contains("backlog") && e.contains("cancelled"), "{e}");
+    assert!(call(&st, &h, ORCH, "get_board", json!({"columns": "done"})).is_err());
+    assert!(call(&st, &h, ORCH, "get_board", json!({"columns": [1]})).is_err());
+}
+
+#[test]
+fn status_changes_return_the_task_without_its_text() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![json!({"id": "a", "task": "x", "held": true})]);
+    let u = call(&st, &h, ORCH, "update_task", json!({"id": "a", "title": "nuovo"})).unwrap();
+    assert_eq!(u["task"]["title"], "nuovo");
+    assert!(u["task"].get("task").is_none());
+    let s = call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "cancelled"})).unwrap();
+    assert_eq!(s["task"]["column"], "cancelled");
+    assert!(s["task"].get("task").is_none());
+    let p = call(&st, &h, ORCH, "set_board", json!({"paused": true})).unwrap();
+    assert!(p["counts"].is_object() && p["tasks"].is_array());
 }

@@ -873,6 +873,22 @@ fn check_agents<H: Host>(host: &H, specs: &[board::TaskSpec]) -> Result<(), Stri
     Ok(())
 }
 
+/// `columns` di `get_board`: elenco opzionale di nomi di colonna validi.
+fn parse_columns(params: &Value) -> Result<Option<Vec<board::Column>>, String> {
+    let valid = || board::Column::ALL.map(board::Column::as_str).join(", ");
+    let list = match params.get("columns") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err(format!("columns must be an array of column names ({})", valid())),
+    };
+    let mut out = Vec::new();
+    for v in list {
+        let col = v.as_str().and_then(board::Column::parse);
+        out.push(col.ok_or_else(|| format!("invalid column {v} (valid: {})", valid()))?);
+    }
+    Ok(Some(out))
+}
+
 pub(super) fn rpc_board<H: Host>(
     st: &AutomationState,
     host: &H,
@@ -902,13 +918,18 @@ pub(super) fn rpc_board<H: Host>(
             }
             let ids = board_op(st, host, now, |r| r.submit_plan(&ws.id, plan, ceiling, now))?;
             let view = st.run(host, |r| r.board_view(&ws.id));
-            let mut out = view.to_json(false);
+            let mut out = view.to_compact_json(None);
             out["added"] = json!(ids);
             Ok(out)
         }
         "get_board" => {
-            let include = opt_bool(params, "include_task")?.unwrap_or(false);
-            Ok(st.run(host, |r| r.board_view(&ws.id)).to_json(include))
+            let columns = parse_columns(params)?;
+            Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(columns.as_deref()))
+        }
+        "get_task_details" => {
+            let id = req_str(params, "id")?.trim().to_string();
+            let view = st.run(host, |r| r.task_view(&ws.id, &id)).ok_or_else(|| format!("unknown task: {id}"))?;
+            Ok(json!({ "task": view.to_json(true) }))
         }
         "update_task" => {
             let id = req_str(params, "id")?.trim().to_string();
@@ -923,7 +944,7 @@ pub(super) fn rpc_board<H: Host>(
             }
             board_op(st, host, now, |r| r.update_task(&ws.id, &id, params, ceiling, now))?;
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
-            Ok(json!({ "task": view.map(|v| v.to_json(true)) }))
+            Ok(json!({ "task": view.map(|v| v.to_json(false)) }))
         }
         "set_task_status" => {
             let id = req_str(params, "id")?.trim().to_string();
@@ -933,7 +954,7 @@ pub(super) fn rpc_board<H: Host>(
             let wt = board_op(st, host, now, |r| r.set_task_status(&ws.id, &id, &status, note, now))?;
             let warnings = cleanup_after_done(st, host, &ws, &id, wt.filter(|_| cleanup));
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
-            let mut out = json!({ "task": view.map(|v| v.to_json(true)) });
+            let mut out = json!({ "task": view.map(|v| v.to_json(false)) });
             if !warnings.is_empty() {
                 out["warnings"] = json!(warnings);
             }
@@ -946,7 +967,7 @@ pub(super) fn rpc_board<H: Host>(
             };
             let paused = opt_bool(params, "paused")?;
             board_op(st, host, now, |r| r.set_board(&ws.id, max_parallel, paused, now))?;
-            Ok(st.run(host, |r| r.board_view(&ws.id)).to_json(false))
+            Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(None))
         }
         _ => Err(format!("unknown method: {method}")),
     }

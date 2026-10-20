@@ -135,7 +135,7 @@ automatico ha la finestra aperta con lavoro, o task in esecuzione/drain.
   (validazione: formato `HH:MM`, start != end, max 12).
 - `ScheduleState = { schedule, window_open, next_change_at /* unix ms o null */ }`.
 - Evento `schedule-state` con lo stesso payload a ogni transizione o modifica.
-- `get_board` (MCP) e `BoardView` includono
+- `get_board` (MCP, vista compatta) e `BoardView` includono
   `automation: { enabled, window_open, next_change_at } | null` per i workspace
   automatici.
 

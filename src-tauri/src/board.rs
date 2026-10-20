@@ -218,21 +218,115 @@ pub struct BoardView {
     pub automation: Option<crate::schedule::AutomationInfo>,
 }
 
+/// Lunghezza massima di `note` e `summary` nelle righe compatte.
+const COMPACT_NOTE_MAX: usize = 200;
+const COMPACT_SUMMARY_MAX: usize = 300;
+
+/// Tronca a `max` caratteri (mai in mezzo a un carattere), con "…" se tagliato.
+fn clip_with_ellipsis(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+impl Column {
+    pub const ALL: [Column; 8] = [
+        Column::Backlog,
+        Column::Ready,
+        Column::Running,
+        Column::Review,
+        Column::Done,
+        Column::Failed,
+        Column::Blocked,
+        Column::Cancelled,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Column::Backlog => "backlog",
+            Column::Ready => "ready",
+            Column::Running => "running",
+            Column::Review => "review",
+            Column::Done => "done",
+            Column::Failed => "failed",
+            Column::Blocked => "blocked",
+            Column::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Column> {
+        Column::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
 impl BoardView {
-    /// JSON della board; senza `include_task` toglie il testo dei task
-    /// (risparmia token all'orchestratore).
-    pub fn to_json(&self, include_task: bool) -> Value {
-        let mut v = serde_json::to_value(self).unwrap_or(Value::Null);
-        if !include_task {
-            if let Some(tasks) = v.get_mut("tasks").and_then(Value::as_array_mut) {
-                for t in tasks {
-                    if let Some(o) = t.as_object_mut() {
-                        o.remove("task");
-                    }
-                }
+    /// JSON compatto per l'orchestratore: impostazioni, conteggi per colonna
+    /// e una riga corta per task. Senza `columns` mostra i task non
+    /// `done`/`cancelled`; con `columns` solo quelli nelle colonne indicate.
+    pub fn to_compact_json(&self, columns: Option<&[Column]>) -> Value {
+        let mut counts = Map::new();
+        for c in Column::ALL {
+            let n = self.tasks.iter().filter(|t| t.column == c).count();
+            if n > 0 {
+                counts.insert(c.as_str().to_string(), Value::from(n));
             }
         }
-        v
+        let shown = |c: Column| match columns {
+            Some(cols) => cols.contains(&c),
+            None => !matches!(c, Column::Done | Column::Cancelled),
+        };
+        let rows: Vec<Value> = self.tasks.iter().filter(|t| shown(t.column)).map(|t| self.compact_row(t)).collect();
+        serde_json::json!({
+            "workspace_id": self.workspace_id,
+            "rev": self.rev,
+            "max_parallel": self.max_parallel,
+            "paused": self.paused,
+            "base_branch": self.base_branch,
+            "owner": self.owner,
+            "updated_at": self.updated_at,
+            "automation": self.automation,
+            "counts": counts,
+            "tasks": rows,
+        })
+    }
+
+    fn compact_row(&self, v: &TaskView) -> Value {
+        let t = &v.task;
+        let mut o = Map::new();
+        o.insert("id".into(), Value::from(t.id.clone()));
+        o.insert("title".into(), Value::from(t.title.clone()));
+        o.insert("column".into(), Value::from(v.column.as_str()));
+        o.insert("attempts".into(), Value::from(t.attempts));
+        if t.held {
+            o.insert("held".into(), Value::Bool(true));
+        }
+        if let Some(w) = &t.worker_status {
+            o.insert("worker_status".into(), serde_json::to_value(w).unwrap_or(Value::Null));
+        }
+        if v.column == Column::Backlog {
+            let waiting: Vec<&String> = t
+                .depends_on
+                .iter()
+                .filter(|d| !self.tasks.iter().any(|x| &x.task.id == *d && x.column == Column::Done))
+                .collect();
+            if !waiting.is_empty() {
+                o.insert("waiting_on".into(), serde_json::json!(waiting));
+            }
+        }
+        if t.priority != 0 {
+            o.insert("priority".into(), Value::from(t.priority));
+        }
+        if let Some(m) = &t.model {
+            o.insert("model".into(), Value::from(m.clone()));
+        }
+        if let Some(n) = &t.note {
+            o.insert("note".into(), Value::from(clip_with_ellipsis(n, COMPACT_NOTE_MAX)));
+        }
+        if let Some(r) = &t.report {
+            o.insert("summary".into(), Value::from(clip_with_ellipsis(&r.summary, COMPACT_SUMMARY_MAX)));
+        }
+        Value::Object(o)
     }
 }
 
@@ -1435,7 +1529,7 @@ mod tests {
         let mut b = board_with(vec![spec("a")]);
         b.owner = Some("tab-1".to_string());
         let v = b.view();
-        let j = v.to_json(true);
+        let j = serde_json::to_value(&v).unwrap();
         assert_eq!(j["workspace_id"], "ws-1");
         assert_eq!(j["max_parallel"], 16);
         assert_eq!(j["paused"], false);
@@ -1448,9 +1542,63 @@ mod tests {
         assert_eq!(t["task"], "do it");
         assert!(t["worker_status"].is_null() && t["session"].is_null() && t["report"].is_null());
         assert_eq!(t["attempts"], 0);
-        assert!(v.to_json(false)["tasks"][0].get("task").is_none());
         assert!(v.tasks[0].to_json(false).get("task").is_none());
         assert_eq!(v.tasks[0].to_json(true)["column"], "ready");
+    }
+
+    #[test]
+    fn compact_json_rows_counts_and_columns() {
+        let mut dep = spec("b");
+        dep.depends_on = vec!["a".to_string()];
+        let mut m = spec("m");
+        m.priority = 3;
+        m.model = Some("sonnet".to_string());
+        let mut b = board_with(vec![spec("a"), dep, m, spec("d"), spec("c")]);
+        set_status(&mut b, "d", TaskStatus::Done);
+        set_status(&mut b, "c", TaskStatus::Cancelled);
+        b.task_mut("a").unwrap().held = true;
+        let j = b.view().to_compact_json(None);
+        assert_eq!(j["counts"], json!({"backlog": 1, "ready": 2, "done": 1, "cancelled": 1}));
+        let ids: Vec<&str> = j["tasks"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["a", "b", "m"]);
+        let row = |id: &str| j["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
+        assert_eq!(row("a")["held"], true);
+        assert!(row("a").get("waiting_on").is_none() && row("a").get("priority").is_none());
+        assert_eq!(row("b")["waiting_on"], json!(["a"]));
+        assert_eq!((row("m")["priority"].clone(), row("m")["model"].clone()), (json!(3), json!("sonnet")));
+        for k in ["task", "worktree", "touches", "created_at", "report", "session", "status"] {
+            assert!(row("m").get(k).is_none(), "{k}");
+        }
+        // Con `columns` anche done, in ordine di board.
+        let j = b.view().to_compact_json(Some(&[Column::Done, Column::Backlog]));
+        let ids: Vec<&str> = j["tasks"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["b", "d"]);
+    }
+
+    #[test]
+    fn compact_json_truncates_note_and_summary_on_char_boundary() {
+        let mut b = board_with(vec![spec("a")]);
+        let t = b.task_mut("a").unwrap();
+        t.note = Some("è".repeat(250));
+        t.report = Some(TaskReport {
+            status: "completed".to_string(),
+            summary: "世".repeat(301),
+            commit: None,
+            files_changed: Vec::new(),
+            tests: Vec::new(),
+            follow_ups: Vec::new(),
+            diffstat: None,
+        });
+        let j = b.view().to_compact_json(None);
+        let note = j["tasks"][0]["note"].as_str().unwrap();
+        assert_eq!(note.chars().count(), 201);
+        assert!(note.ends_with('…') && note.starts_with("èè"));
+        let sum = j["tasks"][0]["summary"].as_str().unwrap();
+        assert_eq!(sum.chars().count(), 301);
+        assert!(sum.ends_with('…'));
+        // Sotto il limite resta intatto.
+        b.task_mut("a").unwrap().note = Some("breve".to_string());
+        assert_eq!(b.view().to_compact_json(None)["tasks"][0]["note"], "breve");
     }
 
     #[test]
