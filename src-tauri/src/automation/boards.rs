@@ -8,6 +8,8 @@ use super::*;
 use crate::board::{
     self, EnvInfo, Isolation, ReportFields, SchedCtx, Task, TaskStatus, TaskView, WorktreeInfo,
 };
+use super::hooks::{self, HOOK_TIMEOUT};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 /// Esito di un comando git.
@@ -25,12 +27,50 @@ pub struct StartJob {
     pub ws: Workspace,
     pub task: Task,
     pub board_base: Option<String>,
+    /// Branch base per repository (impostazione della board).
+    pub board_bases: BTreeMap<String, String>,
+    /// Modello del branch di integrazione, se la board lo gestisce.
+    pub integration_template: Option<String>,
     /// `attempts` al momento della scelta: scarta avvii superati da un
     /// cancel/retry.
     pub attempt: u32,
 }
 
+/// Impostazioni multi-repository di `set_board` (`submit_plan` le porta nel
+/// `PlanInput`).
+#[derive(Debug, Clone, Default)]
+pub struct RepoSettings {
+    pub base_branches: board::BaseBranchOps,
+    /// `None` = non toccare; `Some(None)` = spegni.
+    pub integration_branch: Option<Option<String>>,
+}
+
+impl RepoSettings {
+    fn is_empty(&self) -> bool {
+        self.base_branches.is_empty() && self.integration_branch.is_none()
+    }
+
+    fn parse(params: &Value) -> Result<RepoSettings, String> {
+        let base_branches = match params.get("base_branches") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(v) => board::parse_base_branches(v)?,
+        };
+        let integration_branch = match params.get("integration_branch") {
+            None => None,
+            Some(v) => Some(board::parse_integration_template(v)?),
+        };
+        Ok(RepoSettings { base_branches, integration_branch })
+    }
+}
+
 const EXCLUDE_LINE: &str = ".worktrees/";
+/// Quanto vale un `git fetch` gia' fatto per (repo, base).
+const FETCH_TTL: Duration = Duration::from_secs(60);
+/// Tetto di un `git fetch` (il resto dei comandi git ha `GIT_TIMEOUT`).
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cache dei fetch: (workspace|cartella|base) -> (istante, avviso).
+pub(super) type FetchCache = HashMap<String, (std::time::Instant, Option<String>)>;
 
 // ---------------------------------------------------------------------------
 // Registry: board
@@ -144,6 +184,7 @@ impl Registry {
         if plan.base_branch.is_some() {
             nb.base_branch = plan.base_branch;
         }
+        nb.apply_repo_settings(plan.base_branches, plan.integration_branch);
         let ids = nb.add_plan(plan.specs, ceiling, now)?;
         *b = nb;
         self.mark_dirty(ws);
@@ -206,13 +247,29 @@ impl Registry {
     }
 
     pub fn set_board(&mut self, ws: &str, max_parallel: Option<u8>, paused: Option<bool>, now: i64) -> Result<(), String> {
-        if max_parallel.is_none() && paused.is_none() {
-            return Err("nothing to change: pass max_parallel and/or paused".to_string());
+        self.set_board_ext(ws, max_parallel, paused, RepoSettings::default(), now)
+    }
+
+    /// Come `set_board`, con in piu' `base_branches` e `integration_branch`.
+    pub fn set_board_ext(
+        &mut self,
+        ws: &str,
+        max_parallel: Option<u8>,
+        paused: Option<bool>,
+        repo: RepoSettings,
+        now: i64,
+    ) -> Result<(), String> {
+        if max_parallel.is_none() && paused.is_none() && repo.is_empty() {
+            return Err("nothing to change: pass max_parallel, paused, base_branches and/or integration_branch".to_string());
         }
         if let Some(m) = max_parallel {
             board::parse_max_parallel(&json!(m))?;
         }
         let b = self.boards.entry(ws.to_string()).or_insert_with(|| Board::new(ws));
+        if !repo.is_empty() {
+            b.apply_repo_settings(repo.base_branches, repo.integration_branch);
+        }
+        b.repos = None; // i repository si ricalcolano alla prossima get_board
         if let Some(m) = max_parallel {
             b.max_parallel = m;
         }
@@ -222,6 +279,33 @@ impl Registry {
         b.updated_at = now;
         self.mark_dirty(ws);
         Ok(())
+    }
+
+    /// Integrazione gia' risolta del repository (chiave "." = root).
+    pub fn integration_of(&self, ws: &str, key: &str) -> Option<board::Integration> {
+        self.boards.get(ws).and_then(|b| b.integrations.get(key).cloned())
+    }
+
+    /// Salva l'integrazione risolta di un repository.
+    pub fn set_integration(&mut self, ws: &str, key: &str, integ: board::Integration, now: i64) {
+        if let Some(b) = self.boards.get_mut(ws) {
+            b.integrations.insert(key.to_string(), integ);
+            b.updated_at = now;
+            self.mark_dirty(ws);
+        }
+    }
+
+    /// Repository rilevati in cache (None = da calcolare).
+    pub fn repos_cached(&self, ws: &str) -> Option<Vec<String>> {
+        self.boards.get(ws).and_then(|b| b.repos.clone())
+    }
+
+    /// Mette in cache i repository rilevati. Non e' una modifica della
+    /// board: niente salvataggio; li vede la prossima pubblicazione.
+    pub fn set_repos(&mut self, ws: &str, repos: Vec<String>) {
+        if let Some(b) = self.boards.get_mut(ws) {
+            b.repos = Some(repos);
+        }
     }
 
     /// Nota del task (avvisi di pulizia).
@@ -328,6 +412,8 @@ impl Registry {
                         attempt: task.attempts,
                         task,
                         board_base: b.base_branch.clone(),
+                        board_bases: b.base_branches.clone(),
+                        integration_template: b.integration_branch.clone(),
                     };
                     self.effects.push(Effect::StartTask(Box::new(job)));
                 }
@@ -338,15 +424,11 @@ impl Registry {
         let complete = b.is_complete();
         let fire = complete && !b.plan_completed_sent;
         b.plan_completed_sent = complete;
-        if fire {
-            self.push_board_event(
-                ws_id,
-                None,
-                EventKind::PlanCompleted,
-                "All the tasks of the plan are done or cancelled.".to_string(),
-                WorkerStatus::Completed,
-                now,
-            );
+        // Con tutti i task annullati senza essere mai partiti non c'e' nulla da
+        // riferire: nessun evento (`completion_text` ritorna `None`).
+        let text = if fire { b.completion_text() } else { None };
+        if let Some(text) = text {
+            self.push_board_event(ws_id, None, EventKind::PlanCompleted, text, WorkerStatus::Completed, now);
         }
         let b = self.boards.get_mut(ws_id).expect("board presente");
         b.automation = self.auto.info.get(ws_id).cloned();
@@ -452,13 +534,42 @@ impl Registry {
         let (ws_id, tid) = w.board_task.as_ref()?;
         let ws = ws?;
         let t = self.boards.get(ws_id)?.task(tid)?;
+        let repo_dir = repo_dir(ws, t.repo.as_deref());
         let workdir = match (&t.worktree, t.isolation) {
             (Some(wt), Isolation::Worktree) => wt.path.as_str(),
-            _ => ws.path.as_str(),
+            _ => repo_dir.as_str(),
         };
         // Il setup serve ai worktree (cartella nuova, senza dipendenze).
         let setup = ws.worktree_setup.as_deref().filter(|_| t.isolation == Isolation::Worktree);
-        Some(board::worker_environment(&EnvInfo { root: &ws.path, workdir, task: t, setup }))
+        let repo_cfg = ws.repos.get(&board::repo_key(t.repo.as_deref()));
+        Some(board::worker_environment(&EnvInfo { root: &ws.path, workdir, task: t, setup, repo_cfg }))
+    }
+
+    /// Passo di preparazione in corso di un avvio (vedi `Task::preparing`).
+    /// `label` `None` = solo battito per il guardiano. `publish`: pubblica
+    /// subito la vista (non sotto il lock dei repository: un host sincrono
+    /// ripartirebbe da qui).
+    pub fn touch_preparing(&mut self, ws: &str, tid: &str, attempt: u32, label: Option<&str>, now: i64, publish: bool) {
+        let ok = self.boards.get_mut(ws).is_some_and(|b| b.touch_preparing(tid, attempt, label, now));
+        if ok && publish && label.is_some() {
+            self.mark_dirty(ws);
+        }
+    }
+
+    /// Fine della preparazione: via l'etichetta; il battito resta (il
+    /// guardiano ricomincia da qui il suo tempo per il resto dell'avvio).
+    pub fn end_preparing(&mut self, ws: &str, tid: &str, attempt: u32, now: i64) {
+        if let Some(b) = self.boards.get_mut(ws) {
+            b.clear_preparing(tid, attempt, now);
+        }
+        self.mark_dirty(ws);
+    }
+
+    /// Salva nel task il worktree appena creato (prima del setup).
+    pub fn record_worktree(&mut self, ws: &str, tid: &str, attempt: u32, wt: WorktreeInfo) {
+        if self.boards.get_mut(ws).is_some_and(|b| b.record_worktree(tid, attempt, wt)) {
+            self.mark_dirty(ws);
+        }
     }
 
     /// Registra il worker di un task appena preparato (git fatto). `None` se
@@ -497,6 +608,8 @@ impl Registry {
         if let Some(t) = self.boards.get_mut(ws).and_then(|b| b.task_mut(tid)) {
             t.session = Some(ev.tab_id.clone());
             t.worker_status = Some(WorkerStatus::Starting);
+            t.preparing = None;
+            t.preparing_since = None;
             if worktree.is_some() {
                 t.worktree = worktree;
             }
@@ -583,14 +696,24 @@ impl Registry {
 /// Tempo concesso a un avvio (thread git, poi `get_task` del worker).
 pub(super) const START_TIMEOUT_MS: i64 = 5 * 60_000;
 
-/// Task `running` senza sessione da oltre `START_TIMEOUT_MS`: (ws, id, attempt).
+/// Un passo di preparazione (setup del repository) ha un tetto suo
+/// (`HOOK_TIMEOUT`): finche' il thread di avvio ne ha uno in corso il
+/// guardiano aspetta quel tempo piu' un margine, contato dall'ultimo battito
+/// (`Task::preparing_since`, aggiornato a ogni passo e mentre si aspetta il
+/// lock dei repository). Il tempo dei setup non consuma quindi i 5 minuti
+/// dell'avvio; un thread morto a meta' passo viene comunque scoperto.
+pub(super) const PREPARING_TIMEOUT_MS: i64 = HOOK_TIMEOUT.as_millis() as i64 + 2 * 60_000;
+
+/// Task `running` senza sessione da oltre `START_TIMEOUT_MS` (o, con un passo
+/// di preparazione in corso, `PREPARING_TIMEOUT_MS`) dall'ultimo segno di
+/// vita: (ws, id, attempt).
 pub(super) fn stuck_starts<'a>(boards: impl Iterator<Item = &'a Board>, now: i64) -> Vec<(String, String, u32)> {
     boards
         .flat_map(|b| b.tasks.iter().map(move |t| (b, t)))
         .filter(|(_, t)| {
-            t.status == TaskStatus::Running
-                && t.session.is_none()
-                && t.started_at.is_some_and(|s| now - s > START_TIMEOUT_MS)
+            let limit = if t.preparing.is_some() { PREPARING_TIMEOUT_MS } else { START_TIMEOUT_MS };
+            let last = t.started_at.map(|s| s.max(t.preparing_since.unwrap_or(0)));
+            t.status == TaskStatus::Running && t.session.is_none() && last.is_some_and(|l| now - l > limit)
         })
         .map(|(b, t)| (b.workspace_id.clone(), t.id.clone(), t.attempts))
         .collect()
@@ -603,10 +726,10 @@ pub(super) fn silent_worker(starting: bool, called_get_task: bool, created_at: i
 }
 
 impl AutomationState {
-    /// Workspace della board del task di questo worker.
-    pub(super) fn board_workspace_of(&self, session: &str) -> Option<String> {
+    /// Workspace in cui lavora il worker (di board o ad-hoc).
+    pub(super) fn worker_workspace_of(&self, session: &str) -> Option<String> {
         let reg = self.inner.lock().unwrap();
-        reg.workers.get(session)?.board_task.as_ref().map(|t| t.0.clone())
+        reg.workers.get(session).map(|w| w.workspace_id.clone())
     }
 
     /// Worktree del task del worker (per il diffstat), se ne ha uno.
@@ -646,83 +769,397 @@ fn is_abs(kind: &str, p: &str) -> bool {
     cwd_is_absolute(kind, p)
 }
 
-/// La root del workspace e' dentro un repo git?
-pub(super) fn ensure_git_repo<H: Host>(host: &H, ws: &Workspace) -> Result<(), String> {
-    match host.git(ws, &ws.path, &["rev-parse", "--is-inside-work-tree"]) {
+/// Cartella del repository di un task nell'ambiente del workspace: la root
+/// se `repo` e' `None`, altrimenti `repo` sotto la root.
+pub(super) fn repo_dir(ws: &Workspace, repo: Option<&str>) -> String {
+    match repo {
+        Some(r) => join_path(&ws.kind, &ws.path, r),
+        None => ws.path.clone(),
+    }
+}
+
+/// La cartella del repository (la root, o `repo` sotto la root) e' dentro un
+/// repo git?
+pub(super) fn ensure_git_repo<H: Host>(host: &H, ws: &Workspace, repo: Option<&str>) -> Result<(), String> {
+    let dir = repo_dir(ws, repo);
+    if let Some(r) = repo {
+        if !host.dir_exists(ws, &dir) {
+            return Err(format!("the repository folder '{r}' ({dir}) does not exist in the workspace"));
+        }
+    }
+    match host.git(ws, &dir, &["rev-parse", "--is-inside-work-tree"]) {
         Ok(o) if o.ok && o.stdout.trim() == "true" => Ok(()),
-        Ok(_) => Err(format!(
-            "the workspace folder ({}) is not a git repository: tasks with isolation \"worktree\" need one. \
-             Use isolation \"none\" or ask the user to run git init",
-            ws.path
-        )),
+        Ok(_) => Err(match repo {
+            None => format!(
+                "the workspace folder ({dir}) is not a git repository: tasks with isolation \"worktree\" need one. \
+                 Use isolation \"none\" or ask the user to run git init"
+            ),
+            Some(r) => format!(
+                "the repository folder '{r}' ({dir}) is not a git repository: tasks with isolation \"worktree\" need one. \
+                 Fix the repo of the task, use isolation \"none\" or ask the user to run git init there"
+            ),
+        }),
         Err(e) => Err(format!("git is not available: {e}")),
     }
 }
 
-/// Crea (o riusa) il worktree del task. Base: task -> board -> branch
-/// corrente della root, risolto adesso. Ritorna anche gli avvisi (non
-/// bloccanti) per la nota del task.
-pub(super) fn prepare_worktree<H: Host>(
+/// `ensure_git_repo` per ogni repository distinto.
+pub(super) fn ensure_git_repos<'a, H: Host>(
     host: &H,
     ws: &Workspace,
-    task: &Task,
+    repos: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<(), String> {
+    let mut seen: Vec<Option<&str>> = Vec::new();
+    for r in repos {
+        if !seen.contains(&r) {
+            seen.push(r);
+            ensure_git_repo(host, ws, r)?;
+        }
+    }
+    Ok(())
+}
+
+/// Base dichiarata, senza interrogare git: task -> impostazione per
+/// repository della board -> impostazione del repository nel workspace ->
+/// base della board (solo task della root).
+pub(super) fn declared_base(
+    task_base: Option<&str>,
+    repo: Option<&str>,
+    bases: &BTreeMap<String, String>,
+    settings_base: Option<&str>,
     board_base: Option<&str>,
-) -> Result<(WorktreeInfo, Vec<String>), String> {
-    let root = ws.path.as_str();
-    let base = match task.base_branch.as_deref().or(board_base) {
-        Some(b) => b.to_string(),
-        None => {
-            let cur = git(host, ws, root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-            if cur.is_empty() || cur == "HEAD" {
-                return Err(
-                    "the workspace is in detached HEAD state: check out a branch or set base_branch".to_string()
-                );
+) -> Option<String> {
+    task_base
+        .map(str::to_string)
+        .or_else(|| bases.get(&board::repo_key(repo)).cloned())
+        .or_else(|| settings_base.map(str::to_string))
+        .or_else(|| board_base.filter(|_| repo.is_none()).map(str::to_string))
+}
+
+/// Configurazione del repository del task nelle impostazioni del workspace.
+fn repo_cfg<'a>(ws: &'a Workspace, repo: Option<&str>) -> Option<&'a crate::workspaces::RepoConfig> {
+    ws.repos.get(&board::repo_key(repo))
+}
+
+/// Il lock dei repository, battendo il cuore del task mentre si aspetta:
+/// un altro avvio puo' tenerlo per un setup lungo e il guardiano non deve
+/// scambiare l'attesa per un thread bloccato.
+fn lock_repo_prep<'a>(st: &'a AutomationState, job: &StartJob) -> std::sync::MutexGuard<'a, FetchCache> {
+    use std::sync::TryLockError;
+    loop {
+        match st.repo_prep.try_lock() {
+            Ok(g) => return g,
+            Err(TryLockError::Poisoned(e)) => return e.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                st.inner.lock().unwrap().touch_preparing(&job.ws.id, &job.task.id, job.attempt, None, now_millis(), false);
+                std::thread::sleep(Duration::from_millis(250));
             }
-            cur
+        }
+    }
+}
+
+/// Setup di un worktree appena creato (task o integrazione), se il
+/// repository ne ha uno. `publish`: pubblica ogni passo (non sotto il lock
+/// dei repository). Il passo in corso e' il battito del guardiano.
+#[allow(clippy::too_many_arguments)]
+fn setup_worktree<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    job: &StartJob,
+    dir: &str,
+    worktree: &str,
+    task_id: &str,
+    branch: &str,
+    base: &str,
+    subject: &str,
+    publish: bool,
+) -> Result<Vec<String>, String> {
+    let ws = &job.ws;
+    let repo = job.task.repo.as_deref();
+    let Some(cfg) = repo_cfg(ws, repo).filter(|c| c.has_setup()) else {
+        return Ok(Vec::new());
+    };
+    let key = board::repo_key(repo);
+    let ctx = hooks::SetupCtx { ws, cfg, repo: &key, repo_dir: dir, worktree, task_id, branch, base, subject };
+    let report = |label: &str| {
+        let (ws_id, tid, attempt) = (job.ws.id.as_str(), job.task.id.as_str(), job.attempt);
+        if publish {
+            st.run(host, |r| r.touch_preparing(ws_id, tid, attempt, Some(label), now_millis(), true));
+        } else {
+            st.inner.lock().unwrap().touch_preparing(ws_id, tid, attempt, Some(label), now_millis(), false);
         }
     };
-    let branch = format!("task/{}", task.id);
-    // Retry: il worktree gia' creato si riusa cosi' com'e'.
-    if let Some(wt) = &task.worktree {
-        if host.dir_exists(ws, &wt.path) {
-            return Ok((wt.clone(), Vec::new()));
+    hooks::run_setup(host, &ctx, &report)
+}
+
+/// Base di un repository: quella dichiarata, altrimenti (repo) il default del
+/// remoto `origin`, altrimenti il branch corrente della cartella.
+fn resolve_base<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    dir: &str,
+    repo: Option<&str>,
+    declared: Option<String>,
+) -> Result<String, String> {
+    if let Some(b) = declared {
+        return Ok(b);
+    }
+    if repo.is_some() {
+        if let Ok(r) = git(host, ws, dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
+            let b = r.strip_prefix("origin/").unwrap_or(&r);
+            if board::valid_branch(b) {
+                return Ok(b.to_string());
+            }
         }
     }
-    let path = task
-        .worktree
-        .as_ref()
-        .map(|w| w.path.clone())
-        .unwrap_or_else(|| join_path(&ws.kind, root, &format!(".worktrees/{}", task.id)));
-    let info = WorktreeInfo { path, branch, base };
-    if host.dir_exists(ws, &info.path) {
-        return Ok((info, Vec::new()));
+    let cur = git(host, ws, dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if cur.is_empty() || cur == "HEAD" {
+        return Err(match repo {
+            None => "the workspace is in detached HEAD state: check out a branch or set base_branch".to_string(),
+            Some(r) => format!(
+                "the repository '{r}' is in detached HEAD state: check out a branch or set base_branch / base_branches"
+            ),
+        });
     }
-    let mut warnings = Vec::new();
-    // `.worktrees/` fuori dal git status senza toccare .gitignore.
-    match git(host, ws, root, &["rev-parse", "--git-path", "info/exclude"]) {
+    Ok(cur)
+}
+
+fn ref_exists<H: Host>(host: &H, ws: &Workspace, dir: &str, name: &str) -> bool {
+    host.git(ws, dir, &["rev-parse", "--verify", "--quiet", name]).map(|o| o.ok).unwrap_or(false)
+}
+
+/// `git fetch origin <base>` (al massimo una volta ogni `FETCH_TTL` per
+/// repository e base; salta se manca `origin`) e riferimento da cui creare:
+/// `origin/<base>` se esiste, altrimenti il branch locale. Un fetch fallito
+/// non blocca: si prosegue con i riferimenti locali e c'e' un avviso.
+fn remote_or_local<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    dir: &str,
+    base: &str,
+    cache: &mut FetchCache,
+    warnings: &mut Vec<String>,
+) -> String {
+    let key = format!("{}|{dir}|{base}", ws.id);
+    let warn = match cache.get(&key).filter(|(at, _)| at.elapsed() < FETCH_TTL) {
+        Some((_, w)) => w.clone(),
+        None => {
+            let has_origin = host
+                .git(ws, dir, &["remote", "get-url", "origin"])
+                .map(|o| o.ok)
+                .unwrap_or(false);
+            let warn = if !has_origin {
+                None
+            } else {
+                match host.git(ws, dir, &["fetch", "origin", base]) {
+                    Ok(o) if o.ok => None,
+                    Ok(o) => Some(format!(
+                        "git fetch origin {base} failed ({}): using the local refs",
+                        clip_chars(o.stderr.trim(), 200)
+                    )),
+                    Err(e) => Some(format!("git fetch origin {base} failed ({e}): using the local refs")),
+                }
+            };
+            cache.insert(key, (std::time::Instant::now(), warn.clone()));
+            warn
+        }
+    };
+    if let Some(w) = warn {
+        if !warnings.contains(&w) {
+            warnings.push(w);
+        }
+    }
+    let remote = format!("origin/{base}");
+    if ref_exists(host, ws, dir, &format!("refs/remotes/{remote}")) {
+        remote
+    } else {
+        base.to_string()
+    }
+}
+
+/// `.worktrees/` fuori dal git status del repository, senza toccare .gitignore.
+fn add_worktrees_exclude<H: Host>(host: &H, ws: &Workspace, dir: &str, warnings: &mut Vec<String>) {
+    match git(host, ws, dir, &["rev-parse", "--git-path", "info/exclude"]) {
         Ok(rel) => {
-            let file = if is_abs(&ws.kind, &rel) { rel } else { join_path(&ws.kind, root, &rel) };
+            let file = if is_abs(&ws.kind, &rel) { rel } else { join_path(&ws.kind, dir, &rel) };
             if let Err(e) = host.append_exclude(ws, &file, EXCLUDE_LINE) {
                 warnings.push(format!("{EXCLUDE_LINE} not added to the git exclude file ({e}): it may show up in git status"));
             }
         }
         Err(e) => warnings.push(format!("git exclude file not found ({e}): {EXCLUDE_LINE} may show up in git status")),
     }
-    let _ = git(host, ws, root, &["worktree", "prune"]);
-    let branch_ref = format!("refs/heads/{}", info.branch);
-    let branch_exists = host
-        .git(ws, root, &["rev-parse", "--verify", "--quiet", &branch_ref])
-        .map(|o| o.ok)
-        .unwrap_or(false);
-    if branch_exists {
-        git(host, ws, root, &["worktree", "add", &info.path, &info.branch])?;
-    } else {
-        git(host, ws, root, &["worktree", "add", &info.path, "-b", &info.branch, &info.base])?;
+}
+
+/// Data locale (YYYY-MM-DD) per il modello del branch di integrazione.
+fn local_date(now: i64) -> String {
+    use chrono::{Local, TimeZone};
+    Local
+        .timestamp_millis_opt(now)
+        .single()
+        .map(|t| t.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+/// Garantisce il branch di integrazione del repository del task con il suo
+/// worktree `<repo>/.worktrees/integration` e lo registra nella board. Va
+/// chiamata con il lock dei repository preso (un'integrazione per volta).
+/// Mai checkout/switch nella cartella principale.
+fn ensure_integration<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    job: &StartJob,
+    dir: &str,
+    template: &str,
+    cache: &mut FetchCache,
+    warnings: &mut Vec<String>,
+) -> Result<board::Integration, String> {
+    let (ws, repo) = (&job.ws, job.task.repo.as_deref());
+    let key = board::repo_key(repo);
+    let now = now_millis();
+    let name = board::expand_integration(template, &local_date(now))?;
+    // Lock del registro senza `run`: niente flush (un avvio inline sotto il
+    // lock dei repository andrebbe in stallo).
+    let current = st.inner.lock().unwrap().integration_of(&ws.id, &key);
+    if let Some(mut i) = current.filter(|i| board::integration_matches(&name, &i.branch)) {
+        if !host.dir_exists(ws, &i.path) {
+            // Cartella sparita: si ricrea dal branch, che e' nostro (e va riprepararla).
+            add_worktrees_exclude(host, ws, dir, warnings);
+            let _ = git(host, ws, dir, &["worktree", "prune"]);
+            if ref_exists(host, ws, dir, &format!("refs/heads/{}", i.branch)) {
+                git(host, ws, dir, &["worktree", "add", &i.path, &i.branch])?;
+            } else {
+                git(host, ws, dir, &["worktree", "add", &i.path, "-b", &i.branch, &i.base])?;
+            }
+            i.setup_done = false;
+            st.inner.lock().unwrap().set_integration(&ws.id, &key, i.clone(), now);
+        }
+        setup_integration(st, host, job, dir, &mut i, warnings)?;
+        return Ok(i);
     }
+    let declared = declared_base(None, repo, &job.board_bases, settings_base(job), job.board_base.as_deref());
+    let base = resolve_base(host, ws, dir, repo, declared)?;
+    let base_ref = if repo.is_some() { remote_or_local(host, ws, dir, &base, cache, warnings) } else { base };
+    // Un branch con questo nome che non e' nostro (non registrato) non si riusa.
+    let branch = board::first_free_branch(&name, |c| ref_exists(host, ws, dir, &format!("refs/heads/{c}")))
+        .ok_or_else(|| format!("no free name for the integration branch {name}"))?;
+    let path = (1..=100)
+        .map(|n| if n == 1 { "integration".to_string() } else { format!("integration-{n}") })
+        .map(|f| join_path(&ws.kind, dir, &format!(".worktrees/{f}")))
+        .find(|p| !host.dir_exists(ws, p))
+        .ok_or_else(|| "no free folder for the integration worktree".to_string())?;
+    add_worktrees_exclude(host, ws, dir, warnings);
+    let _ = git(host, ws, dir, &["worktree", "prune"]);
+    git(host, ws, dir, &["worktree", "add", &path, "-b", &branch, &base_ref])?;
+    let mut integ = board::Integration { branch, path, base: base_ref, setup_done: false };
+    st.inner.lock().unwrap().set_integration(&ws.id, &key, integ.clone(), now);
+    setup_integration(st, host, job, dir, &mut integ, warnings)?;
+    Ok(integ)
+}
+
+/// Setup del worktree di integrazione, se non e' gia' stato fatto. Se
+/// fallisce l'integrazione resta registrata con `setup_done` falso: il
+/// prossimo avvio del repository lo rifa.
+fn setup_integration<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    job: &StartJob,
+    dir: &str,
+    integ: &mut board::Integration,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    if integ.setup_done {
+        return Ok(());
+    }
+    let (path, branch, base) = (integ.path.clone(), integ.branch.clone(), integ.base.clone());
+    // Sotto il lock dei repository: niente pubblicazione dei passi.
+    warnings.extend(setup_worktree(st, host, job, dir, &path, "integration", &branch, &base, "integration worktree", false)?);
+    integ.setup_done = true;
+    let key = board::repo_key(job.task.repo.as_deref());
+    st.inner.lock().unwrap().set_integration(&job.ws.id, &key, integ.clone(), now_millis());
+    Ok(())
+}
+
+/// Branch base dichiarato nelle impostazioni del repository del task.
+fn settings_base(job: &StartJob) -> Option<&str> {
+    repo_cfg(&job.ws, job.task.repo.as_deref()).and_then(|c| c.base_branch.as_deref())
+}
+
+/// Crea (o riusa) il worktree del task nel suo repository. Base: task ->
+/// branch di integrazione della board -> impostazione per repository ->
+/// base della board (root) -> default di `origin` (repo) -> branch corrente
+/// della cartella, risolto adesso. Ritorna anche gli avvisi (non bloccanti)
+/// per la nota del task.
+pub(super) fn prepare_worktree<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    job: &StartJob,
+) -> Result<(WorktreeInfo, Vec<String>), String> {
+    let (ws, task) = (&job.ws, &job.task);
+    let repo = task.repo.as_deref();
+    let dir = repo_dir(ws, repo);
+    let mut warnings = Vec::new();
+    let base = {
+        // Fetch e integrazione di un repository si fanno uno alla volta.
+        let needs_prep = repo.is_some() || job.integration_template.is_some();
+        let mut guard = needs_prep.then(|| lock_repo_prep(st, job));
+        let mut local = FetchCache::new();
+        let cache: &mut FetchCache = match guard.as_mut() {
+            Some(g) => g,
+            None => &mut local,
+        };
+        let integ = match &job.integration_template {
+            Some(tpl) => Some(ensure_integration(st, host, job, &dir, tpl, cache, &mut warnings)?),
+            None => None,
+        };
+        match (&task.base_branch, integ) {
+            // Senza base esplicita parte dall'integrazione (riferimento locale).
+            (None, Some(i)) => i.branch,
+            _ => {
+                let declared =
+                    declared_base(task.base_branch.as_deref(), repo, &job.board_bases, settings_base(job), job.board_base.as_deref());
+                let b = resolve_base(host, ws, &dir, repo, declared)?;
+                if repo.is_some() {
+                    remote_or_local(host, ws, &dir, &b, cache, &mut warnings)
+                } else {
+                    b
+                }
+            }
+        }
+    };
+    let branch = format!("task/{}", task.id);
+    // Retry: il worktree gia' creato si riusa cosi' com'e'.
+    if let Some(wt) = &task.worktree {
+        if host.dir_exists(ws, &wt.path) {
+            return Ok((wt.clone(), warnings));
+        }
+    }
+    let path = task
+        .worktree
+        .as_ref()
+        .map(|w| w.path.clone())
+        .unwrap_or_else(|| join_path(&ws.kind, &dir, &format!(".worktrees/{}", task.id)));
+    let mut info = WorktreeInfo { path, branch, base, repo: task.repo.clone(), setup_done: true };
+    // Cartella gia' presente ma non registrata (non e' nostra): niente setup.
+    if host.dir_exists(ws, &info.path) {
+        return Ok((info, warnings));
+    }
+    add_worktrees_exclude(host, ws, &dir, &mut warnings);
+    let _ = git(host, ws, &dir, &["worktree", "prune"]);
+    let branch_ref = format!("refs/heads/{}", info.branch);
+    if ref_exists(host, ws, &dir, &branch_ref) {
+        git(host, ws, &dir, &["worktree", "add", &info.path, &info.branch])?;
+    } else {
+        git(host, ws, &dir, &["worktree", "add", &info.path, "-b", &info.branch, &info.base])?;
+    }
+    // Appena creato: il setup e' da fare. Si registra subito, cosi' un setup
+    // fallito (o un'app chiusa a meta') lascia traccia e il retry lo rifa.
+    info.setup_done = false;
+    st.run(host, |r| r.record_worktree(&ws.id, &task.id, job.attempt, info.clone()));
     Ok((info, warnings))
 }
 
 /// `git diff --stat <base>...HEAD` piu' i file non committati, troncato.
+/// Gira nel worktree del task, che sta nel repository del task.
 pub(super) fn compute_diffstat<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeInfo) -> Option<String> {
     let range = format!("{}...HEAD", wt.base);
     let stat = git(host, ws, &wt.path, &["diff", "--stat", &range]).unwrap_or_default();
@@ -736,13 +1173,27 @@ pub(super) fn compute_diffstat<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeI
     Some(clip_chars(&out, board::DIFFSTAT_MAX))
 }
 
-/// Rimuove il worktree e il branch del task (senza forzare). Ritorna gli
-/// avvisi: non bloccano mai il passaggio a `done`.
+/// Esegue i comandi di pulizia del repository (se ci sono), poi rimuove il
+/// worktree (con `--force` se l'impostazione lo chiede) e il branch del task
+/// (senza forzare), nel repository del task. Ritorna gli avvisi: non
+/// bloccano mai il passaggio a `done`.
 pub(super) fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeInfo) -> Vec<String> {
     let mut warnings = Vec::new();
-    let root = ws.path.as_str();
+    let root = repo_dir(ws, wt.repo.as_deref());
+    let root = root.as_str();
+    let cfg = repo_cfg(ws, wt.repo.as_deref()).cloned().unwrap_or_default();
     if host.dir_exists(ws, &wt.path) {
-        if let Err(e) = git(host, ws, root, &["worktree", "remove", &wt.path]) {
+        if !cfg.cleanup.is_empty() {
+            let task_id = wt.branch.strip_prefix("task/").unwrap_or(&wt.branch);
+            let vars = hooks::HookVars { repo_dir: root, worktree: &wt.path, task_id, branch: &wt.branch, base: &wt.base };
+            warnings.extend(hooks::run_cleanup(host, ws, &cfg, &vars));
+        }
+        let mut args = vec!["worktree", "remove"];
+        if cfg.remove_force {
+            args.push("--force");
+        }
+        args.push(&wt.path);
+        if let Err(e) = git(host, ws, root, &args) {
             warnings.push(format!("worktree not removed: {e}"));
             return warnings;
         }
@@ -756,6 +1207,57 @@ pub(super) fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeI
 }
 
 // ---------------------------------------------------------------------------
+// Rilevamento dei repository del workspace
+// ---------------------------------------------------------------------------
+
+/// Elenco dei repository da un elenco di nomi (uno per riga): normalizzati,
+/// senza doppioni, "." per primo.
+pub(super) fn parse_repo_list(out: &str) -> Vec<String> {
+    let mut v: Vec<String> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| board::normalize_repo(l).ok().map(|r| r.unwrap_or_else(|| ".".to_string())))
+        .collect();
+    v.sort_by(|a, b| (a != ".", a).cmp(&(b != ".", b)));
+    v.dedup();
+    v.truncate(200);
+    v
+}
+
+/// Repository del workspace: "." se la root stessa e' un repo, piu' le
+/// sottocartelle dirette (profondita' 1, senza quelle nascoste) con un `.git`
+/// (cartella o file). WSL: una sola chiamata `sh`.
+pub fn detect_repos(ws: &Workspace) -> Result<Vec<String>, String> {
+    if ws.kind == "wsl" {
+        let distro = ws
+            .distro
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| "distro WSL mancante".to_string())?;
+        let script = "for d in */; do [ -e \"${d}.git\" ] && printf '%s\\n' \"${d%/}\"; done; [ -e .git ] && printf '.\\n'; exit 0";
+        let cmd = crate::wsl::wsl_run_command(distro, &ws.path, &["sh", "-c", script]);
+        let out = output_with_timeout(cmd, GIT_TIMEOUT)?;
+        if !out.status.success() {
+            return Err(format!("repository detection failed: {}", clip_chars(String::from_utf8_lossy(&out.stderr).trim(), 200)));
+        }
+        return Ok(parse_repo_list(&String::from_utf8_lossy(&out.stdout)));
+    }
+    let root = std::path::Path::new(&ws.path);
+    let mut names = Vec::new();
+    if root.join(".git").exists() {
+        names.push(".".to_string());
+    }
+    for entry in std::fs::read_dir(root).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with('.') && entry.path().is_dir() && entry.path().join(".git").exists() {
+            names.push(name);
+        }
+    }
+    Ok(parse_repo_list(&names.join("\n")))
+}
+
+// ---------------------------------------------------------------------------
 // Avvio di un task (thread separato)
 // ---------------------------------------------------------------------------
 
@@ -765,22 +1267,73 @@ struct Prepared {
     new: NewWorker,
 }
 
-fn prepare_start<H: Host>(host: &H, job: &StartJob) -> Result<Prepared, String> {
+/// Worktree del task pronto: creato (o riusato) e con il setup del
+/// repository fatto. Se c'e' qualcosa di lento da fare (setup del task o
+/// dell'integrazione) il task risulta "in preparazione" e il guardiano
+/// dell'avvio aspetta (vedi `PREPARING_TIMEOUT_MS`). Un setup fallito lascia
+/// il worktree com'e' (registrato con `setup_done` falso) e fallisce l'avvio.
+fn prepare_and_setup<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    job: &StartJob,
+) -> Result<(WorktreeInfo, Vec<String>), String> {
+    let (ws, task) = (&job.ws, &job.task);
+    let slow = repo_cfg(ws, task.repo.as_deref()).is_some_and(|c| c.has_setup());
+    if slow {
+        st.run(host, |r| r.touch_preparing(&ws.id, &task.id, job.attempt, Some("worktree"), now_millis(), true));
+    }
+    let end = |st: &AutomationState| {
+        if slow {
+            st.run(host, |r| r.end_preparing(&ws.id, &task.id, job.attempt, now_millis()));
+        }
+    };
+    let (mut wt, mut warnings) = match prepare_worktree(st, host, job) {
+        Ok(x) => x,
+        Err(e) => {
+            end(st);
+            return Err(e);
+        }
+    };
+    if !wt.setup_done {
+        let dir = repo_dir(ws, task.repo.as_deref());
+        match setup_worktree(st, host, job, &dir, &wt.path, &task.id, &wt.branch, &wt.base, "worktree setup", true) {
+            Ok(w) => warnings.extend(w),
+            Err(e) => {
+                end(st);
+                return Err(e);
+            }
+        }
+        wt.setup_done = true;
+        // Registrato fatto subito: se un passo successivo dell'avvio fallisce, il retry non rifa il setup.
+        st.run(host, |r| r.record_worktree(&ws.id, &task.id, job.attempt, wt.clone()));
+    }
+    end(st);
+    Ok((wt, warnings))
+}
+
+fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Result<Prepared, String> {
     let (ws, task) = (&job.ws, &job.task);
     let (worktree, warnings) = match task.isolation {
         Isolation::Worktree => {
-            let (wt, w) = prepare_worktree(host, ws, task, job.board_base.as_deref())?;
+            let (wt, w) = prepare_and_setup(st, host, job)?;
             (Some(wt), w)
         }
         Isolation::None => (None, Vec::new()),
     };
-    let workdir = worktree.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| ws.path.clone());
+    let workdir = worktree.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| repo_dir(ws, task.repo.as_deref()));
+    if let (Some(r), None) = (&task.repo, &worktree) {
+        if !host.dir_exists(ws, &workdir) {
+            return Err(format!("the repository folder '{r}' ({workdir}) does not exist in the workspace"));
+        }
+    }
     let requested = task.permission_mode.as_deref().and_then(PermissionMode::parse);
     let permission_mode = resolve_permission(requested, ws.worker_permission_mode())?;
+    let settings_path = host.worker_settings_path(ws, &task.agent)?;
     let req = AutomationRequest {
         bootstrap_prompt: BOOTSTRAP_PROMPT,
         permission_mode,
         model: task.model.as_deref().or(ws.worker_model.as_deref()),
+        settings_path: settings_path.as_deref(),
     };
     let command = host.launch_command(&task.agent, &ws.kind, &req)?;
     Ok(Prepared {
@@ -823,7 +1376,7 @@ pub(super) fn run_start_job<H: Host>(st: &AutomationState, host: &H, job: StartJ
 
 fn start_inner<H: Host>(st: &AutomationState, host: &H, job: &StartJob) {
     let (ws_id, tid, attempt) = (job.ws.id.clone(), job.task.id.clone(), job.attempt);
-    match prepare_start(host, job) {
+    match prepare_start(st, host, job) {
         Ok(p) => {
             let ev = st.run(host, |r| {
                 r.register_task_worker(&ws_id, &tid, attempt, p.worktree, p.warnings, p.new, now_millis())
@@ -913,9 +1466,12 @@ pub(super) fn rpc_board<H: Host>(
             let plan = board::parse_plan(params)?;
             board::check_permissions(&plan.specs, ceiling)?;
             check_agents(host, &plan.specs)?;
-            if plan.specs.iter().any(|s| s.isolation == Isolation::Worktree) {
-                ensure_git_repo(host, &ws)?;
-            }
+            // Un repo git per ogni repository dei task con worktree (git fuori dal lock).
+            ensure_git_repos(
+                host,
+                &ws,
+                plan.specs.iter().filter(|s| s.isolation == Isolation::Worktree).map(|s| s.repo.as_deref()),
+            )?;
             let ids = board_op(st, host, now, |r| r.submit_plan(&ws.id, plan, ceiling, now))?;
             let view = st.run(host, |r| r.board_view(&ws.id));
             let mut out = view.to_compact_json(None);
@@ -924,6 +1480,12 @@ pub(super) fn rpc_board<H: Host>(
         }
         "get_board" => {
             let columns = parse_columns(params)?;
+            // Repository rilevati: una volta per board (cache), mai a ogni chiamata.
+            if st.run(host, |r| r.repos_cached(&ws.id)).is_none() {
+                if let Ok(repos) = host.list_repos(&ws) {
+                    st.run(host, |r| r.set_repos(&ws.id, repos));
+                }
+            }
             Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(columns.as_deref()))
         }
         "get_task_details" => {
@@ -939,8 +1501,15 @@ pub(super) fn rpc_board<H: Host>(
                     return Err(format!("unknown agent: {a} (see list_agents)"));
                 }
             }
-            if opt_str(params, "isolation")? == Some("worktree") {
-                ensure_git_repo(host, &ws)?;
+            // Il task risultante usa un worktree in un repository nuovo? Va verificato.
+            if params.get("isolation").is_some() || params.get("repo").is_some() {
+                let current = st.run(host, |r| r.task_view(&ws.id, &id));
+                if let Some(cur) = current {
+                    let spec = board::parse_spec(params, Some(&board::TaskSpec::from_task(&cur.task)))?;
+                    if spec.isolation == Isolation::Worktree {
+                        ensure_git_repo(host, &ws, spec.repo.as_deref())?;
+                    }
+                }
             }
             board_op(st, host, now, |r| r.update_task(&ws.id, &id, params, ceiling, now))?;
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
@@ -966,7 +1535,8 @@ pub(super) fn rpc_board<H: Host>(
                 Some(v) => Some(board::parse_max_parallel(v)?),
             };
             let paused = opt_bool(params, "paused")?;
-            board_op(st, host, now, |r| r.set_board(&ws.id, max_parallel, paused, now))?;
+            let repo = RepoSettings::parse(params)?;
+            board_op(st, host, now, |r| r.set_board_ext(&ws.id, max_parallel, paused, repo, now))?;
             Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(None))
         }
         _ => Err(format!("unknown method: {method}")),
@@ -1009,7 +1579,12 @@ pub(super) fn board_set_cmd<H: Host>(
     }
     let now = now_millis();
     board_op(st, host, now, |r| r.set_board(ws_id, max_parallel, paused, now))
-        .map_err(|e| e.replace("nothing to change: pass max_parallel and/or paused", "nessuna modifica richiesta"))?;
+        .map_err(|e| {
+            e.replace(
+                "nothing to change: pass max_parallel, paused, base_branches and/or integration_branch",
+                "nessuna modifica richiesta",
+            )
+        })?;
     Ok(st.run(host, |r| r.board_view(ws_id)))
 }
 
@@ -1143,7 +1718,8 @@ pub(super) fn run_git(ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut
         }
         cmd
     };
-    let output = output_with_timeout(cmd, GIT_TIMEOUT).map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    let limit = if args.first() == Some(&"fetch") { FETCH_TIMEOUT } else { GIT_TIMEOUT };
+    let output = output_with_timeout(cmd, limit).map_err(|e| format!("git {}: {e}", args.join(" ")))?;
     Ok(GitOut {
         ok: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

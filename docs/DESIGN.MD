@@ -55,6 +55,19 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     "accept-edits" | "bypass"` (vocabolario di `agents::PermissionMode`);
     `#[serde(default)]` -> `"accept-edits"`, cosi' i vecchi `workspaces.json` non diventano
     piu' permissivi.
+  - `worker_allow` / `worker_deny`: `Vec<String>` (serde default), pre-approved / forbidden
+    Claude Code permission rules for workers (`Bash(git:*)`, `Edit`, ...), set with
+    `set_worker_permission_rules(id, allow, deny)`; validated by `worker_permissions::validate_rules`
+    (trimmed, max 100 rules of 300 chars, shape `Name` or `Name(...)`, no control chars,
+    no parentheses on `mcp__` names). At launch of a Claude Code worker (ad-hoc and board,
+    `Host::worker_settings_path`) `{"permissions":{"allow":[..],"deny":[..]}}` is written
+    (only if changed) to `<app_data>/worker-settings/<workspace_id>.json` and the command gets
+    `--settings "<path>"` (before `--allowedTools`, which is variadic; `/mnt/<d>/...` for WSL;
+    paths with `" $ ` % !` are refused because the line is typed into PowerShell, cmd or
+    bash). Claude Code merges these with its other settings; deny always wins, even in
+    bypass. Caveats shown in the UI: a prefix rule such as `Bash(docker exec:*)` allows any
+    command starting that way; deny rules are not a security boundary (other invocation
+    forms can bypass them); `whoami` lists both lists for the orchestrator.
   - `worker_model`: `Option<String>`, modello di default dei worker automatici, usato quando
     il task o `spawn_session` non indicano `model`; assente = quello dell'agente
     (`#[serde(default)]`).
@@ -233,7 +246,14 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     dritti, o `/mnt/c/...` su WSL; `args` = `["--notify", evento, "claude-code"]`,
     `timeout` 10): `SessionStart` -> `session-start`, `Stop` -> `finished`,
     `Notification` (matcher `permission_prompt|idle_prompt|elicitation_dialog`) ->
-    `needs-input`. Il plugin contiene anche `.mcp.json` con il server `cli-companion`
+    `needs-input`. `PermissionRequest` (no matcher, no output, exit 0: it never decides, the
+    normal dialog still shows) -> `permission-request`: stdin `tool_name` + `tool_input` are
+    summarised (Bash command / file path / URL, max 200 chars) into
+    `Permesso richiesto: Bash — <command>`; the backend turns it into a `needs-input`
+    (`permission_prompt`) carrying that text, and drops the generic `permission_prompt`
+    Notification that follows for the same tab within 60 s (no duplicate event/sound).
+    The hook fires only when a prompt is actually shown (not in bypass, not when a rule
+    already allows). Il plugin contiene anche `.mcp.json` con il server `cli-companion`
     (`command` = exe come sopra, `args` = `["--mcp"]`) e la skill
     `skills/workflow/SKILL.md` (sorgente `agents/workflow_skill.md`, stessa `include_str!`
     e normalizzazione LF; in inglese: il wizard che intervista l'utente e salva il

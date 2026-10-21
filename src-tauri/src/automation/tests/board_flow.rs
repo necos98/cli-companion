@@ -224,7 +224,7 @@ fn cancelling_a_running_task_closes_its_tab_without_exited() {
     assert_eq!(task_of(&b, "a")["status"], "cancelled");
     // Una dipendenza cancelled non sblocca il dipendente.
     assert_eq!(task_of(&b, "b")["column"], "backlog");
-    assert_eq!(st.inner.lock().unwrap().list_sessions(ORCH)[0].status, WorkerStatus::Closed);
+    assert_eq!(st.inner.lock().unwrap().list_sessions(ORCH, 0)[0].status, WorkerStatus::Closed);
     // Cancel di nuovo / done da cancelled: errori leggibili.
     assert!(call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "cancelled"})).is_err());
     assert!(call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).is_err());
@@ -509,7 +509,7 @@ fn ownerless_board_queues_events_for_the_next_owner() {
     let ev = events(&st, &h, ORCH);
     assert_eq!(kinds_of(&ev), vec!["started", "completed"]);
     assert!(ev.iter().all(|e| e["task"] == "a"));
-    assert_eq!(st.inner.lock().unwrap().list_sessions(ORCH).len(), 1);
+    assert_eq!(st.inner.lock().unwrap().list_sessions(ORCH, 0).len(), 1);
 }
 
 #[test]
@@ -856,6 +856,8 @@ fn start_jobs_of_the_same_task_never_overlap_in_git() {
         ws: h.ws_for("ws-1").unwrap(),
         task: b.task("a").unwrap().clone(),
         board_base: None,
+        board_bases: Default::default(),
+        integration_template: None,
         attempt,
     };
     let job1 = job(&b, 1);
@@ -1050,4 +1052,649 @@ fn status_changes_return_the_task_without_its_text() {
     assert!(s["task"].get("task").is_none());
     let p = call(&st, &h, ORCH, "set_board", json!({"paused": true})).unwrap();
     assert!(p["counts"].is_object() && p["tasks"].is_array());
+}
+
+#[test]
+fn done_from_queued_over_rpc_needs_a_note_and_unblocks_dependents() {
+    let (st, h) = st_h();
+    st.run(&h, |r| hook(r, ORCH, "finished", None, 1));
+    submit(&st, &h, vec![json!({"id": "a", "task": "x", "held": true}), t("b", &["a"])]);
+    let e = call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap_err();
+    assert!(e.contains("note"), "{e}");
+    let r = call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done", "note": "done by hand in main"})).unwrap();
+    assert_eq!(r["task"]["column"], "done");
+    assert_eq!(r["task"]["external"], true);
+    assert!(r.get("warnings").is_none());
+    assert!(h.git_log().iter().all(|l| !l.contains("worktree remove") && !l.contains("branch -d")));
+    // Il dipendente parte.
+    let b = board_json(&st, &h);
+    assert_eq!(task_of(&b, "b")["column"], "running");
+    // Piano completo: conteggi nel testo.
+    let w = session_of(&st, &h, "b");
+    finish(&st, &h, &w, "completed");
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "b", "status": "done"})).unwrap();
+    let ev = events(&st, &h, ORCH);
+    let pc = ev.iter().find(|e| e["kind"] == "plan_completed").expect("plan_completed");
+    let text = pc["text"].as_str().unwrap();
+    assert!(text.contains("2 done (of which 1 completed outside the board)"), "{text}");
+}
+
+#[test]
+fn plan_completed_is_not_sent_when_every_task_was_cancelled_unstarted() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![json!({"id": "a", "task": "x", "held": true}), json!({"id": "b", "task": "y", "held": true})]);
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "cancelled"})).unwrap();
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "b", "status": "cancelled"})).unwrap();
+    assert!(events(&st, &h, ORCH).is_empty());
+}
+
+#[test]
+fn workspace_rules_reach_board_and_adhoc_workers_but_orchestrator_note_does_not() {
+    let (st, h) = st_h();
+    *h.worker_rules.lock().unwrap() = "Never run the e2e tests.".to_string();
+    submit(&st, &h, vec![json!({"id": "a", "task": "do a", "orchestrator_note": "secret merge plan"})]);
+    let w = session_of(&st, &h, "a");
+    let task = call(&st, &h, &w, "get_task", json!({})).unwrap();
+    let ins = task["instructions"].as_str().unwrap();
+    assert!(ins.starts_with(crate::automation::WORKER_INSTRUCTIONS));
+    assert!(ins.contains("Workspace rules (always apply):\nNever run the e2e tests."), "{ins}");
+    assert!(!task["task"].as_str().unwrap().contains("e2e"));
+    assert!(!task.to_string().contains("secret merge plan"), "{task}");
+    // L'orchestratore la vede, il worker no.
+    let d = call(&st, &h, ORCH, "get_task_details", json!({"id": "a"})).unwrap();
+    assert_eq!(d["task"]["orchestrator_note"], "secret merge plan");
+    assert_eq!(call(&st, &h, ORCH, "get_board", json!({})).unwrap()["tasks"][0]["orchestrator_note"], "secret merge plan");
+
+    // Worker ad-hoc (spawn_session): stesse regole, lette al get_task.
+    let r = call(&st, &h, ORCH, "spawn_session", json!({"task": "adhoc"})).unwrap();
+    let s = r["session"].as_str().unwrap().to_string();
+    *h.worker_rules.lock().unwrap() = "Only edit docs.".to_string();
+    let t = call(&st, &h, &s, "get_task", json!({})).unwrap();
+    assert!(t["instructions"].as_str().unwrap().contains("Workspace rules (always apply):\nOnly edit docs."));
+    assert!(t.get("environment").is_none());
+
+    // Senza regole: istruzioni invariate.
+    *h.worker_rules.lock().unwrap() = "  ".to_string();
+    let r = call(&st, &h, ORCH, "spawn_session", json!({"task": "adhoc2"})).unwrap();
+    let t = call(&st, &h, r["session"].as_str().unwrap(), "get_task", json!({})).unwrap();
+    assert_eq!(t["instructions"], crate::automation::WORKER_INSTRUCTIONS);
+}
+
+#[test]
+fn list_sessions_reports_seconds_since_spawn_until_get_task() {
+    let (st, h) = st_h();
+    let w = st.run(&h, |r| r.spawn(ORCH, new_worker("w"), 1_000)).unwrap().tab_id;
+    let ls = st.run(&h, |r| r.list_sessions(ORCH, 8_500));
+    assert_eq!(ls[0].status, WorkerStatus::Starting);
+    assert_eq!(ls[0].starting_secs, Some(7));
+    st.run(&h, |r| r.get_task(&w, 9_000)).unwrap();
+    assert_eq!(st.run(&h, |r| r.list_sessions(ORCH, 20_000))[0].starting_secs, None);
+}
+
+// --- workspace con piu' repository (la root non e' un repo) ---
+
+/// Root non-git `C:\p` con i repository `r1` e `r2`.
+fn multi_repo() -> (AutomationState, FakeHost) {
+    let (st, h) = st_h();
+    h.git_rule("C:\\p|rev-parse --is-inside-work-tree", true, "false\n", "");
+    h.dirs.lock().unwrap().extend(["C:\\p\\r1".to_string(), "C:\\p\\r2".to_string()]);
+    (st, h)
+}
+
+fn repo_t(id: &str, repo: &str) -> Value {
+    json!({"id": id, "task": format!("do {id}"), "repo": repo})
+}
+
+#[test]
+fn non_git_root_with_two_repos_runs_worktree_tasks_per_repo() {
+    let (st, h) = multi_repo();
+    h.git_rule("C:\\p\\r2|symbolic-ref", true, "origin/main\n", "");
+    let b = call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({
+            "base_branches": {"r1": "master"},
+            "tasks": [
+                {"id": "a1", "task": "x", "repo": "r1", "touches": ["src"]},
+                {"id": "a2", "task": "x", "repo": "r1", "touches": ["docs"]},
+                {"id": "b1", "task": "x", "repo": "r2", "touches": ["src"]},
+            ]
+        }),
+    )
+    .unwrap();
+    // `src` in r1 e in r2 non confligge: partono tutti.
+    for id in ["a1", "a2", "b1"] {
+        assert_eq!(task_of(&b, id)["column"], "running", "{id}");
+    }
+    assert_eq!(task_of(&b, "a1")["repo"], "r1");
+    assert_eq!(b["base_branches"], json!({"r1": "master"}));
+    let git = h.git_log();
+    // Cartella git = il repository; r1 usa l'impostazione, r2 il default di origin.
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\a1 -b task/a1 master".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\a2 -b task/a2 master".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r2|worktree add C:\\p\\r2\\.worktrees\\b1 -b task/b1 main".to_string()), "{git:?}");
+    // Un solo fetch per (repo, base) anche con due task che partono insieme.
+    assert_eq!(git.iter().filter(|l| l.as_str() == "C:\\p\\r1|fetch origin master").count(), 1, "{git:?}");
+    assert_eq!(git.iter().filter(|l| l.as_str() == "C:\\p\\r2|fetch origin main").count(), 1, "{git:?}");
+    // Mai nulla nella root che non e' un repo, e mai checkout.
+    assert!(!git.iter().any(|l| l.starts_with("C:\\p|worktree") || l.contains("checkout") || l.contains("switch")), "{git:?}");
+    let ex = h.excludes.lock().unwrap().clone();
+    assert!(ex.iter().any(|l| l.starts_with("C:\\p\\r1\\.git\\info\\exclude|")), "{ex:?}");
+    assert!(ex.iter().any(|l| l.starts_with("C:\\p\\r2\\.git\\info\\exclude|")), "{ex:?}");
+    let cwds: Vec<String> = h.spawns().iter().filter_map(|s| s.cwd.clone()).collect();
+    assert!(cwds.contains(&"C:\\p\\r1\\.worktrees\\a1".to_string()) && cwds.contains(&"C:\\p\\r2\\.worktrees\\b1".to_string()), "{cwds:?}");
+    // Il worker vede il repository.
+    let w = session_of(&st, &h, "a1");
+    let env = call(&st, &h, &w, "get_task", json!({})).unwrap()["environment"].as_str().unwrap().to_string();
+    assert!(env.contains("Repository: r1") && env.contains("C:\\p\\r1\\.worktrees\\a1"), "{env}");
+    // done: pulizia nel repository del task.
+    finish(&st, &h, &w, "completed");
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a1", "status": "done"})).unwrap();
+    assert!(h.git_log().contains(&"C:\\p\\r1|branch -d task/a1".to_string()), "{:?}", h.git_log());
+    // diffstat nel worktree del repo.
+    assert!(h.git_log().iter().any(|l| l == "C:\\p\\r1\\.worktrees\\a1|diff --stat master...HEAD"), "{:?}", h.git_log());
+}
+
+#[test]
+fn repo_validation_names_the_repository() {
+    let (st, h) = multi_repo();
+    h.dirs.lock().unwrap().push("C:\\p\\plain".to_string());
+    h.git_rule("C:\\p\\plain|rev-parse --is-inside-work-tree", true, "false\n", "");
+    // Un task della root con worktree: la root non e' un repo.
+    let e = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [t("a", &[])]})).unwrap_err();
+    assert!(e.contains("not a git repository") && e.contains("workspace folder"), "{e}");
+    let e = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [repo_t("a", "plain")]})).unwrap_err();
+    assert!(e.contains("'plain'") && e.contains("not a git repository"), "{e}");
+    let e = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [repo_t("a", "r1"), repo_t("b", "ghost")]})).unwrap_err();
+    assert!(e.contains("'ghost'") && e.contains("does not exist"), "{e}");
+    for bad in ["../x", "/abs", "C:\\x", ""] {
+        assert!(call(&st, &h, ORCH, "submit_plan", json!({"tasks": [repo_t("a", bad)]})).is_err(), "{bad}");
+    }
+    // Niente e' stato aggiunto; isolation none non richiede un repo git.
+    let b = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(b["tasks"], json!([]));
+    let b = submit(&st, &h, vec![json!({"id": "n", "task": "x", "isolation": "none", "repo": "plain"})]);
+    assert_eq!(task_of(&b, "n")["column"], "running");
+    assert_eq!(h.spawns()[0].cwd.as_deref(), Some("C:\\p\\plain"));
+    // update_task: il nuovo repo (con worktree) si verifica; "." e' la root.
+    submit(&st, &h, vec![json!({"id": "q", "task": "x", "repo": "r1", "held": true})]);
+    let e = call(&st, &h, ORCH, "update_task", json!({"id": "q", "repo": "plain"})).unwrap_err();
+    assert!(e.contains("'plain'"), "{e}");
+    let e = call(&st, &h, ORCH, "update_task", json!({"id": "q", "repo": "."})).unwrap_err();
+    assert!(e.contains("workspace folder"), "{e}");
+    call(&st, &h, ORCH, "update_task", json!({"id": "q", "repo": "r2"})).unwrap();
+    assert_eq!(task_of(&board_json(&st, &h), "q")["repo"], "r2");
+}
+
+#[test]
+fn repo_base_resolution_order_fetch_and_remote_ref() {
+    let (st, h) = multi_repo();
+    h.git_rule("C:\\p\\r2|symbolic-ref", true, "origin/trunk\n", "");
+    // r1: origin/dev esiste -> si parte dal riferimento remoto.
+    h.git_rule("C:\\p\\r1|rev-parse --verify --quiet refs/remotes/origin/dev", true, "", "");
+    // La root non e' un repo: un task della root con worktree si rifiuta a monte.
+    let e = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [t("root-iso", &[])]})).unwrap_err();
+    assert!(e.contains("workspace folder"), "{e}");
+    let b = call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({
+            "base_branch": "board-wide", "base_branches": {"r1": "dev"},
+            "tasks": [
+                repo_t("r1-board", "r1"),
+                {"id": "r1-own", "task": "x", "repo": "r1", "base_branch": "release/1.0", "touches": ["x"]},
+                repo_t("r2-default", "r2"),
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(task_of(&b, "r2-default")["column"], "running");
+    let git = h.git_log();
+    // task > base_branches[repo] (con origin/) > default di origin.
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\r1-board -b task/r1-board origin/dev".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\r1-own -b task/r1-own release/1.0".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r2|worktree add C:\\p\\r2\\.worktrees\\r2-default -b task/r2-default trunk".to_string()), "{git:?}");
+    // La base della board non vale per i task dei repo.
+    assert!(!git.iter().any(|l| l.contains("board-wide")), "{git:?}");
+    let a = task_of(&board_json(&st, &h), "r1-board");
+    assert_eq!(a["worktree"]["base"], "origin/dev");
+    assert_eq!(a["worktree"]["repo"], "r1");
+}
+
+#[test]
+fn board_base_branch_still_rules_root_tasks_and_current_branch_is_the_last_resort() {
+    let (st, h) = st_h();
+    h.dirs.lock().unwrap().push("C:\\p\\sub".to_string());
+    // Root repo (default del fake): la base della board vale solo per la root; un repo senza
+    // origin/HEAD parte dal suo branch corrente (qui "main").
+    let b = call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({"base_branch": "integration", "tasks": [t("r", &[]), repo_t("s", "sub")]}),
+    )
+    .unwrap();
+    assert_eq!(task_of(&b, "s")["column"], "running");
+    let git = h.git_log();
+    assert!(git.contains(&"C:\\p|worktree add C:\\p\\.worktrees\\r -b task/r integration".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\sub|worktree add C:\\p\\sub\\.worktrees\\s -b task/s main".to_string()), "{git:?}");
+    // Nessun fetch per i task della root (comportamento invariato).
+    assert!(!git.iter().any(|l| l.starts_with("C:\\p|fetch")), "{git:?}");
+}
+
+#[test]
+fn failed_fetch_warns_and_missing_origin_skips_it() {
+    let (st, h) = multi_repo();
+    h.git_rule("C:\\p\\r1|fetch origin", false, "", "could not resolve host");
+    h.git_rule("C:\\p\\r2|remote get-url origin", false, "", "no such remote");
+    let b = submit(&st, &h, vec![repo_t("a", "r1"), repo_t("b", "r2")]);
+    // Il fetch fallito non blocca l'avvio, ma lascia un avviso nella nota.
+    assert_eq!(task_of(&b, "a")["column"], "running");
+    assert_eq!(task_of(&b, "b")["column"], "running");
+    let full = board_json(&st, &h);
+    let note = task_of(&full, "a")["note"].as_str().unwrap().to_string();
+    assert!(note.contains("start warnings") && note.contains("git fetch origin") && note.contains("could not resolve host"), "{note}");
+    assert!(task_of(&full, "b")["note"].is_null());
+    assert!(!h.git_log().iter().any(|l| l.starts_with("C:\\p\\r2|fetch")), "{:?}", h.git_log());
+}
+
+#[test]
+fn integration_branch_is_created_once_per_repo_and_tasks_start_from_it() {
+    let (st, h) = multi_repo();
+    // Un branch "int" esiste gia' e non e' nostro: si usa il suffisso (le regole si valutano in ordine).
+    h.git_rule("rev-parse --verify --quiet refs/heads/int-2", false, "", "");
+    h.git_rule("C:\\p\\r1|rev-parse --verify --quiet refs/heads/int", true, "", "");
+    let b = call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({
+            "base_branches": {"r1": "master"}, "integration_branch": "int",
+            "max_parallel": 1,
+            "tasks": [repo_t("a", "r1"), {"id": "b", "task": "x", "repo": "r1", "depends_on": ["a"]}]
+        }),
+    )
+    .unwrap();
+    assert_eq!(b["integration_branch"], "int");
+    let git = h.git_log();
+    let ib = "C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\integration -b int-2 master".to_string();
+    assert!(git.contains(&ib), "{git:?}");
+    // Il task parte dall'integrazione (riferimento locale), non da master.
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\a -b task/a int-2".to_string()), "{git:?}");
+    // L'integrazione e' esposta all'orchestratore.
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(g["integrations"]["r1"]["branch"], "int-2");
+    assert_eq!(g["integrations"]["r1"]["path"], "C:\\p\\r1\\.worktrees\\integration");
+    assert_eq!(g["integrations"]["r1"]["base"], "master");
+    // Il dipendente riusa l'integrazione: nessun secondo branch.
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "completed");
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\integration".to_string());
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    let git = h.git_log();
+    assert_eq!(git.iter().filter(|l| l.contains("worktree add") && l.contains("-b int")).count(), 1, "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\b -b task/b int-2".to_string()), "{git:?}");
+    // Mai checkout/switch/push nella cartella principale.
+    assert!(!git.iter().any(|l| l.contains("checkout") || l.contains("switch") || l.contains("push")), "{git:?}");
+    // Persistita nel file della board (sopravvive al riavvio).
+    let saved = st.inner.lock().unwrap().boards["ws-1"].clone();
+    let again = Board::from_json(&serde_json::to_string(&saved).unwrap(), 5).unwrap();
+    assert_eq!(again.integrations["r1"].branch, "int-2");
+    assert_eq!(again.integrations["r1"].path, "C:\\p\\r1\\.worktrees\\integration");
+    // Cambiare il modello scarta le integrazioni, spegnerlo anche.
+    let g = call(&st, &h, ORCH, "set_board", json!({"integration_branch": "other/{date}"})).unwrap();
+    assert_eq!(g["integration_branch"], "other/{date}");
+    assert!(g.get("integrations").is_none());
+    let g = call(&st, &h, ORCH, "set_board", json!({"integration_branch": ""})).unwrap();
+    assert!(g.get("integration_branch").is_none());
+    assert!(call(&st, &h, ORCH, "set_board", json!({"integration_branch": "a b"})).is_err());
+    assert!(call(&st, &h, ORCH, "set_board", json!({})).is_err());
+    // base_branches si fonde: la stringa vuota toglie la voce.
+    let g = call(&st, &h, ORCH, "set_board", json!({"base_branches": {"r2": "main"}})).unwrap();
+    assert_eq!(g["base_branches"], json!({"r1": "master", "r2": "main"}));
+    let g = call(&st, &h, ORCH, "set_board", json!({"base_branches": {"r1": ""}})).unwrap();
+    assert_eq!(g["base_branches"], json!({"r2": "main"}));
+}
+
+#[test]
+fn integration_applies_to_root_tasks_and_expands_the_date() {
+    let (st, h) = st_h();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    call(&st, &h, ORCH, "submit_plan", json!({"integration_branch": "integration/{date}", "tasks": [t("a", &[])]})).unwrap();
+    let git = h.git_log();
+    assert!(
+        git.contains(&format!("C:\\p|worktree add C:\\p\\.worktrees\\integration -b integration/{today} main")),
+        "{git:?}"
+    );
+    assert!(git.contains(&format!("C:\\p|worktree add C:\\p\\.worktrees\\a -b task/a integration/{today}")), "{git:?}");
+    assert!(!git.iter().any(|l| l.contains("fetch")), "{git:?}");
+}
+
+#[test]
+fn repos_are_detected_lazily_and_cached_until_the_board_changes() {
+    let (st, h) = multi_repo();
+    *h.repos.lock().unwrap() = vec!["DDB".to_string(), "r1".to_string()];
+    use std::sync::atomic::Ordering::SeqCst;
+    // Un piano o il dettaglio di un task non scandagliano il disco.
+    submit(&st, &h, vec![json!({"id": "n", "task": "x", "isolation": "none", "held": true})]);
+    call(&st, &h, ORCH, "get_task_details", json!({"id": "n"})).unwrap();
+    assert_eq!(h.list_repos_calls.load(SeqCst), 0);
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(g["repos"], json!(["DDB", "r1"]));
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    call(&st, &h, ORCH, "get_board", json!({"columns": ["done"]})).unwrap();
+    assert_eq!(h.list_repos_calls.load(SeqCst), 1, "in cache");
+    // submit_plan e set_board la invalidano.
+    submit(&st, &h, vec![json!({"id": "m", "task": "x", "isolation": "none", "held": true})]);
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(h.list_repos_calls.load(SeqCst), 2);
+    call(&st, &h, ORCH, "set_board", json!({"paused": true})).unwrap();
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(h.list_repos_calls.load(SeqCst), 3);
+}
+
+#[test]
+fn repo_list_parsing_and_local_detection() {
+    assert_eq!(boards::parse_repo_list("b\n.\n\n a \n../x\nb\n/abs\n"), [".", "a", "b"]);
+    assert!(boards::parse_repo_list("").is_empty());
+    let root = std::env::temp_dir().join(format!("cc-repos-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["r1/.git", "r2", "r3", ".hidden/.git", "node_modules/x"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::write(root.join("r3/.git"), "gitdir: ../elsewhere").unwrap(); // worktree o submodule: file
+    let mut ws = FakeHost::default().ws_for("ws-1").unwrap();
+    ws.path = root.to_string_lossy().into_owned();
+    assert_eq!(boards::detect_repos(&ws).unwrap(), ["r1", "r3"]);
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    assert_eq!(boards::detect_repos(&ws).unwrap(), [".", "r1", "r3"]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- hook per repository: setup e pulizia ---
+
+fn cfg_of(h: &FakeHost, repo: &str, cfg: crate::workspaces::RepoConfig) {
+    h.repo_cfg.lock().unwrap().insert(repo.to_string(), cfg);
+}
+
+fn hooks_of(h: &FakeHost) -> Vec<String> {
+    h.hook_log.lock().unwrap().clone()
+}
+
+fn fail_out(stdout: &str, stderr: &str) -> GitOut {
+    GitOut { ok: false, stdout: stdout.to_string(), stderr: stderr.to_string() }
+}
+
+fn setup_cfg() -> crate::workspaces::RepoConfig {
+    crate::workspaces::RepoConfig {
+        container_root: Some("/var/www/html".to_string()),
+        copy_ignored: vec!["configuration.php".to_string()],
+        setup: vec!["cp -a vendor.src vendor".to_string(), "composer dump-autoload".to_string()],
+        cleanup: vec!["docker exec svc rm -rf cache".to_string()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn setup_runs_in_order_in_the_new_task_and_integration_worktrees() {
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", setup_cfg());
+    h.files.lock().unwrap().push("C:\\p\\r1\\configuration.php".to_string());
+    let b = call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({"integration_branch": "int", "tasks": [repo_t("a", "r1"), repo_t("b", "r2")]}),
+    )
+    .unwrap();
+    assert_eq!(task_of(&b, "a")["column"], "running");
+    let log = hooks_of(&h);
+    let (iw, tw) = ("C:\\p\\r1\\.worktrees\\integration", "C:\\p\\r1\\.worktrees\\a");
+    // Prima l'integrazione, poi il task: copia, poi i comandi in ordine, con cwd = worktree.
+    let pos = |needle: String| log.iter().position(|l| l.starts_with(&needle)).unwrap_or_else(|| panic!("{needle} in {log:?}"));
+    let order = [
+        format!("copy C:\\p\\r1\\configuration.php->{iw}\\configuration.php"),
+        format!("{iw}|cp -a vendor.src vendor|"),
+        format!("{iw}|composer dump-autoload|"),
+        format!("copy C:\\p\\r1\\configuration.php->{tw}\\configuration.php"),
+        format!("{tw}|cp -a vendor.src vendor|"),
+        format!("{tw}|composer dump-autoload|"),
+    ];
+    let idx: Vec<usize> = order.iter().cloned().map(pos).collect();
+    assert!(idx.windows(2).all(|w| w[0] < w[1]), "{idx:?} {log:?}");
+    // Variabili.
+    let step = log.iter().find(|l| l.starts_with(&order[5])).unwrap();
+    for v in [
+        "REPO=C:\\p\\r1",
+        &format!("WORKTREE={tw}"),
+        "TASK_ID=a",
+        "BRANCH=task/a",
+        "BASE=int",
+        "CONTAINER_WORKTREE=/var/www/html/.worktrees/a",
+    ] {
+        assert!(step.contains(v), "{v} in {step}");
+    }
+    let istep = log.iter().find(|l| l.starts_with(&order[2])).unwrap();
+    assert!(
+        istep.contains("TASK_ID=integration")
+            && istep.contains("BRANCH=int")
+            && istep.contains("CONTAINER_WORKTREE=/var/www/html/.worktrees/integration"),
+        "{istep}"
+    );
+    // Il repo senza configurazione non esegue nulla; l'integrazione si prepara una sola volta.
+    assert!(!log.iter().any(|l| l.contains("r2")), "{log:?}");
+    assert_eq!(log.iter().filter(|l| l.contains("|composer dump-autoload|")).count(), 2, "{log:?}");
+    // Fatto: registrato nel task e nell'integrazione; il worker lo sa.
+    let a = task_of(&board_json(&st, &h), "a");
+    assert_eq!(a["worktree"]["setup_done"], true);
+    assert!(a.get("preparing").is_none());
+    let w = session_of(&st, &h, "a");
+    let env = call(&st, &h, &w, "get_task", json!({})).unwrap()["environment"].as_str().unwrap().to_string();
+    assert!(env.contains("already prepared") && env.contains("composer dump-autoload") && env.contains("/var/www/html"), "{env}");
+    let saved = st.inner.lock().unwrap().boards["ws-1"].clone();
+    assert!(saved.integrations["r1"].setup_done);
+}
+
+#[test]
+fn setup_is_not_rerun_on_reuse_after_success_but_is_after_a_failed_one() {
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", setup_cfg());
+    submit(&st, &h, vec![repo_t("a", "r1")]);
+    let count = |h: &FakeHost| hooks_of(h).iter().filter(|l| l.contains("|composer dump-autoload|")).count();
+    assert_eq!(count(&h), 1);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "failed");
+    // Riuso del worktree dopo un setup riuscito: niente di nuovo.
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\a".to_string());
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "queued"})).unwrap();
+    assert_eq!(count(&h), 1);
+    assert_eq!(h.spawns().len(), 2);
+
+    // Setup fallito al secondo passo: l'avvio fallisce nominando il passo, con la coda dell'output.
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", setup_cfg());
+    h.hook_rules
+        .lock()
+        .unwrap()
+        .push(("composer dump-autoload".to_string(), fail_out("Generating autoload", "Could not open input file: composer.json")));
+    submit(&st, &h, vec![repo_t("a", "r1")]);
+    let a = task_of(&board_json(&st, &h), "a");
+    assert_eq!(a["status"], "failed");
+    let note = a["note"].as_str().unwrap();
+    assert!(note.contains("setup 2/2") && note.contains("composer dump-autoload") && note.contains("Could not open input file"), "{note}");
+    assert!(note.contains("'r1'"), "{note}");
+    assert!(h.spawns().is_empty());
+    assert!(kinds_of(&events(&st, &h, ORCH)).contains(&"start_failed".to_string()));
+    // Il worktree e' rimasto, registrato come non preparato.
+    assert_eq!(a["worktree"]["setup_done"], false);
+    assert!(a.get("preparing").is_none());
+    assert_eq!(count(&h), 1);
+    // Retry con il worktree ancora li': il setup si rifa e questa volta riesce.
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\a".to_string());
+    h.hook_rules.lock().unwrap().clear();
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "queued"})).unwrap();
+    assert_eq!(count(&h), 2);
+    assert_eq!(h.spawns().len(), 1);
+    assert_eq!(task_of(&board_json(&st, &h), "a")["worktree"]["setup_done"], true);
+    // Un secondo retry non lo rifa.
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "failed");
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "queued"})).unwrap();
+    assert_eq!(count(&h), 2);
+}
+
+#[test]
+fn a_failing_integration_setup_fails_the_start_and_is_retried_later() {
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", setup_cfg());
+    // La riga delle regole e' "<cwd>|<comando>": il cwd dell'integrazione.
+    h.hook_rules.lock().unwrap().push(("integration|cp -a".to_string(), fail_out("", "boom")));
+    call(&st, &h, ORCH, "submit_plan", json!({"integration_branch": "int", "tasks": [repo_t("a", "r1")]})).unwrap();
+    let b = board_json(&st, &h);
+    let note = task_of(&b, "a")["note"].as_str().unwrap().to_string();
+    assert!(note.contains("integration worktree") && note.contains("setup 1/2") && note.contains("boom"), "{note}");
+    assert!(!st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].setup_done);
+    // Niente worktree del task: non si e' arrivati a crearlo.
+    assert!(!h.git_log().iter().any(|l| l.contains("worktree add C:\\p\\r1\\.worktrees\\a")), "{:?}", h.git_log());
+    // Retry con l'integrazione esistente: il suo setup si ripete e poi il task parte.
+    h.hook_rules.lock().unwrap().clear();
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\integration".to_string());
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "queued"})).unwrap();
+    assert_eq!(h.spawns().len(), 1);
+    assert!(st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].setup_done);
+    let runs = hooks_of(&h).iter().filter(|l| l.contains("integration|composer dump-autoload|")).count();
+    assert_eq!(runs, 1);
+}
+
+#[test]
+fn copy_ignored_copies_only_ignored_existing_paths_and_warns_about_the_rest() {
+    let (st, h) = multi_repo();
+    let mut cfg = setup_cfg();
+    cfg.setup.clear();
+    cfg.copy_ignored = vec!["configuration.php".into(), "tracked.txt".into(), "missing.env".into(), "public/api/.env".into()];
+    cfg_of(&h, "r1", cfg);
+    h.git_rule("r1|check-ignore -q -- tracked.txt", false, "", "");
+    h.files.lock().unwrap().extend(
+        ["configuration.php", "tracked.txt", "public/api/.env"].map(|f| format!("C:\\p\\r1\\{}", f.replace('/', "\\"))),
+    );
+    let b = submit(&st, &h, vec![repo_t("a", "r1")]);
+    let copies: Vec<String> = hooks_of(&h).into_iter().filter(|l| l.starts_with("copy ")).collect();
+    assert_eq!(
+        copies,
+        [
+            "copy C:\\p\\r1\\configuration.php->C:\\p\\r1\\.worktrees\\a\\configuration.php",
+            "copy C:\\p\\r1\\public\\api\\.env->C:\\p\\r1\\.worktrees\\a\\public\\api\\.env",
+        ]
+    );
+    assert_eq!(task_of(&b, "a")["column"], "running");
+    let note = task_of(&board_json(&st, &h), "a")["note"].as_str().unwrap().to_string();
+    assert!(note.starts_with("start warnings:"), "{note}");
+    assert!(note.contains("tracked.txt not copied") && note.contains("missing.env not copied"), "{note}");
+}
+
+#[test]
+fn cleanup_commands_run_before_worktree_remove_and_never_block_done() {
+    let (st, h) = multi_repo();
+    let mut cfg = setup_cfg();
+    cfg.remove_force = true;
+    cfg.cleanup.push("echo second".to_string());
+    cfg_of(&h, "r1", cfg);
+    submit(&st, &h, vec![repo_t("a", "r1")]);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "completed");
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\a".to_string());
+    h.hook_rules.lock().unwrap().push(("docker exec svc".to_string(), fail_out("", "no such container")));
+    let r = call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    assert_eq!(r["task"]["status"], "done");
+    let git = h.git_log();
+    let at = |needle: &str| git.iter().position(|l| l == needle).unwrap_or_else(|| panic!("{needle} in {git:?}"));
+    let remove = at("C:\\p\\r1|worktree remove --force C:\\p\\r1\\.worktrees\\a");
+    assert!(at("hook|docker exec svc rm -rf cache") < at("hook|echo second"));
+    assert!(at("hook|echo second") < remove);
+    assert!(remove < at("C:\\p\\r1|branch -d task/a"));
+    // Cwd e variabili dei comandi di pulizia.
+    let line = hooks_of(&h).into_iter().find(|l| l.contains("|echo second|")).unwrap();
+    assert!(line.starts_with("C:\\p\\r1\\.worktrees\\a|") && line.contains("TASK_ID=a") && line.contains("BRANCH=task/a"), "{line}");
+    // Il fallimento del primo comando e' un avviso, non un blocco.
+    let warn = r["warnings"][0].as_str().unwrap();
+    assert!(warn.contains("cleanup 1/2") && warn.contains("no such container"), "{r}");
+}
+
+#[test]
+fn worktree_remove_is_not_forced_by_default() {
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", crate::workspaces::RepoConfig { cleanup: vec!["true".into()], ..Default::default() });
+    submit(&st, &h, vec![repo_t("a", "r1")]);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "completed");
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\a".to_string());
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    assert!(h.git_log().contains(&"C:\\p\\r1|worktree remove C:\\p\\r1\\.worktrees\\a".to_string()), "{:?}", h.git_log());
+    assert_eq!(hooks_of(&h).len(), 1);
+}
+
+#[test]
+fn base_branch_from_workspace_settings_sits_between_board_and_origin_default() {
+    let (st, h) = multi_repo();
+    h.git_rule("C:\\p\\r1|symbolic-ref", true, "origin/main\n", "");
+    h.git_rule("C:\\p\\r2|symbolic-ref", true, "origin/main\n", "");
+    cfg_of(&h, "r1", crate::workspaces::RepoConfig { base_branch: Some("develop".into()), ..Default::default() });
+    cfg_of(&h, "r2", crate::workspaces::RepoConfig { base_branch: Some("develop".into()), ..Default::default() });
+    call(
+        &st,
+        &h,
+        ORCH,
+        "submit_plan",
+        json!({
+            "base_branches": {"r2": "release"},
+            "tasks": [repo_t("a", "r1"), repo_t("b", "r2"), {"id": "c", "task": "x", "repo": "r1", "base_branch": "hot"}]
+        }),
+    )
+    .unwrap();
+    let git = h.git_log();
+    // Impostazione del workspace al posto del default di origin; la board vince su di essa; il task su tutto.
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\a -b task/a develop".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r2|worktree add C:\\p\\r2\\.worktrees\\b -b task/b release".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\c -b task/c hot".to_string()), "{git:?}");
+}
+
+#[test]
+fn watchdog_waits_for_a_step_in_progress_but_not_forever() {
+    let (st, h) = st_h();
+    let new_board = || {
+        let plan = board::parse_plan(&json!({"tasks": [{"id": "a", "task": "do a"}]})).unwrap();
+        let mut b = Board::new("ws-1");
+        b.add_plan(plan.specs, PermissionMode::AcceptEdits, 1).unwrap();
+        b.start_task("a", 1_000);
+        b
+    };
+    let mut b = new_board();
+    let attempt = b.task("a").unwrap().attempts;
+    // Un passo di setup parte dopo 4 minuti: i 5 minuti dell'avvio non contano piu'.
+    assert!(b.touch_preparing("a", attempt, Some("setup 1/2: composer install"), 1_000 + 4 * 60_000));
+    st.run(&h, |r| r.load_board(b));
+    st.run(&h, |r| r.watchdog(1_000 + 9 * 60_000));
+    let a = task_of(&board_json(&st, &h), "a");
+    assert_eq!(a["status"], "running");
+    assert_eq!(a["preparing"], "setup 1/2: composer install");
+    // Un passo senza battiti oltre il suo tetto: un thread morto si scopre.
+    st.run(&h, |r| r.watchdog(1_000 + 4 * 60_000 + boards::PREPARING_TIMEOUT_MS + 1));
+    assert_eq!(task_of(&board_json(&st, &h), "a")["status"], "failed");
+    // A passo finito il tempo riparte da li' (5 minuti per il resto dell'avvio).
+    let mut b = new_board();
+    let attempt = b.task("a").unwrap().attempts;
+    b.touch_preparing("a", attempt, Some("setup"), 2_000);
+    b.clear_preparing("a", attempt, 20 * 60_000);
+    st.run(&h, |r| r.load_board(b));
+    st.run(&h, |r| r.watchdog(20 * 60_000 + 60_000));
+    assert_eq!(task_of(&board_json(&st, &h), "a")["status"], "running");
+    st.run(&h, |r| r.watchdog(20 * 60_000 + boards::START_TIMEOUT_MS + 1));
+    assert_eq!(task_of(&board_json(&st, &h), "a")["status"], "failed");
 }

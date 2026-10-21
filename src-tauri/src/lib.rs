@@ -10,6 +10,7 @@ pub mod schedule;
 mod session;
 mod toast;
 pub mod updater;
+mod worker_permissions;
 mod workspaces;
 mod wsl;
 
@@ -126,6 +127,9 @@ pub fn run() {
             workspaces::rename_workspace,
             workspaces::set_worker_permission,
             workspaces::set_worker_model,
+            workspaces::set_worker_permission_rules,
+            workspaces::set_worker_rules,
+            workspaces::set_repo_config,
             workspaces::set_worktree_setup,
             workspaces::set_auto_orchestrate,
             workspaces::remove_workspace,
@@ -150,6 +154,7 @@ pub fn run() {
             automation::automation_sessions,
             automation::board_get,
             automation::board_set,
+            automation::workspace_detect_repos,
             automation::board_task_action,
             automation::board_task_set_model,
             automation::auto::schedule_get,

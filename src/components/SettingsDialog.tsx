@@ -13,6 +13,7 @@ import ScheduleSettings from "./ScheduleSettings";
 import GeneralLaunchesPage from "./settings/GeneralLaunchesPage";
 import WorkspaceLaunchesPage from "./settings/WorkspaceLaunchesPage";
 import WorkerPage from "./settings/WorkerPage";
+import RepoPage from "./settings/RepoPage";
 import OrchestratorPage from "./settings/OrchestratorPage";
 import WorkflowPage from "./settings/WorkflowPage";
 import { SettingsPage, selectClass } from "./settings/shared";
@@ -26,6 +27,7 @@ export type SettingsTab =
   | "updates"
   | "launches"
   | "worker"
+  | "repos"
   | "orchestrator"
   | "workflow";
 
@@ -41,6 +43,7 @@ const GENERAL_TABS: { id: SettingsTab; label: string }[] = [
 const WORKSPACE_TABS: { id: SettingsTab; label: string }[] = [
   { id: "launches", label: "Avvii" },
   { id: "worker", label: "Worker" },
+  { id: "repos", label: "Repository" },
   { id: "orchestrator", label: "Orchestratore" },
   { id: "workflow", label: "Workflow" },
 ];
@@ -204,6 +207,8 @@ export default function SettingsDialog({
         );
       case "worker":
         return <WorkerPage workspace={selected} onWorkspaceUpdated={onWorkspaceUpdated} />;
+      case "repos":
+        return <RepoPage workspace={selected} onWorkspaceUpdated={onWorkspaceUpdated} />;
       case "orchestrator":
         return (
           <OrchestratorPage

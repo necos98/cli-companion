@@ -42,13 +42,22 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const NOTIFY_PORT: u16 = 17421;
 /// Eventi accettati sul socket e in --notify: `test` e' il self-test, gli
 /// altri arrivano dagli hook dei coding agent (vedi `agents/`).
-const KNOWN_EVENTS: [&str; 5] = [
+const KNOWN_EVENTS: [&str; 6] = [
     "test",
     "session-start",
     "session-end",
     "finished",
     "needs-input",
+    "permission-request",
 ];
+/// Evento dell'hook `PermissionRequest`: il backend lo converte in
+/// `needs-input` con il dettaglio di cosa aspetta il permesso.
+const PERMISSION_REQUEST: &str = "permission-request";
+/// Lunghezza massima del riassunto di `tool_input` (comando, path).
+const TOOL_SUMMARY_MAX_CHARS: usize = 200;
+/// Dopo un `permission-request` il `permission_prompt` del Notification hook
+/// (arriva dopo ~6 s) per lo stesso tab e' un duplicato.
+const PERMISSION_DEDUPE: Duration = Duration::from_secs(60);
 /// Variabile d'ambiente impostata dal pty con l'id del tab: gli hook la
 /// ereditano (anche da WSL, via WSLENV) e cosi' l'evento si lega al tab.
 pub const SESSION_ENV: &str = "CLI_COMPANION_SESSION";
@@ -98,6 +107,9 @@ pub struct NotifyPayload {
     /// Linux/WSL): serve al frontend per leggere i consumi di token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    /// Solo `permission-request`: tool che aspetta il permesso (es. `Bash`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
 /// Risposta del listener a una notifica: `{}` oppure `{"block":"<motivo>"}`.
@@ -183,6 +195,33 @@ pub struct HookInput {
     pub stop_hook_active: Option<bool>,
     pub background_work: Option<u32>,
     pub transcript_path: Option<String>,
+    pub tool_name: Option<String>,
+    /// Riassunto breve di `tool_input` (comando di Bash, path dei tool di file, URL).
+    pub tool_summary: Option<String>,
+}
+
+/// Riassunto di `tool_input` di un tool: il comando di Bash/PowerShell, il
+/// path dei tool di file, l'URL di WebFetch; altrimenti `None`.
+fn tool_summary(tool: &str, input: &Value) -> Option<String> {
+    let key = match tool {
+        "Bash" | "PowerShell" => "command",
+        "Edit" | "Write" | "MultiEdit" | "Read" => "file_path",
+        "NotebookEdit" => "notebook_path",
+        "WebFetch" => "url",
+        _ => return None,
+    };
+    let raw = input.get(key)?.as_str()?;
+    // Una riga sola: il comando puo' avere a capo.
+    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    clip(&one_line, TOOL_SUMMARY_MAX_CHARS)
+}
+
+/// Testo di `needs_input` per un permesso richiesto.
+pub fn permission_text(tool: &str, summary: Option<&str>) -> String {
+    match summary {
+        Some(s) => format!("Permesso richiesto: {tool} \u{2014} {s}"),
+        None => format!("Permesso richiesto: {tool}"),
+    }
 }
 
 pub fn is_known_event(event: &str) -> bool {
@@ -254,7 +293,13 @@ pub fn parse_hook_stdin(raw: &str) -> HookInput {
         return HookInput::default();
     };
     let field = |k: &str, max: usize| v.get(k).and_then(|x| x.as_str()).and_then(|s| clip(s, max));
+    let tool_name = field("tool_name", FIELD_MAX_CHARS);
+    let tool_summary = tool_name
+        .as_deref()
+        .and_then(|t| tool_summary(t, v.get("tool_input").unwrap_or(&Value::Null)));
     HookInput {
+        tool_name,
+        tool_summary,
         agent_session_id: field("session_id", FIELD_MAX_CHARS),
         notification_type: field("notification_type", FIELD_MAX_CHARS),
         message: field("message", MESSAGE_MAX_CHARS),
@@ -272,13 +317,19 @@ pub fn build_payload(
     stdin_raw: Option<&str>,
 ) -> NotifyPayload {
     let input = stdin_raw.map(parse_hook_stdin).unwrap_or_default();
+    let message = if event == PERMISSION_REQUEST {
+        input.tool_name.as_deref().map(|t| permission_text(t, input.tool_summary.as_deref()))
+    } else {
+        input.message
+    };
     NotifyPayload {
+        tool_name: input.tool_name,
         event: event.to_string(),
         agent: agent.to_string(),
         tab_id: tab_id.filter(|t| is_valid_tab_id(t)).map(str::to_string),
         agent_session_id: input.agent_session_id,
         notification_type: input.notification_type,
-        message: input.message,
+        message,
         token: None,
         stop_hook_active: input.stop_hook_active,
         background_work: input.background_work,
@@ -492,6 +543,29 @@ fn is_paused_stop(payload: &NotifyPayload, blocked: bool) -> bool {
     payload.event == "finished" && (blocked || payload.background_work.unwrap_or(0) > 0)
 }
 
+/// Tab con un `permission-request` recente (per scartare il duplicato).
+#[derive(Default)]
+struct RecentPermissions(std::collections::HashMap<String, std::time::Instant>);
+
+impl RecentPermissions {
+    fn note(&mut self, tab: Option<&str>) {
+        let Some(tab) = tab else { return };
+        if self.0.len() > 256 {
+            self.0.clear();
+        }
+        self.0.insert(tab.to_string(), std::time::Instant::now());
+    }
+
+    fn seen(&self, tab: Option<&str>) -> bool {
+        tab.and_then(|t| self.0.get(t)).is_some_and(|at| at.elapsed() < PERMISSION_DEDUPE)
+    }
+}
+
+fn recent_permission_requests() -> &'static std::sync::Mutex<RecentPermissions> {
+    static R: std::sync::OnceLock<std::sync::Mutex<RecentPermissions>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
 fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
     serve_conn(
         stream,
@@ -500,6 +574,19 @@ fn handle_conn(stream: &mut TcpStream, app: &AppHandle) -> Result<(), String> {
             // Il token resta nel backend: al frontend non deve arrivare.
             let token_ok = crate::automation::token_matches(payload.token.as_deref());
             payload.token = None;
+            let mut payload = payload;
+            if payload.event == PERMISSION_REQUEST {
+                // Per il resto dell'app e' un `needs-input` con il dettaglio.
+                payload.event = "needs-input".to_string();
+                payload.notification_type = Some("permission_prompt".to_string());
+                recent_permission_requests().lock().unwrap().note(payload.tab_id.as_deref());
+            } else if payload.event == "needs-input"
+                && payload.notification_type.as_deref() == Some("permission_prompt")
+                && recent_permission_requests().lock().unwrap().seen(payload.tab_id.as_deref())
+            {
+                // Gia' segnalato con il dettaglio da `permission-request`.
+                return Ok(NotifyReply::default());
+            }
             let block = if token_ok {
                 crate::automation::on_hook_event(app, &payload)
             } else {
@@ -572,6 +659,51 @@ mod tests {
 
     fn sample(event: &str) -> NotifyPayload {
         build_payload(event, "claude-code", Some("tab-1"), None)
+    }
+
+    #[test]
+    fn permission_request_stdin_carries_tool_and_summary() {
+        let raw = r#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Bash",
+            "tool_input":{"command":"docker exec freud-manager\n  composer dump-autoload","description":"x"}}"#;
+        let i = parse_hook_stdin(raw);
+        assert_eq!(i.tool_name.as_deref(), Some("Bash"));
+        assert_eq!(i.tool_summary.as_deref(), Some("docker exec freud-manager composer dump-autoload"));
+        let p = build_payload("permission-request", "claude-code", Some("tab-1"), Some(raw));
+        assert!(is_known_event(&p.event));
+        assert_eq!(p.tool_name.as_deref(), Some("Bash"));
+        assert_eq!(
+            p.message.as_deref(),
+            Some("Permesso richiesto: Bash \u{2014} docker exec freud-manager composer dump-autoload")
+        );
+        // Il payload sopravvive al giro sul socket.
+        assert_eq!(parse_line(&build_line(&p).unwrap()).unwrap(), p);
+    }
+
+    #[test]
+    fn tool_summary_by_tool_and_clipped() {
+        let s = |tool: &str, input: serde_json::Value| tool_summary(tool, &input);
+        assert_eq!(s("Edit", serde_json::json!({"file_path":"/a/b.rs"})).as_deref(), Some("/a/b.rs"));
+        assert_eq!(s("Write", serde_json::json!({"file_path":"C:\\a.txt"})).as_deref(), Some("C:\\a.txt"));
+        assert_eq!(s("WebFetch", serde_json::json!({"url":"https://x.dev"})).as_deref(), Some("https://x.dev"));
+        assert_eq!(s("Task", serde_json::json!({"prompt":"x"})), None);
+        assert_eq!(s("Bash", serde_json::json!({})), None);
+        let long = "x".repeat(500);
+        assert_eq!(s("Bash", serde_json::json!({"command": long})).unwrap().chars().count(), TOOL_SUMMARY_MAX_CHARS);
+        // Tool senza riassunto: solo il nome; stdin senza tool_name: nessun messaggio.
+        assert_eq!(permission_text("Task", None), "Permesso richiesto: Task");
+        let p = build_payload("permission-request", "claude-code", Some("t"), Some(r#"{"tool_name":"Task","tool_input":{}}"#));
+        assert_eq!(p.message.as_deref(), Some("Permesso richiesto: Task"));
+        assert_eq!(build_payload("permission-request", "claude-code", Some("t"), None).message, None);
+    }
+
+    #[test]
+    fn recent_permission_requests_dedupe_per_tab() {
+        let mut r = RecentPermissions::default();
+        assert!(!r.seen(Some("t1")));
+        r.note(Some("t1"));
+        assert!(r.seen(Some("t1")));
+        assert!(!r.seen(Some("t2")));
+        assert!(!r.seen(None));
     }
 
     #[test]

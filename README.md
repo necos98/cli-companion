@@ -301,3 +301,29 @@ L'identifier dell'app è ora `cli-companion`: i dati stanno in
   per ogni ambiente, dopodiché puoi cancellare
   `%APPDATA%\com.jmagarelli.cli-companion` e
   `%LOCALAPPDATA%\com.jmagarelli.cli-companion`.
+
+## Workspace con più repository (v0.10.0)
+
+La board funziona anche quando la radice del workspace non è un repository git
+ma contiene più repository:
+
+- **repository per task**: il campo `repo` di un task (percorso relativo alla
+  radice) fa creare worktree e branch dentro quel repository; il branch base si
+  sceglie per repository (`base_branches` della board, **Impostazioni →
+  Repository**, `origin/HEAD`) e si parte da `origin/<base>` dopo un `git fetch`;
+- **branch di integrazione**: con `integration_branch` (es. `jm-{date}`) l'app
+  crea per ogni repository il worktree `.worktrees/integration` e i task partono
+  da lì; il push resta all'orchestratore;
+- **hook per repository** (**Impostazioni → Repository**): file ignorati da
+  copiare, comandi di setup dopo la creazione del worktree e di pulizia prima
+  della rimozione (anche con `--force`), con `$WORKTREE`, `$CONTAINER_WORKTREE`
+  e le altre variabili;
+- **comandi pre-approvati** per i worker Claude Code (**Impostazioni → Worker**),
+  passati con `--settings`; quando un worker chiede un permesso l'evento dice
+  quale comando aspetta;
+- **regole per i worker**, inviate a ogni worker; **nota per l'orchestratore**
+  mai inviata al worker; un task in coda può essere chiuso come completato
+  fuori board (con una nota).
+
+Il plugin dell'agente cambia (nuovo hook dei permessi): reinstallalo da
+**Impostazioni → Coding agent**.

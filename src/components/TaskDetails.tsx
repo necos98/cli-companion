@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import {
   ACTION_LABELS,
+  EXTERNAL_LABEL,
   allowedActions,
   canEditModel,
   canOpenTerminal,
@@ -92,8 +93,14 @@ export default function TaskDetails({
             <span className={columnTextClass(task.column)}>{columnLabel(task.column)}</span>
             {sub && <span className={sub.className}>· {sub.text}</span>}
             {task.held && <span className="text-status-attention">· In pausa</span>}
+            {task.external && <span className="text-muted-foreground">· {EXTERNAL_LABEL}</span>}
             <span className="text-muted-foreground">· tentativi {task.attempts}</span>
           </p>
+          {task.status === "running" && task.preparing && (
+            <p className="mt-1 break-words font-mono text-[11px] text-muted-foreground" title={task.preparing}>
+              {task.preparing}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -135,8 +142,20 @@ export default function TaskDetails({
         </div>
 
         {task.note && (
-          <Section title="Nota">
-            <p className="whitespace-pre-wrap break-words text-status-attention">{task.note}</p>
+          <Section title={task.external ? EXTERNAL_LABEL : "Nota"}>
+            <p
+              className={cn(
+                "whitespace-pre-wrap break-words",
+                task.external ? "text-text-secondary" : "text-status-attention",
+              )}
+            >
+              {task.note}
+            </p>
+          </Section>
+        )}
+        {task.orchestrator_note && (
+          <Section title="Nota per l'orchestratore">
+            <p className="whitespace-pre-wrap break-words text-text-secondary">{task.orchestrator_note}</p>
           </Section>
         )}
 
@@ -149,6 +168,11 @@ export default function TaskDetails({
         {task.depends_on.length > 0 && (
           <Section title="Dipendenze">
             <Chips items={task.depends_on} />
+          </Section>
+        )}
+        {task.repo && !task.worktree && (
+          <Section title="Repository">
+            <p className="break-all font-mono text-[11px]">{task.repo}</p>
           </Section>
         )}
         {task.touches.length > 0 && (
@@ -226,6 +250,12 @@ export default function TaskDetails({
         {task.worktree && (
           <Section title="Worktree">
             <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px]">
+              {task.repo && (
+                <>
+                  <dt className="text-muted-foreground">Repository</dt>
+                  <dd className="break-all font-mono">{task.repo}</dd>
+                </>
+              )}
               <dt className="text-muted-foreground">Branch</dt>
               <dd className="break-all font-mono">{task.worktree.branch}</dd>
               <dt className="text-muted-foreground">Base</dt>

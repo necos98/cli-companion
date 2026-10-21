@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, ReactFlow } from "@xyflow/react";
 import type { Edge, ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Loader2, Minus, Moon, Pause, Play, Plus } from "lucide-react";
+import { GitBranch, Loader2, Minus, Moon, Pause, Play, Plus } from "lucide-react";
 import { Button } from "./ui/button";
 import TaskDetails from "./TaskDetails";
 import TaskNode from "./TaskNode";
@@ -16,6 +16,7 @@ import {
   MAX_PARALLEL_MIN,
   clampMaxParallel,
   columnCounts,
+  heldCount,
   columnDotClass,
   columnHex,
   columnLabel,
@@ -137,11 +138,21 @@ export default function BoardView({
 
   const prog = progress(tasks);
   const counts = columnCounts(tasks);
+  const held = heldCount(tasks);
   const maxParallel = board?.max_parallel ?? 3;
   const paused = board?.paused ?? false;
   const shownError = error ?? loadError;
   const badge = automationBadgeText(board?.automation);
   const tone = automationBadgeTone(board?.automation);
+  // Branch di integrazione gestiti dalla board (repo → branch), in un tooltip.
+  const integrations = useMemo(() => {
+    const entries = Object.entries(board?.integrations ?? {});
+    if (entries.length === 0) return null;
+    return {
+      count: entries.length,
+      title: entries.map(([repo, i]) => `${repo === "." ? "(root)" : repo} → ${i.branch}\n${i.path}`).join("\n"),
+    };
+  }, [board?.integrations]);
 
   return (
     <div className="flex h-full w-full flex-col bg-pane-area">
@@ -203,6 +214,17 @@ export default function BoardView({
         </Button>
         {paused && <span className="text-[11px] text-status-attention">Board in pausa</span>}
 
+        {integrations && (
+          <span
+            title={integrations.title}
+            className="flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground"
+          >
+            <GitBranch className="h-3 w-3" />
+            Integrazione
+            <span className="font-mono text-faint">{integrations.count}</span>
+          </span>
+        )}
+
         {badge && (
           <span
             title="Workspace con orchestratore automatico (Impostazioni › Fasce orarie)"
@@ -222,6 +244,11 @@ export default function BoardView({
               <span className={cn("h-2 w-2 rounded-full", columnDotClass(c))} />
               {columnLabel(c)}
               {counts[c] > 0 && <span className="font-mono text-faint">{counts[c]}</span>}
+              {c === "ready" && held > 0 && (
+                <span className="text-status-attention" title="Task trattenuti: non partono finché non vengono rilasciati">
+                  · {held} in pausa
+                </span>
+              )}
             </li>
           ))}
         </ul>

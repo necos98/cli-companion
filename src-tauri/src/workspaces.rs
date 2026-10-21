@@ -1,5 +1,6 @@
 use crate::agents::PermissionMode;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
@@ -8,6 +9,11 @@ use tauri::{AppHandle, Manager, State};
 pub const MAX_LAUNCH_NAME_LEN: usize = 80;
 /// Lunghezza massima del comando di un avvio (in caratteri).
 pub const MAX_COMMAND_LEN: usize = 1000;
+pub const MAX_RULES_LEN: usize = 4000;
+/// Limiti di `RepoConfig`: voci per elenco, lunghezza di un comando e di un percorso.
+pub const MAX_REPO_COMMANDS: usize = 30;
+pub const MAX_REPO_COMMAND_LEN: usize = 2000;
+const MAX_REPO_PATH_LEN: usize = 300;
 
 /// Avvio personalizzato di un workspace: comando eseguito all'apertura di un
 /// nuovo terminale.
@@ -51,6 +57,12 @@ pub struct Workspace {
     /// vale quando ne' il task ne' `spawn_session` ne indicano uno.
     #[serde(default)]
     pub worker_model: Option<String>,
+    /// Regole di permesso Claude Code pre-approvate / vietate per i worker
+    /// (es. `Bash(git:*)`), passate con `claude --settings` (vedi `worker_permissions`).
+    #[serde(default)]
+    pub worker_allow: Vec<String>,
+    #[serde(default)]
+    pub worker_deny: Vec<String>,
     /// Orchestratore automatico nelle finestre di esecuzione (vedi `schedule`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_orchestrate: Option<AutoOrchestrate>,
@@ -59,6 +71,117 @@ pub struct Workspace {
     /// workspace o di uno integrato (`builtin:...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_launch: Option<String>,
+    /// Regole per i worker automatici (test vietati, comandi da non lanciare):
+    /// `get_task` le accoda alle istruzioni di ogni worker, di board o ad-hoc.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub worker_rules: String,
+    /// Configurazione per repository (chiave = cartella relativa alla root,
+    /// "." = la root): branch base, file ignorati da copiare e comandi di
+    /// setup / pulizia dei worktree, eseguiti dall'app.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repos: BTreeMap<String, RepoConfig>,
+}
+
+/// Preparazione e pulizia dei worktree di un repository (vedi docs/BOARD.MD).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RepoConfig {
+    /// Branch base dei task del repository (dopo `base_branches` della board).
+    pub base_branch: Option<String>,
+    /// Dove il repository e' montato in un container (es. `/var/www/html`):
+    /// ne deriva `$CONTAINER_WORKTREE`.
+    pub container_root: Option<String>,
+    /// Percorsi (relativi al repository) ignorati da git da copiare nel
+    /// worktree appena creato.
+    pub copy_ignored: Vec<String>,
+    /// Comandi eseguiti nel worktree appena creato, in ordine.
+    pub setup: Vec<String>,
+    /// Comandi eseguiti nel worktree prima di rimuoverlo.
+    pub cleanup: Vec<String>,
+    /// `git worktree remove --force`.
+    pub remove_force: bool,
+}
+
+impl RepoConfig {
+    /// Alla creazione del worktree c'e' qualcosa da fare?
+    pub fn has_setup(&self) -> bool {
+        !self.copy_ignored.is_empty() || !self.setup.is_empty()
+    }
+
+    /// Normalizza e valida: branch valido, percorsi relativi senza `..`,
+    /// comandi non vuoti su una riga sola.
+    pub fn normalized(mut self) -> Result<RepoConfig, String> {
+        self.base_branch = match self.base_branch.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()) {
+            Some(b) if crate::board::valid_branch(&b) => Some(b),
+            Some(b) => return Err(format!("branch base non valido: {b}")),
+            None => None,
+        };
+        self.container_root = match self.container_root.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) {
+            Some(c) if c.chars().count() > MAX_REPO_PATH_LEN || c.chars().any(char::is_control) => {
+                return Err("percorso nel container non valido".to_string())
+            }
+            Some(c) => Some(c.trim_end_matches('/').to_string()),
+            None => None,
+        };
+        let mut copy: Vec<String> = Vec::new();
+        for raw in &self.copy_ignored {
+            let t = raw.trim().replace('\\', "/");
+            if t.is_empty() {
+                continue;
+            }
+            let b = t.as_bytes();
+            if t.starts_with('/') || (b.len() >= 2 && b[1] == b':') {
+                return Err(format!("il percorso da copiare deve essere relativo al repository: {t}"));
+            }
+            if t.chars().count() > MAX_REPO_PATH_LEN || t.chars().any(char::is_control) {
+                return Err(format!("percorso da copiare non valido: {}", t.chars().take(40).collect::<String>()));
+            }
+            let segs: Vec<&str> = t.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+            if segs.is_empty() || segs.contains(&"..") {
+                return Err(format!("percorso da copiare non valido (niente '..' ne' la radice): {t}"));
+            }
+            let norm = segs.join("/");
+            if !copy.contains(&norm) {
+                copy.push(norm);
+            }
+        }
+        if copy.len() > MAX_REPO_COMMANDS {
+            return Err(format!("troppi percorsi da copiare (max {MAX_REPO_COMMANDS})"));
+        }
+        self.copy_ignored = copy;
+        self.setup = normalize_commands(&self.setup, "setup")?;
+        self.cleanup = normalize_commands(&self.cleanup, "pulizia")?;
+        Ok(self)
+    }
+}
+
+/// Elenco di comandi: trim, righe vuote scartate; ciascuno su una riga, al
+/// massimo `MAX_REPO_COMMAND_LEN` caratteri, al massimo `MAX_REPO_COMMANDS`.
+fn normalize_commands(list: &[String], what: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for raw in list {
+        let c = raw.trim();
+        if c.is_empty() {
+            continue;
+        }
+        if c.chars().any(|ch| ch.is_control() && ch != '\t') {
+            return Err(format!("il comando di {what} deve stare su una riga: {}", c.chars().take(40).collect::<String>()));
+        }
+        if c.chars().count() > MAX_REPO_COMMAND_LEN {
+            return Err(format!("comando di {what} troppo lungo (max {MAX_REPO_COMMAND_LEN} caratteri)"));
+        }
+        out.push(c.to_string());
+    }
+    if out.len() > MAX_REPO_COMMANDS {
+        return Err(format!("troppi comandi di {what} (max {MAX_REPO_COMMANDS})"));
+    }
+    Ok(out)
+}
+
+/// Chiave di un repository nelle impostazioni: relativa alla root, `/`, "."
+/// per la root.
+pub fn repo_config_key(repo: &str) -> Result<String, String> {
+    crate::board::normalize_repo(repo).map(|r| r.unwrap_or_else(|| ".".to_string()))
 }
 
 /// Migra il vecchio flag `is_default` degli avvii in `default_launch`.
@@ -262,8 +385,12 @@ fn add_workspace_blocking(
         worker_permission: default_worker_permission(),
         worktree_setup: None,
         worker_model: None,
+        worker_allow: Vec::new(),
+        worker_deny: Vec::new(),
         auto_orchestrate: None,
         default_launch: None,
+        worker_rules: String::new(),
+        repos: BTreeMap::new(),
     };
     data.workspaces.push(ws.clone());
     Ok(ws)
@@ -327,6 +454,28 @@ pub async fn set_worker_permission(app: AppHandle, id: String, mode: String) -> 
     .await
 }
 
+/// Imposta le regole di permesso pre-approvate (`allow`) e vietate (`deny`)
+/// dei worker Claude Code del workspace (sintassi dei permessi di Claude Code).
+#[tauri::command]
+pub async fn set_worker_permission_rules(
+    app: AppHandle,
+    id: String,
+    allow: Vec<String>,
+    deny: Vec<String>,
+) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let allow = crate::worker_permissions::validate_rules(&allow).map_err(|e| format!("Consentiti: {e}"))?;
+        let deny = crate::worker_permissions::validate_rules(&deny).map_err(|e| format!("Vietati: {e}"))?;
+        persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.worker_allow = allow;
+            ws.worker_deny = deny;
+            Ok(ws.clone())
+        })
+    })
+    .await
+}
+
 /// Imposta il modello di default dei worker automatici (vuoto = quello dell'agente).
 #[tauri::command]
 pub async fn set_worker_model(app: AppHandle, id: String, model: Option<String>) -> Result<Workspace, String> {
@@ -358,6 +507,56 @@ pub async fn set_worktree_setup(app: AppHandle, id: String, command: Option<Stri
     .await
 }
 
+
+/// Regole per i worker del workspace (vuoto = nessuna).
+#[tauri::command]
+pub async fn set_worker_rules(app: AppHandle, workspace_id: String, rules: String) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let rules = normalize_rules(&rules)?;
+        persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            ws.worker_rules = rules;
+            Ok(ws.clone())
+        })
+    })
+    .await
+}
+
+/// Configurazione di un repository del workspace (`None` la rimuove).
+#[tauri::command]
+pub async fn set_repo_config(
+    app: AppHandle,
+    workspace_id: String,
+    repo: String,
+    config: Option<RepoConfig>,
+) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let key = repo_config_key(&repo)?;
+        let config = config.map(RepoConfig::normalized).transpose()?;
+        persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            match config {
+                Some(c) => ws.repos.insert(key, c),
+                None => ws.repos.remove(&key),
+            };
+            Ok(ws.clone())
+        })
+    })
+    .await
+}
+
+/// Trim; massimo `MAX_RULES_LEN` caratteri; niente caratteri di controllo
+/// a parte a capo e tabulazione.
+fn normalize_rules(rules: &str) -> Result<String, String> {
+    let r = rules.trim();
+    if r.chars().count() > MAX_RULES_LEN {
+        return Err(format!("regole troppo lunghe (max {MAX_RULES_LEN} caratteri)"));
+    }
+    if r.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
+        return Err("le regole non possono contenere caratteri di controllo".to_string());
+    }
+    Ok(r.to_string())
+}
 
 /// Trim; vuoto = nessun comando; massimo `MAX_COMMAND_LEN` caratteri.
 fn normalize_setup(command: Option<String>) -> Result<Option<String>, String> {
@@ -636,7 +835,80 @@ pub async fn open_workspace_folder(app: AppHandle, id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn worker_rules_are_trimmed_and_limited() {
+        assert_eq!(super::normalize_rules("  no tests\nno npm  ").unwrap(), "no tests\nno npm");
+        assert_eq!(super::normalize_rules("   ").unwrap(), "");
+        assert!(super::normalize_rules(&"a".repeat(4000)).is_ok());
+        assert!(super::normalize_rules(&"a".repeat(4001)).is_err());
+        assert!(super::normalize_rules("a\u{0}b").is_err());
+    }
+
     use super::*;
+
+    fn rc(f: impl FnOnce(&mut RepoConfig)) -> Result<RepoConfig, String> {
+        let mut c = RepoConfig::default();
+        f(&mut c);
+        c.normalized()
+    }
+
+    #[test]
+    fn repo_config_is_normalized() {
+        let c = rc(|c| {
+            c.base_branch = Some("  develop ".into());
+            c.container_root = Some(" /var/www/html/ ".into());
+            c.copy_ignored = vec![" configuration.php ".into(), "".into(), ".\\public\\api\\.env".into(), "configuration.php".into()];
+            c.setup = vec!["  composer dump-autoload ".into(), "   ".into()];
+            c.cleanup = vec!["rm -rf x\ty".into()];
+        })
+        .unwrap();
+        assert_eq!(c.base_branch.as_deref(), Some("develop"));
+        assert_eq!(c.container_root.as_deref(), Some("/var/www/html"));
+        assert_eq!(c.copy_ignored, ["configuration.php", "public/api/.env"]);
+        assert_eq!(c.setup, ["composer dump-autoload"]);
+        assert_eq!(c.cleanup, ["rm -rf x\ty"]);
+        // Vuoti diventano None.
+        let c = rc(|c| {
+            c.base_branch = Some("  ".into());
+            c.container_root = Some("".into());
+        })
+        .unwrap();
+        assert!(c.base_branch.is_none() && c.container_root.is_none() && !c.has_setup());
+    }
+
+    #[test]
+    fn repo_config_rejects_bad_input() {
+        for b in ["-x", "a b", "a..b", "x/", "/x"] {
+            assert!(rc(|c| c.base_branch = Some(b.into())).is_err(), "{b}");
+        }
+        for p in ["../x", "a/../../b", "/etc/passwd", "C:\\x", "C:/x", "..", ".", "a\0b"] {
+            assert!(rc(|c| c.copy_ignored = vec![p.into()]).is_err(), "{p}");
+        }
+        assert!(rc(|c| c.setup = vec!["a\nb".into()]).is_err());
+        assert!(rc(|c| c.cleanup = vec!["a\rb".into()]).is_err());
+        assert!(rc(|c| c.setup = vec!["x".repeat(MAX_REPO_COMMAND_LEN + 1)]).is_err());
+        assert!(rc(|c| c.setup = vec!["x".repeat(MAX_REPO_COMMAND_LEN)]).is_ok());
+        assert!(rc(|c| c.setup = vec!["x".into(); MAX_REPO_COMMANDS + 1]).is_err());
+        assert!(rc(|c| c.cleanup = vec!["x".into(); MAX_REPO_COMMANDS]).is_ok());
+        assert!(rc(|c| c.container_root = Some("/a\nb".into())).is_err());
+    }
+
+    #[test]
+    fn repo_config_keys_and_persistence() {
+        assert_eq!(repo_config_key(" DDB/ ").unwrap(), "DDB");
+        assert_eq!(repo_config_key(".").unwrap(), ".");
+        assert_eq!(repo_config_key("a\\b").unwrap(), "a/b");
+        assert!(repo_config_key("../x").is_err() && repo_config_key("/x").is_err() && repo_config_key("").is_err());
+        // Un workspace vecchio, senza il campo, si legge; quello vuoto non lo scrive.
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert!(ws.repos.is_empty());
+        assert!(!serde_json::to_string(&ws).unwrap().contains("repos"));
+        ws.repos.insert("DDB".into(), RepoConfig { setup: vec!["x".into()], remove_force: true, ..Default::default() });
+        let back: Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
+        assert_eq!(back.repos["DDB"].setup, ["x"]);
+        assert!(back.repos["DDB"].remove_force);
+    }
 
     fn launch(id: &str, is_default: bool) -> Launch {
         Launch {

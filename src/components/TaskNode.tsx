@@ -4,6 +4,7 @@ import type { Node, NodeProps } from "@xyflow/react";
 import { GitBranch, Pause, RotateCw } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
+  EXTERNAL_LABEL,
   columnBorderClass,
   columnDotClass,
   columnLabel,
@@ -51,7 +52,16 @@ function TaskNode({ data }: NodeProps<TaskFlowNode>) {
         <span className={cn("text-[11px] font-medium", columnTextClass(task.column))}>
           {columnLabel(task.column)}
         </span>
-        {sub && <span className={cn("text-[11px]", sub.className)}>· {sub.text}</span>}
+        {sub && (
+          <span className={cn("text-[11px]", sub.className)} title={task.preparing ?? undefined}>
+            · {sub.text}
+          </span>
+        )}
+        {task.external && (
+          <span className="text-[10px] text-muted-foreground" title={task.note ?? EXTERNAL_LABEL}>
+            · fuori board
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1.5">
           {task.held && (
             <span className="flex items-center gap-0.5 text-[10px] text-status-attention">
@@ -74,7 +84,17 @@ function TaskNode({ data }: NodeProps<TaskFlowNode>) {
       <p className="truncate text-[13px] font-medium text-foreground" title={task.title}>
         {task.title}
       </p>
-      <p className="truncate font-mono text-[10px] text-faint">{task.id}</p>
+      <p className="flex items-center gap-1.5 truncate font-mono text-[10px] text-faint">
+        <span className="truncate">{task.id}</span>
+        {task.repo && (
+          <span
+            className="max-w-[45%] flex-shrink-0 truncate rounded border border-border-strong px-1 text-muted-foreground"
+            title={`Repository: ${task.repo}`}
+          >
+            {task.repo}
+          </span>
+        )}
+      </p>
 
       {task.worktree?.branch && (
         <p

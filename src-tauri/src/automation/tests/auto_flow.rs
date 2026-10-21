@@ -588,7 +588,7 @@ fn model_facing_texts_are_english_and_prompt_is_shell_safe() {
     assert!(WINDOW_CLOSED_TEXT.is_ascii());
     assert!(WINDOW_CLOSED_TEXT.contains("get_events") && WINDOW_CLOSED_TEXT.contains("end your turn"));
     // L'agente accetta il prompt come comando di avvio.
-    let req = AutomationRequest { bootstrap_prompt: p, permission_mode: PermissionMode::Bypass, model: Some("opus") };
+    let req = AutomationRequest { bootstrap_prompt: p, permission_mode: PermissionMode::Bypass, model: Some("opus"), settings_path: None };
     assert!(crate::agents::automation_command("claude-code", "windows", &req).is_ok());
 }
 

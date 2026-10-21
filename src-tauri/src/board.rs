@@ -12,7 +12,7 @@ use crate::automation::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_TASKS_PER_BOARD: usize = 200;
 pub const MAX_TASKS_PER_PLAN: usize = 50;
@@ -96,6 +96,32 @@ pub struct WorktreeInfo {
     pub path: String,
     pub branch: String,
     pub base: String,
+    /// Repository del task (cartella relativa alla root); `None` = la root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Setup del repository (file copiati, comandi) completato. `false` solo
+    /// per un worktree creato dall'app il cui setup non e' finito: un retry lo
+    /// rifa. I file vecchi, senza il campo, valgono come fatti.
+    #[serde(default = "yes")]
+    pub setup_done: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Branch di integrazione di un repository, gestito dalla board: l'app lo
+/// crea (con un worktree dedicato) e i task del repo partono da qui.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Integration {
+    pub branch: String,
+    /// Worktree dove l'orchestratore integra e collauda.
+    pub path: String,
+    /// Riferimento da cui il branch e' stato creato.
+    pub base: String,
+    /// Come `WorktreeInfo::setup_done`, per il worktree di integrazione.
+    #[serde(default = "yes")]
+    pub setup_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +160,8 @@ pub struct Task {
     pub touches: Vec<String>,
     pub isolation: Isolation,
     pub base_branch: Option<String>,
+    /// Repository (cartella relativa alla root del workspace); `None` = la root.
+    pub repo: Option<String>,
     pub agent: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
@@ -146,11 +174,24 @@ pub struct Task {
     pub worktree: Option<WorktreeInfo>,
     pub last_report: Option<String>,
     pub note: Option<String>,
+    /// Completato fuori dalla board (`done` da `queued`, con nota): nessun
+    /// worker, nessun worktree.
+    pub external: bool,
+    /// Nota dell'orchestratore per se stesso: mai inviata al worker.
+    pub orchestrator_note: Option<String>,
     pub report: Option<TaskReport>,
     pub created_at: i64,
     pub updated_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// Passo di preparazione in corso (setup del repository) mentre l'app
+    /// prepara il worktree; solo in memoria, `None` fuori da `running`.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub preparing: Option<String>,
+    /// Ultimo segno di vita della preparazione (ms): il guardiano dell'avvio
+    /// lo usa al posto di `started_at` (vedi `stuck_starts`).
+    #[serde(skip)]
+    pub preparing_since: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +201,12 @@ pub struct Board {
     pub max_parallel: u8,
     pub paused: bool,
     pub base_branch: Option<String>,
+    /// Branch base per repository (chiave = repo, "." = root).
+    pub base_branches: BTreeMap<String, String>,
+    /// Modello del branch di integrazione (`{date}` = data locale); `None` = spento.
+    pub integration_branch: Option<String>,
+    /// Integrazioni risolte per repository (chiave "." = root).
+    pub integrations: BTreeMap<String, Integration>,
     /// Tab dell'orchestratore proprietario: non si ricarica dal disco.
     #[serde(skip_deserializing)]
     pub owner: Option<String>,
@@ -175,6 +222,10 @@ pub struct Board {
     /// imposta il registro a ogni pubblicazione.
     #[serde(skip)]
     pub automation: Option<crate::schedule::AutomationInfo>,
+    /// Repository rilevati nel workspace (calcolati su richiesta, in cache
+    /// fino a submit_plan / set_board).
+    #[serde(skip)]
+    pub repos: Option<Vec<String>>,
 }
 
 impl Default for Board {
@@ -184,12 +235,16 @@ impl Default for Board {
             max_parallel: DEFAULT_MAX_PARALLEL,
             paused: false,
             base_branch: None,
+            base_branches: BTreeMap::new(),
+            integration_branch: None,
+            integrations: BTreeMap::new(),
             owner: None,
             updated_at: 0,
             tasks: Vec::new(),
             rev: 0,
             plan_completed_sent: false,
             automation: None,
+            repos: None,
         }
     }
 }
@@ -211,6 +266,11 @@ pub struct BoardView {
     pub max_parallel: u8,
     pub paused: bool,
     pub base_branch: Option<String>,
+    pub base_branches: BTreeMap<String, String>,
+    pub integration_branch: Option<String>,
+    pub integrations: BTreeMap<String, Integration>,
+    /// Repository rilevati; null finche' non sono stati calcolati.
+    pub repos: Option<Vec<String>>,
     pub owner: Option<String>,
     pub updated_at: i64,
     pub tasks: Vec<TaskView>,
@@ -277,7 +337,9 @@ impl BoardView {
             None => !matches!(c, Column::Done | Column::Cancelled),
         };
         let rows: Vec<Value> = self.tasks.iter().filter(|t| shown(t.column)).map(|t| self.compact_row(t)).collect();
-        serde_json::json!({
+        // I task trattenuti stanno nella colonna `ready` ma non partono: conteggio a parte.
+        let held = self.tasks.iter().filter(|t| t.task.held && t.task.status == TaskStatus::Queued).count();
+        let mut out = serde_json::json!({
             "workspace_id": self.workspace_id,
             "rev": self.rev,
             "max_parallel": self.max_parallel,
@@ -288,7 +350,24 @@ impl BoardView {
             "automation": self.automation,
             "counts": counts,
             "tasks": rows,
-        })
+        });
+        if held > 0 {
+            out["held"] = Value::from(held);
+        }
+        // Multi-repository: solo se servono, per non appesantire il caso comune.
+        if !self.base_branches.is_empty() {
+            out["base_branches"] = serde_json::json!(self.base_branches);
+        }
+        if self.integration_branch.is_some() {
+            out["integration_branch"] = serde_json::json!(self.integration_branch);
+        }
+        if !self.integrations.is_empty() {
+            out["integrations"] = serde_json::json!(self.integrations);
+        }
+        if let Some(r) = &self.repos {
+            out["repos"] = serde_json::json!(r);
+        }
+        out
     }
 
     fn compact_row(&self, v: &TaskView) -> Value {
@@ -298,11 +377,17 @@ impl BoardView {
         o.insert("title".into(), Value::from(t.title.clone()));
         o.insert("column".into(), Value::from(v.column.as_str()));
         o.insert("attempts".into(), Value::from(t.attempts));
+        if let Some(r) = &t.repo {
+            o.insert("repo".into(), Value::from(r.clone()));
+        }
         if t.held {
             o.insert("held".into(), Value::Bool(true));
         }
         if let Some(w) = &t.worker_status {
             o.insert("worker_status".into(), serde_json::to_value(w).unwrap_or(Value::Null));
+        }
+        if let Some(p) = &t.preparing {
+            o.insert("preparing".into(), Value::from(p.clone()));
         }
         if v.column == Column::Backlog {
             let waiting: Vec<&String> = t
@@ -320,8 +405,14 @@ impl BoardView {
         if let Some(m) = &t.model {
             o.insert("model".into(), Value::from(m.clone()));
         }
+        if t.external {
+            o.insert("external".into(), Value::Bool(true));
+        }
         if let Some(n) = &t.note {
             o.insert("note".into(), Value::from(clip_with_ellipsis(n, COMPACT_NOTE_MAX)));
+        }
+        if let Some(n) = &t.orchestrator_note {
+            o.insert("orchestrator_note".into(), Value::from(clip_with_ellipsis(n, COMPACT_NOTE_MAX)));
         }
         if let Some(r) = &t.report {
             o.insert("summary".into(), Value::from(clip_with_ellipsis(&r.summary, COMPACT_SUMMARY_MAX)));
@@ -444,6 +535,103 @@ fn parse_branch(v: &Value, label: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// Repository di un task: cartella relativa alla root. Normalizza i
+/// separatori (`/`), toglie `./` iniziale e `/` finale; niente path assoluti
+/// ne' `..`. `"."` (la root) vale `None`.
+pub fn normalize_repo(s: &str) -> Result<Option<String>, String> {
+    let t = s.trim().replace('\\', "/");
+    if t.is_empty() {
+        return Err("repo is empty (use \".\" for the workspace root, or null)".to_string());
+    }
+    if t.chars().count() > TOUCH_MAX || t.chars().any(char::is_control) {
+        return Err(format!("invalid repo: {}", clip_chars(&t, 40)));
+    }
+    let b = t.as_bytes();
+    if t.starts_with('/') || (b.len() >= 2 && b[1] == b':') {
+        return Err(format!("repo must be relative to the workspace root: {t}"));
+    }
+    let segs: Vec<&str> = t.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    if segs.contains(&"..") {
+        return Err(format!("repo cannot contain '..': {t}"));
+    }
+    Ok(if segs.is_empty() { None } else { Some(segs.join("/")) })
+}
+
+fn parse_repo(v: &Value) -> Result<Option<String>, String> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) => normalize_repo(s),
+        _ => Err("repo must be a string".to_string()),
+    }
+}
+
+/// Chiave di un repository nelle mappe della board: "." = la root.
+pub fn repo_key(repo: Option<&str>) -> String {
+    repo.unwrap_or(".").to_string()
+}
+
+/// `base_branches` di `submit_plan` / `set_board`: (repo, branch) da
+/// impostare; branch `None` (stringa vuota o null) = toglie la voce.
+pub type BaseBranchOps = Vec<(String, Option<String>)>;
+
+pub fn parse_base_branches(v: &Value) -> Result<BaseBranchOps, String> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "base_branches must be an object (repo -> branch; an empty string removes the entry)".to_string())?;
+    if obj.len() > MAX_TOUCHES {
+        return Err(format!("base_branches has too many entries (max {MAX_TOUCHES})"));
+    }
+    let mut out = Vec::new();
+    for (k, val) in obj {
+        let key = repo_key(normalize_repo(k)?.as_deref());
+        out.push((key, parse_branch(val, &format!("base_branches[{k}]"))?));
+    }
+    Ok(out)
+}
+
+/// Data di esempio per validare il modello del branch di integrazione.
+const SAMPLE_DATE: &str = "2000-01-01";
+
+/// Espande il modello del branch di integrazione (`{date}` = `date`).
+pub fn expand_integration(template: &str, date: &str) -> Result<String, String> {
+    let name = template.replace("{date}", date);
+    if valid_branch(&name) {
+        Ok(name)
+    } else {
+        Err(format!("invalid integration branch name: {}", clip_chars(&name, 60)))
+    }
+}
+
+/// `integration_branch` di `submit_plan` / `set_board`: `None` spegne.
+pub fn parse_integration_template(v: &Value) -> Result<Option<String>, String> {
+    let t = match v {
+        Value::Null => None,
+        Value::String(s) if s.trim().is_empty() => None,
+        Value::String(s) => Some(s.trim().to_string()),
+        _ => return Err("integration_branch must be a string".to_string()),
+    };
+    if let Some(t) = &t {
+        expand_integration(t, SAMPLE_DATE).map_err(|e| format!("integration_branch: {e}"))?;
+    }
+    Ok(t)
+}
+
+/// `branch` e' `name` o un suo derivato con suffisso numerico (`name-2`)?
+pub fn integration_matches(name: &str, branch: &str) -> bool {
+    branch == name
+        || branch
+            .strip_prefix(name)
+            .and_then(|r| r.strip_prefix('-'))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// Primo nome libero: `name`, poi `name-2`, `name-3`, ...
+pub fn first_free_branch(name: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
+    (1..=100)
+        .map(|n| if n == 1 { name.to_string() } else { format!("{name}-{n}") })
+        .find(|c| valid_branch(c) && !exists(c))
+}
+
 pub fn parse_max_parallel(v: &Value) -> Result<u8, String> {
     match v.as_u64() {
         Some(n) if (1..=MAX_PARALLEL_LIMIT as u64).contains(&n) => Ok(n as u8),
@@ -465,14 +653,16 @@ pub struct TaskSpec {
     pub touches: Vec<String>,
     pub isolation: Isolation,
     pub base_branch: Option<String>,
+    pub repo: Option<String>,
     pub agent: String,
     pub model: Option<String>,
     pub permission_mode: Option<PermissionMode>,
     pub priority: i32,
     pub held: bool,
+    pub orchestrator_note: Option<String>,
 }
 
-pub const SPEC_KEYS: [&str; 12] = [
+pub const SPEC_KEYS: [&str; 14] = [
     "id",
     "title",
     "task",
@@ -480,11 +670,13 @@ pub const SPEC_KEYS: [&str; 12] = [
     "touches",
     "isolation",
     "base_branch",
+    "repo",
     "agent",
     "model",
     "permission_mode",
     "priority",
     "held",
+    "orchestrator_note",
 ];
 
 impl TaskSpec {
@@ -497,11 +689,13 @@ impl TaskSpec {
             touches: t.touches.clone(),
             isolation: t.isolation,
             base_branch: t.base_branch.clone(),
+            repo: t.repo.clone(),
             agent: t.agent.clone(),
             model: t.model.clone(),
             permission_mode: t.permission_mode.as_deref().and_then(PermissionMode::parse),
             priority: t.priority,
             held: t.held,
+            orchestrator_note: t.orchestrator_note.clone(),
         }
     }
 }
@@ -583,6 +777,10 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
         Some(v) => parse_branch(v, "base_branch")?,
         None => base.and_then(|b| b.base_branch.clone()),
     };
+    let repo = match obj.get("repo") {
+        Some(v) => parse_repo(v)?,
+        None => base.and_then(|b| b.repo.clone()),
+    };
     let agent = match text("agent")?.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => a.to_string(),
         None => base.map(|b| b.agent.clone()).unwrap_or_else(|| DEFAULT_AGENT.to_string()),
@@ -617,6 +815,12 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("held must be a boolean".to_string()),
     };
+    let orchestrator_note = match obj.get("orchestrator_note") {
+        None => base.and_then(|b| b.orchestrator_note.clone()),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(clip_chars(s.trim(), NOTE_MAX)).filter(|n| !n.is_empty()),
+        Some(_) => return Err("orchestrator_note must be a string".to_string()),
+    };
     Ok(TaskSpec {
         id,
         title,
@@ -625,11 +829,13 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
         touches,
         isolation,
         base_branch,
+        repo,
         agent,
         model,
         permission_mode,
         priority,
         held,
+        orchestrator_note,
     })
 }
 
@@ -639,13 +845,18 @@ pub struct PlanInput {
     pub specs: Vec<TaskSpec>,
     pub max_parallel: Option<u8>,
     pub base_branch: Option<String>,
+    pub base_branches: BaseBranchOps,
+    /// `None` = non toccare; `Some(None)` = spegni.
+    pub integration_branch: Option<Option<String>>,
 }
 
 pub fn parse_plan(p: &Value) -> Result<PlanInput, String> {
     let obj = p.as_object().ok_or_else(|| "params must be an object".to_string())?;
     for k in obj.keys() {
-        if !["tasks", "max_parallel", "base_branch"].contains(&k.as_str()) {
-            return Err(format!("unknown field '{k}' (allowed: tasks, max_parallel, base_branch)"));
+        if !["tasks", "max_parallel", "base_branch", "base_branches", "integration_branch"].contains(&k.as_str()) {
+            return Err(format!(
+                "unknown field '{k}' (allowed: tasks, max_parallel, base_branch, base_branches, integration_branch)"
+            ));
         }
     }
     let arr = obj
@@ -670,7 +881,15 @@ pub fn parse_plan(p: &Value) -> Result<PlanInput, String> {
         None => None,
         Some(v) => parse_branch(v, "base_branch")?,
     };
-    Ok(PlanInput { specs, max_parallel, base_branch })
+    let base_branches = match obj.get("base_branches") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => parse_base_branches(v)?,
+    };
+    let integration_branch = match obj.get("integration_branch") {
+        None => None,
+        Some(v) => Some(parse_integration_template(v)?),
+    };
+    Ok(PlanInput { specs, max_parallel, base_branch, base_branches, integration_branch })
 }
 
 /// I permessi richiesti dai task devono stare entro il tetto del workspace.
@@ -828,11 +1047,13 @@ impl Task {
             touches: s.touches,
             isolation: s.isolation,
             base_branch: s.base_branch,
+            repo: s.repo,
             agent: s.agent,
             model: s.model,
             permission_mode: s.permission_mode.map(|m| m.as_str().to_string()),
             priority: s.priority,
             held: s.held,
+            orchestrator_note: s.orchestrator_note,
             status: TaskStatus::Queued,
             created_at: now,
             updated_at: now,
@@ -847,11 +1068,13 @@ impl Task {
         self.touches = s.touches;
         self.isolation = s.isolation;
         self.base_branch = s.base_branch;
+        self.repo = s.repo;
         self.agent = s.agent;
         self.model = s.model;
         self.permission_mode = s.permission_mode.map(|m| m.as_str().to_string());
         self.priority = s.priority;
         self.held = s.held;
+        self.orchestrator_note = s.orchestrator_note;
         self.updated_at = now;
     }
 
@@ -919,6 +1142,26 @@ impl Board {
                 .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled))
     }
 
+    /// Testo di `plan_completed` con i conteggi, o `None` se non c'e' nulla
+    /// da riferire: piano non completo, oppure tutti i task annullati senza
+    /// mai essere partiti (l'orchestratore li ha annullati lui stesso).
+    pub fn completion_text(&self) -> Option<String> {
+        if !self.is_complete() {
+            return None;
+        }
+        let count = |f: &dyn Fn(&Task) -> bool| self.tasks.iter().filter(|t| f(t)).count();
+        let cancelled = count(&|t| t.status == TaskStatus::Cancelled);
+        if cancelled == self.tasks.len() && self.tasks.iter().all(|t| t.attempts == 0) {
+            return None;
+        }
+        let done = count(&|t| t.status == TaskStatus::Done);
+        let external = count(&|t| t.status == TaskStatus::Done && t.external);
+        let failed = count(&|t| t.status == TaskStatus::Failed);
+        Some(format!(
+            "Plan completed: {done} done (of which {external} completed outside the board), {failed} failed, {cancelled} cancelled."
+        ))
+    }
+
     pub fn view(&self) -> BoardView {
         BoardView {
             workspace_id: self.workspace_id.clone(),
@@ -926,6 +1169,10 @@ impl Board {
             max_parallel: self.max_parallel,
             paused: self.paused,
             base_branch: self.base_branch.clone(),
+            base_branches: self.base_branches.clone(),
+            integration_branch: self.integration_branch.clone(),
+            integrations: self.integrations.clone(),
+            repos: self.repos.clone(),
             owner: self.owner.clone(),
             updated_at: self.updated_at,
             tasks: self
@@ -986,6 +1233,29 @@ impl Board {
         Ok(ids)
     }
 
+    /// Applica `base_branches` e `integration_branch`. Cambiare il modello
+    /// del branch di integrazione scarta le integrazioni gia' risolte (se ne
+    /// crea una nuova al prossimo avvio); la cache dei repo si invalida.
+    pub fn apply_repo_settings(&mut self, base_branches: BaseBranchOps, integration: Option<Option<String>>) {
+        for (k, v) in base_branches {
+            match v {
+                Some(b) => {
+                    self.base_branches.insert(k, b);
+                }
+                None => {
+                    self.base_branches.remove(&k);
+                }
+            }
+        }
+        if let Some(tpl) = integration {
+            if tpl != self.integration_branch {
+                self.integrations.clear();
+            }
+            self.integration_branch = tpl;
+        }
+        self.repos = None;
+    }
+
     /// Modifica parziale di un task (`patch` = campi di TaskSpec).
     pub fn update_task(&mut self, id: &str, patch: &Value, ceiling: PermissionMode, now: i64) -> Result<(), String> {
         let t = self.task(id).ok_or_else(|| format!("task not found: {id}"))?;
@@ -1007,6 +1277,9 @@ impl Board {
                 "task '{id}' already has a worktree: its isolation cannot be changed"
             ));
         }
+        if spec.repo != t.repo && t.worktree.is_some() {
+            return Err(format!("task '{id}' already has a worktree: its repo cannot be changed"));
+        }
         check_permissions(std::slice::from_ref(&spec), ceiling)?;
         let mut all = self.tasks.clone();
         if let Some(slot) = all.iter_mut().find(|x| x.id == id) {
@@ -1024,7 +1297,10 @@ impl Board {
         let t = self.task(id).ok_or_else(|| format!("task not found: {id}"))?;
         let from = t.status;
         let ok = match to {
-            TaskStatus::Done => matches!(from, TaskStatus::Review | TaskStatus::Failed | TaskStatus::Blocked),
+            TaskStatus::Done => matches!(
+                from,
+                TaskStatus::Queued | TaskStatus::Review | TaskStatus::Failed | TaskStatus::Blocked
+            ),
             TaskStatus::Cancelled => !matches!(from, TaskStatus::Done | TaskStatus::Cancelled),
             TaskStatus::Queued => matches!(
                 from,
@@ -1040,7 +1316,7 @@ impl Board {
                 format!("task '{id}' is running: wait for it to finish (or cancel it) before marking it done")
             }
             (TaskStatus::Done, _) => format!(
-                "task '{id}' is {}: only review, failed or blocked tasks can be marked done",
+                "task '{id}' is {}: only queued, review, failed or blocked tasks can be marked done",
                 from.as_str()
             ),
             (TaskStatus::Cancelled, _) => format!("task '{id}' is already {}", from.as_str()),
@@ -1056,9 +1332,19 @@ impl Board {
         self.check_transition(id, to)?;
         let note = note.map(|n| clip_chars(n.trim(), NOTE_MAX)).filter(|n| !n.is_empty());
         let t = self.task_mut(id).ok_or_else(|| format!("task not found: {id}"))?;
+        // Completato fuori dalla board: serve una nota che dica come.
+        let external = to == TaskStatus::Done && t.status == TaskStatus::Queued;
+        if external && note.is_none() {
+            return Err(format!(
+                "task '{id}' is queued: to mark it done pass a note saying how it was completed outside the board"
+            ));
+        }
+        t.external = external;
         t.status = to;
         t.session = None;
         t.worker_status = None;
+        t.preparing = None;
+        t.preparing_since = None;
         t.updated_at = now;
         match to {
             TaskStatus::Queued => {
@@ -1101,6 +1387,8 @@ impl Board {
             t.session = None;
             t.attempts += 1;
             t.started_at = Some(now);
+            t.preparing = None;
+            t.preparing_since = None;
             t.finished_at = None;
             t.note = None;
             t.report = None;
@@ -1108,6 +1396,46 @@ impl Board {
             t.updated_at = now;
         }
         self.updated_at = now;
+    }
+
+    /// Segno di vita della preparazione di un avvio ancora in corso (task
+    /// `running` senza sessione, stesso tentativo). `label` = passo da mostrare
+    /// (`None` = solo battito: il guardiano non scatta). `false` se l'avvio non
+    /// e' piu' quello.
+    pub fn touch_preparing(&mut self, id: &str, attempt: u32, label: Option<&str>, now: i64) -> bool {
+        let Some(t) = self.task_mut(id) else {
+            return false;
+        };
+        if t.status != TaskStatus::Running || t.attempts != attempt || t.session.is_some() {
+            return false;
+        }
+        t.preparing_since = Some(now);
+        if let Some(l) = label {
+            t.preparing = Some(l.to_string());
+        }
+        true
+    }
+
+    /// Fine della preparazione (setup finito o fallito): via l'etichetta, il
+    /// battito resta a `now`.
+    pub fn clear_preparing(&mut self, id: &str, attempt: u32, now: i64) {
+        if let Some(t) = self.task_mut(id).filter(|t| t.attempts == attempt && t.status == TaskStatus::Running) {
+            t.preparing = None;
+            t.preparing_since = Some(now);
+        }
+    }
+
+    /// Registra il worktree appena creato, prima del setup: se il setup
+    /// fallisce, il retry lo ritrova (con `setup_done` falso) e lo rifa.
+    pub fn record_worktree(&mut self, id: &str, attempt: u32, wt: WorktreeInfo) -> bool {
+        let Some(t) = self.task_mut(id) else {
+            return false;
+        };
+        if t.status != TaskStatus::Running || t.attempts != attempt || t.session.is_some() {
+            return false;
+        }
+        t.worktree = Some(wt);
+        true
     }
 
     /// Fine di un task `running` (report del worker, avvio fallito, tab
@@ -1131,6 +1459,8 @@ impl Board {
         t.status = to;
         t.session = None;
         t.worker_status = None;
+        t.preparing = None;
+        t.preparing_since = None;
         if let Some(r) = &report {
             t.last_report = Some(clip_chars(&r.summary, LAST_REPORT_MAX));
         }
@@ -1192,7 +1522,12 @@ pub fn schedule(board: &Board, ctx: &SchedCtx) -> Vec<String> {
             .then(ia.cmp(ib))
     });
     let mut chosen: Vec<&Task> = Vec::new();
-    let mut shared_writer = running.iter().any(|t| writes_shared_root(t, ctx.ceiling));
+    // Un solo scrittore condiviso per repository (None = la root).
+    let mut shared_writers: Vec<Option<&str>> = running
+        .iter()
+        .filter(|t| writes_shared_root(t, ctx.ceiling))
+        .map(|t| t.repo.as_deref())
+        .collect();
     for (_, c) in cands {
         if chosen.len() >= slots {
             break;
@@ -1200,15 +1535,15 @@ pub fn schedule(board: &Board, ctx: &SchedCtx) -> Vec<String> {
         let clash = running
             .iter()
             .chain(chosen.iter())
-            .any(|o| touches_conflict(&c.touches, &o.touches, ctx.case_insensitive));
+            .any(|o| o.repo == c.repo && touches_conflict(&c.touches, &o.touches, ctx.case_insensitive));
         if clash {
             continue;
         }
         if writes_shared_root(c, ctx.ceiling) {
-            if shared_writer {
+            if shared_writers.contains(&c.repo.as_deref()) {
                 continue;
             }
-            shared_writer = true;
+            shared_writers.push(c.repo.as_deref());
         }
         chosen.push(c);
     }
@@ -1225,6 +1560,8 @@ pub struct EnvInfo<'a> {
     pub task: &'a Task,
     /// Comando di setup del workspace (`worktree_setup`).
     pub setup: Option<&'a str>,
+    /// Configurazione del repository del task (setup eseguito dall'app).
+    pub repo_cfg: Option<&'a crate::workspaces::RepoConfig>,
 }
 
 /// Testo `environment` di `get_task` per un task di board (lo legge il
@@ -1240,9 +1577,34 @@ pub fn worker_environment(e: &EnvInfo) -> String {
             "- Git worktree: branch {} (created from {}). Work and commit here, on this branch.\n",
             w.branch, w.base
         )),
+        _ if t.repo.is_some() => s.push_str(
+            "- No dedicated worktree: you work directly in the repository folder, on the branch that is checked out there.\n",
+        ),
         _ => s.push_str("- No dedicated worktree: you work directly in the workspace root, on the branch that is checked out there.\n"),
     }
+    if let Some(r) = &t.repo {
+        s.push_str(&format!(
+            "- Repository: {r} (a folder of the workspace root; your working folder belongs to it and the declared areas are relative to it)\n"
+        ));
+    }
     s.push_str("\nFirst step\n");
+    if let (Some(cfg), Some(w), Isolation::Worktree) = (e.repo_cfg.filter(|c| c.has_setup()), &t.worktree, t.isolation) {
+        if w.setup_done {
+            s.push_str("- The app already prepared this worktree: do NOT redo it.");
+            if !cfg.copy_ignored.is_empty() {
+                s.push_str(&format!(" Git-ignored files copied from the repository: {}.", cfg.copy_ignored.join(", ")));
+            }
+            if !cfg.setup.is_empty() {
+                s.push_str(&format!(" Setup commands already run: {}.", cfg.setup.join("; ")));
+            }
+            s.push('\n');
+            if let Some(c) = cfg.container_root.as_deref().filter(|c| !c.is_empty()) {
+                s.push_str(&format!(
+                    "- The repository is mounted in its container at {c}: this worktree is visible there at the same relative path.\n"
+                ));
+            }
+        }
+    }
     match e.setup.map(str::trim).filter(|c| !c.is_empty()) {
         Some(cmd) => s.push_str(&format!(
             "- Before anything else, run this setup command in your working folder and wait for it to finish: {cmd}\n"
@@ -1250,7 +1612,8 @@ pub fn worker_environment(e: &EnvInfo) -> String {
         None => s.push_str("- No setup command is configured for this workspace: start working right away.\n"),
     }
     if !t.touches.is_empty() {
-        s.push_str(&format!("\nDeclared areas of this task (paths relative to the workspace root): {}\n", t.touches.join(", ")));
+        let rel = if t.repo.is_some() { "the repository" } else { "the workspace root" };
+        s.push_str(&format!("\nDeclared areas of this task (paths relative to {rel}): {}\n", t.touches.join(", ")));
     }
     s.push_str("\nRules\n");
     s.push_str("- Work only inside your working folder; do not modify files outside it.\n");
@@ -1678,7 +2041,7 @@ mod tests {
         // L'isolamento non cambia dopo la creazione del worktree.
         set_status(&mut b, "b", TaskStatus::Failed);
         b.task_mut("b").unwrap().worktree =
-            Some(WorktreeInfo { path: "p".into(), branch: "task/b".into(), base: "main".into() });
+            Some(WorktreeInfo { path: "p".into(), branch: "task/b".into(), base: "main".into(), repo: None, setup_done: true });
         let err = b.update_task("b", &json!({"isolation": "none"}), PermissionMode::Bypass, 1).unwrap_err();
         assert!(err.contains("already has a worktree"), "{err}");
         assert!(b.update_task("b", &json!({"isolation": "worktree"}), PermissionMode::Bypass, 1).is_ok());
@@ -1692,10 +2055,10 @@ mod tests {
             b.check_transition("a", to).is_ok()
         };
         use TaskStatus::*;
-        for from in [Review, Failed, Blocked] {
+        for from in [Queued, Review, Failed, Blocked] {
             assert!(t(&mut b, Done, from), "done from {from:?}");
         }
-        for from in [Queued, Running, Done, Cancelled] {
+        for from in [Running, Done, Cancelled] {
             assert!(!t(&mut b, Done, from), "done from {from:?}");
         }
         for from in [Queued, Running, Review, Failed, Blocked] {
@@ -1724,7 +2087,7 @@ mod tests {
         {
             let t = b.task_mut("a").unwrap();
             t.report = Some(build_report("failed", "s", ReportFields::default(), None));
-            t.worktree = Some(WorktreeInfo { path: "p".into(), branch: "task/a".into(), base: "main".into() });
+            t.worktree = Some(WorktreeInfo { path: "p".into(), branch: "task/a".into(), base: "main".into(), repo: None, setup_done: true });
         }
         b.apply_status("a", TaskStatus::Queued, None, 30).unwrap();
         let t = b.task("a").unwrap();
@@ -1934,24 +2297,216 @@ mod tests {
     }
 
     #[test]
+    fn done_from_queued_requires_a_note_and_marks_external() {
+        let mut b = board_with(vec![spec("a"), spec_with(json!({"id": "b", "task": "x", "depends_on": ["a"], "held": true}))]);
+        assert!(b.check_transition("a", TaskStatus::Done).is_ok());
+        let e = b.apply_status("a", TaskStatus::Done, None, 20).unwrap_err();
+        assert!(e.contains("note"), "{e}");
+        let e = b.apply_status("a", TaskStatus::Done, Some("   ".into()), 20).unwrap_err();
+        assert!(e.contains("note"), "{e}");
+        assert_eq!(b.task("a").unwrap().status, TaskStatus::Queued);
+        // Anche un task trattenuto.
+        b.apply_status("a", TaskStatus::Done, Some("merged by hand".into()), 21).unwrap();
+        let a = b.task("a").unwrap();
+        assert!(a.external && a.status == TaskStatus::Done);
+        assert_eq!(a.note.as_deref(), Some("merged by hand"));
+        // Sblocca i dipendenti come un done normale.
+        assert_eq!(b.view().tasks[1].column, Column::Ready);
+        let j = b.view().to_compact_json(Some(&[Column::Done]));
+        assert_eq!(j["tasks"][0]["external"], true);
+        // Un done normale (da review) non e' esterno.
+        b.add_plan(vec![spec("c")], PermissionMode::Bypass, 30).unwrap();
+        b.start_task("c", 31);
+        b.finish_running("c", None, TaskStatus::Review, None, None, 32);
+        b.apply_status("c", TaskStatus::Done, None, 33).unwrap();
+        assert!(!b.task("c").unwrap().external);
+    }
+
+    #[test]
+    fn completion_text_has_counts_and_is_suppressed_when_nothing_ever_started() {
+        let mut b = board_with(vec![spec("a"), spec("b"), spec("c")]);
+        assert!(b.completion_text().is_none(), "piano non completo");
+        b.apply_status("a", TaskStatus::Done, Some("by hand".into()), 20).unwrap();
+        b.start_task("b", 21);
+        b.finish_running("b", None, TaskStatus::Review, None, None, 22);
+        b.apply_status("b", TaskStatus::Done, None, 23).unwrap();
+        b.apply_status("c", TaskStatus::Cancelled, None, 24).unwrap();
+        let t = b.completion_text().unwrap();
+        assert!(t.contains("2 done (of which 1 completed outside the board)"), "{t}");
+        assert!(t.contains("0 failed") && t.contains("1 cancelled"), "{t}");
+        // Tutti annullati e mai partiti: niente evento.
+        let mut c = board_with(vec![spec("a"), spec("b")]);
+        c.apply_status("a", TaskStatus::Cancelled, None, 20).unwrap();
+        c.apply_status("b", TaskStatus::Cancelled, None, 21).unwrap();
+        assert!(c.is_complete() && c.completion_text().is_none());
+        // Annullato dopo essere partito: l'evento c'e'.
+        let mut d = board_with(vec![spec("a")]);
+        d.start_task("a", 20);
+        d.finish_running("a", None, TaskStatus::Failed, None, None, 21);
+        d.apply_status("a", TaskStatus::Cancelled, None, 22).unwrap();
+        assert!(d.completion_text().unwrap().contains("1 cancelled"));
+    }
+
+    #[test]
+    fn orchestrator_note_is_a_spec_field_and_held_is_counted() {
+        let mut b = board_with(vec![spec_with(json!({"id": "a", "task": "x", "orchestrator_note": "  merge me last  ", "held": true})), spec("b")]);
+        assert_eq!(b.task("a").unwrap().orchestrator_note.as_deref(), Some("merge me last"));
+        let j = b.view().to_compact_json(None);
+        assert_eq!(j["tasks"][0]["held"], true);
+        assert_eq!(j["tasks"][0]["orchestrator_note"], "merge me last");
+        assert_eq!(j["held"], 1);
+        assert_eq!(j["counts"]["ready"], 2);
+        assert!(j["tasks"][1].get("held").is_none());
+        // update_task: assente = invariato, null = azzera, stringa = sostituisce.
+        b.update_task("a", &json!({"title": "t"}), PermissionMode::Bypass, 20).unwrap();
+        assert_eq!(b.task("a").unwrap().orchestrator_note.as_deref(), Some("merge me last"));
+        b.update_task("a", &json!({"orchestrator_note": "new"}), PermissionMode::Bypass, 21).unwrap();
+        assert_eq!(b.task("a").unwrap().orchestrator_note.as_deref(), Some("new"));
+        b.update_task("a", &json!({"orchestrator_note": null}), PermissionMode::Bypass, 22).unwrap();
+        assert!(b.task("a").unwrap().orchestrator_note.is_none());
+        assert!(parse_spec(&json!({"id": "a", "task": "x", "orchestrator_note": 3}), None).is_err());
+        let long = parse_spec(&json!({"id": "a", "task": "x", "orchestrator_note": "é".repeat(2500)}), None).unwrap();
+        assert_eq!(long.orchestrator_note.unwrap().chars().count(), 2000);
+        b.set_held("a", false, 23).unwrap();
+        assert!(b.view().to_compact_json(None).get("held").is_none());
+    }
+
+    #[test]
     fn worker_environment_mentions_setup_worktree_and_rules() {
         let mut t = Task::from_spec(touching("a", &["src/auth", "docs"]), 1);
-        t.worktree = Some(WorktreeInfo { path: "C:\\p\\.worktrees\\a".into(), branch: "task/a".into(), base: "main".into() });
-        let env = worker_environment(&EnvInfo { root: "C:\\p", workdir: "C:\\p\\.worktrees\\a", task: &t, setup: Some("npm ci") });
+        t.worktree = Some(WorktreeInfo { path: "C:\\p\\.worktrees\\a".into(), branch: "task/a".into(), base: "main".into(), repo: None, setup_done: true });
+        let env = worker_environment(&EnvInfo { root: "C:\\p", workdir: "C:\\p\\.worktrees\\a", task: &t, setup: Some("npm ci"), repo_cfg: None });
         assert!(env.contains("run this setup command") && env.contains("npm ci"));
         assert!(env.contains("branch task/a (created from main)"));
         assert!(env.contains("src/auth, docs"));
         assert!(env.contains("Do NOT merge, push, rebase or switch branches"));
         assert!(env.contains("complete_task") && env.contains("files_changed"));
         assert!(env.find("setup command").unwrap() < env.find("Rules").unwrap());
-        let env = worker_environment(&EnvInfo { root: "C:\\p", workdir: "C:\\p\\.worktrees\\a", task: &t, setup: None });
+        let env = worker_environment(&EnvInfo { root: "C:\\p", workdir: "C:\\p\\.worktrees\\a", task: &t, setup: None, repo_cfg: None });
         assert!(env.contains("No setup command"));
         // Senza isolamento: root, niente branch, aree dichiarate.
         let mut n = Task::from_spec(touching("n", &["lib"]), 1);
         n.isolation = Isolation::None;
-        let env = worker_environment(&EnvInfo { root: "/r", workdir: "/r", task: &n, setup: Some("  ") });
+        let env = worker_environment(&EnvInfo { root: "/r", workdir: "/r", task: &n, setup: Some("  "), repo_cfg: None });
         assert!(env.contains("No dedicated worktree") && env.contains("No setup command"));
         assert!(env.contains("Do not create branches") && env.contains("Do not touch areas outside the declared ones"));
         assert!(env.is_ascii());
+    }
+
+    #[test]
+    fn repo_is_normalized_and_validated() {
+        let repo = |v: Value| parse_spec(&json!({"id": "a", "task": "x", "repo": v}), None);
+        assert_eq!(repo(json!("freud-manager")).unwrap().repo.as_deref(), Some("freud-manager"));
+        assert_eq!(repo(json!(" ./apps\\web/ ")).unwrap().repo.as_deref(), Some("apps/web"));
+        // La root vale None, come null o l'assenza del campo.
+        for root in [json!("."), json!("./"), json!(null)] {
+            assert_eq!(repo(root).unwrap().repo, None);
+        }
+        assert_eq!(spec("a").repo, None);
+        for bad in ["", "  ", "/abs", "C:\\x", "c:/x", "..", "a/../b", "../x", "a\nb", &"r".repeat(257)] {
+            assert!(repo(json!(bad)).is_err(), "{bad:?}");
+        }
+        assert!(repo(json!(3)).unwrap_err().contains("string"));
+        // Parziale: il campo assente resta, null lo toglie.
+        let base = spec_with(json!({"id": "a", "task": "x", "repo": "r1"}));
+        let kept = parse_spec(&json!({"id": "a", "title": "t"}), Some(&base)).unwrap();
+        assert_eq!(kept.repo.as_deref(), Some("r1"));
+        let cleared = parse_spec(&json!({"id": "a", "repo": null}), Some(&base)).unwrap();
+        assert_eq!(cleared.repo, None);
+    }
+
+    #[test]
+    fn repo_cannot_change_once_the_task_has_a_worktree() {
+        let mut b = board_with(vec![spec_with(json!({"id": "a", "task": "x", "repo": "r1"}))]);
+        b.update_task("a", &json!({"repo": "r2"}), PermissionMode::Bypass, 20).unwrap();
+        assert_eq!(b.task("a").unwrap().repo.as_deref(), Some("r2"));
+        b.task_mut("a").unwrap().worktree =
+            Some(WorktreeInfo { path: "p".into(), branch: "task/a".into(), base: "main".into(), repo: Some("r2".into()), setup_done: true });
+        let e = b.update_task("a", &json!({"repo": "r3"}), PermissionMode::Bypass, 21).unwrap_err();
+        assert!(e.contains("repo cannot be changed"), "{e}");
+        // Lo stesso valore e altri campi si possono ancora cambiare.
+        b.update_task("a", &json!({"repo": "r2", "priority": 2}), PermissionMode::Bypass, 22).unwrap();
+    }
+
+    #[test]
+    fn scheduler_conflicts_only_inside_the_same_repo() {
+        let t = |id: &str, repo: Option<&str>, iso: &str| {
+            let mut v = json!({"id": id, "task": "x", "touches": ["src"], "isolation": iso});
+            if let Some(r) = repo {
+                v["repo"] = json!(r);
+            }
+            spec_with(v)
+        };
+        // Stessa area `src` in repo diversi e nella root: nessun conflitto.
+        let b = board_with(vec![t("a", Some("r1"), "worktree"), t("b", Some("r2"), "worktree"), t("c", None, "worktree")]);
+        assert_eq!(schedule(&b, &ctx()), ["a", "b", "c"]);
+        // Nello stesso repo si accodano.
+        let b = board_with(vec![t("a", Some("r1"), "worktree"), t("b", Some("r1"), "worktree")]);
+        assert_eq!(schedule(&b, &ctx()), ["a"]);
+        // Anche contro un task gia' in esecuzione.
+        let mut b = board_with(vec![t("a", Some("r1"), "worktree"), t("b", Some("r1"), "worktree"), t("c", Some("r2"), "worktree")]);
+        set_status(&mut b, "a", TaskStatus::Running);
+        assert_eq!(schedule(&b, &ctx()), ["c"]);
+        // Un solo task `none` scrivente per repository.
+        let b = board_with(vec![
+            spec_with(json!({"id": "a", "task": "x", "isolation": "none", "repo": "r1"})),
+            spec_with(json!({"id": "b", "task": "x", "isolation": "none", "repo": "r2"})),
+            spec_with(json!({"id": "c", "task": "x", "isolation": "none", "repo": "r1"})),
+            spec_with(json!({"id": "d", "task": "x", "isolation": "none"})),
+        ]);
+        assert_eq!(schedule(&b, &ctx()), ["a", "b", "d"]);
+    }
+
+    #[test]
+    fn repo_settings_merge_and_integration_reset() {
+        let p = parse_plan(&json!({
+            "tasks": [{"id": "a", "task": "x"}],
+            "base_branches": {"freud-manager": "master", "./DDB/": "main", ".": "dev"},
+            "integration_branch": "integration/{date}"
+        }))
+        .unwrap();
+        let mut b = Board::new("ws");
+        b.apply_repo_settings(p.base_branches, p.integration_branch);
+        assert_eq!(b.base_branches.get("freud-manager").map(String::as_str), Some("master"));
+        assert_eq!(b.base_branches.get("DDB").map(String::as_str), Some("main"));
+        assert_eq!(b.base_branches.get(".").map(String::as_str), Some("dev"));
+        assert_eq!(b.integration_branch.as_deref(), Some("integration/{date}"));
+        b.integrations.insert(".".into(), Integration { branch: "x".into(), path: "p".into(), base: "main".into(), setup_done: true });
+        b.repos = Some(vec![".".into()]);
+        // Stringa vuota o null tolgono una voce; le altre restano.
+        let ops = parse_base_branches(&json!({"DDB": "", "freud-manager": null})).unwrap();
+        b.apply_repo_settings(ops, None);
+        assert_eq!(b.base_branches.keys().collect::<Vec<_>>(), ["."]);
+        // Stesso modello: le integrazioni restano; cambiato o spento: si scartano.
+        assert_eq!(b.repos, None);
+        b.apply_repo_settings(Vec::new(), Some(Some("integration/{date}".into())));
+        assert_eq!(b.integrations.len(), 1);
+        b.apply_repo_settings(Vec::new(), Some(None));
+        assert!(b.integrations.is_empty() && b.integration_branch.is_none());
+        // Validazione.
+        assert!(parse_base_branches(&json!({"x": "a..b"})).is_err());
+        assert!(parse_base_branches(&json!({"../x": "main"})).is_err());
+        assert!(parse_base_branches(&json!(["x"])).is_err());
+        assert!(parse_integration_template(&json!("--bad")).is_err());
+        assert!(parse_integration_template(&json!("a b/{date}")).is_err());
+        assert!(parse_integration_template(&json!("{other}")).is_err());
+        assert_eq!(parse_integration_template(&json!("")).unwrap(), None);
+        assert_eq!(parse_integration_template(&json!(null)).unwrap(), None);
+    }
+
+    #[test]
+    fn integration_names_get_a_numeric_suffix() {
+        assert_eq!(expand_integration("integration/{date}", "2026-10-21").unwrap(), "integration/2026-10-21");
+        let taken = ["int", "int-2"];
+        assert_eq!(first_free_branch("int", |c| taken.contains(&c)).as_deref(), Some("int-3"));
+        assert_eq!(first_free_branch("int", |_| false).as_deref(), Some("int"));
+        assert_eq!(first_free_branch("int", |_| true), None);
+        assert!(integration_matches("int", "int"));
+        assert!(integration_matches("int", "int-2"));
+        assert!(!integration_matches("int", "int-x"));
+        assert!(!integration_matches("int", "int-"));
+        assert!(!integration_matches("int", "integration"));
+        assert_eq!(repo_key(None), ".");
+        assert_eq!(repo_key(Some("a/b")), "a/b");
     }
 }

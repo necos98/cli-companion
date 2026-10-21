@@ -12,6 +12,9 @@ import {
   columnLabel,
   columnTextClass,
   emptyBoard,
+  heldCount,
+  sanitizeWorkerRules,
+  WORKER_RULES_MAX,
   isBoardOf,
   mergeBoard,
   sanitizeWorktreeSetup,
@@ -129,6 +132,11 @@ describe("board: sotto-stato e report", () => {
     assert.equal(workerSubStatus(task({ status: "running", worker_status: null })), null);
     assert.equal(workerSubStatus(task({ status: "done", worker_status: "completed" })), null);
   });
+  it("task in preparazione: etichetta dedicata solo se in corso", () => {
+    const s = workerSubStatus(task({ status: "running", worker_status: "starting", preparing: "setup 1/2: composer install" }));
+    assert.equal(s.text, "Preparazione…");
+    assert.equal(workerSubStatus(task({ status: "failed", preparing: "x" })), null);
+  });
   it("report troncato", () => {
     assert.equal(shortReport({ last_report: null }), "");
     assert.equal(shortReport({ last_report: "x".repeat(300) }, 10).length, 10);
@@ -223,5 +231,26 @@ describe("canEditModel", () => {
   it("consente il cambio solo per queued, failed, blocked e cancelled", () => {
     for (const s of ["queued", "failed", "blocked", "cancelled"]) assert.equal(canEditModel(s), true, s);
     for (const s of ["running", "review", "done"]) assert.equal(canEditModel(s), false, s);
+  });
+});
+
+describe("task fuori board e regole dei worker", () => {
+  it("heldCount conta solo i task in coda trattenuti", () => {
+    const tasks = [
+      { status: "queued", held: true },
+      { status: "queued", held: false },
+      { status: "running", held: true },
+    ];
+    assert.equal(heldCount(tasks), 1);
+    assert.equal(heldCount([]), 0);
+  });
+
+  it("sanitizeWorkerRules taglia e limita", () => {
+    assert.equal(sanitizeWorkerRules("  no e2e \n"), "no e2e");
+    assert.equal(sanitizeWorkerRules("a".repeat(WORKER_RULES_MAX + 10)).length, WORKER_RULES_MAX);
+  });
+
+  it("la UI non offre done da queued (serve una nota: lo fa l'orchestratore)", () => {
+    assert.equal(allowedActions({ status: "queued", held: false }).includes("done"), false);
   });
 });

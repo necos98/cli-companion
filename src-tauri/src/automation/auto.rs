@@ -492,6 +492,7 @@ impl AutomationState {
                 bootstrap_prompt: ORCHESTRATOR_BOOTSTRAP_PROMPT,
                 permission_mode: ws.worker_permission_mode(),
                 model: a.model.as_deref(),
+                settings_path: None,
             };
             host.launch_command(&a.agent, &ws.kind, &req)
         };

@@ -81,6 +81,9 @@ fn hooks_json(exe: &str) -> String {
             "Notification": [
                 { "matcher": NEEDS_INPUT_MATCHER, "hooks": [ hook("needs-input") ] }
             ],
+            // Nessun output e exit 0: non decide, il dialogo di permesso
+            // compare come al solito. Porta tool e comando al needs_input.
+            "PermissionRequest": [ { "hooks": [ hook("permission-request") ] } ],
         }
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
@@ -226,8 +229,16 @@ impl AgentProvider for ClaudeCode {
             PermissionMode::Plan => "plan",
             PermissionMode::Bypass => "bypassPermissions",
         };
+        // `--settings` prima di `--allowedTools` (variadico). Il path sta tra
+        // doppi apici, valido in PowerShell, cmd e bash se privo di
+        // `" $ ` % !` (altrimenti niente comando).
+        let settings = match req.settings_path {
+            Some(p) if crate::worker_permissions::is_shell_safe_path(p) => format!(" --settings \"{p}\""),
+            Some(_) => return None,
+            None => String::new(),
+        };
         let mut cmd = format!(
-            "claude \"{}\" --permission-mode {mode} --allowedTools {MCP_ALLOW_RULE}",
+            "claude \"{}\" --permission-mode {mode}{settings} --allowedTools {MCP_ALLOW_RULE}",
             req.bootstrap_prompt
         );
         if let Some(m) = req.model {
@@ -413,6 +424,7 @@ mod tests {
         let f = files("C:/Program Files/cli-companion/cli-companion.exe");
         let h = &f["plugins/cli-companion-notify/hooks/hooks.json"]["hooks"];
         let cases = [
+            ("PermissionRequest", "permission-request", None),
             ("SessionStart", "session-start", None),
             ("Stop", "finished", None),
             ("SessionEnd", "session-end", None),
@@ -519,7 +531,28 @@ mod tests {
     }
 
     fn req<'a>(mode: PermissionMode, model: Option<&'a str>, prompt: &'a str) -> AutomationRequest<'a> {
-        AutomationRequest { bootstrap_prompt: prompt, permission_mode: mode, model }
+        AutomationRequest { bootstrap_prompt: prompt, permission_mode: mode, model, settings_path: None }
+    }
+
+    #[test]
+    fn automation_command_adds_quoted_settings_before_allowed_tools() {
+        let mut r = req(PermissionMode::Default, Some("opus"), "ciao");
+        r.settings_path = Some(r"C:\Users\Mario Rossi\AppData\Roaming\cli-companion\worker-settings\ws-1.json");
+        let c = ClaudeCode.automation_command("windows", &r).unwrap();
+        assert_eq!(
+            c,
+            "claude \"ciao\" --permission-mode default --settings \"C:\\Users\\Mario Rossi\\AppData\\Roaming\\cli-companion\\worker-settings\\ws-1.json\" --allowedTools mcp__plugin_cli-companion-notify_cli-companion --model opus"
+        );
+        r.settings_path = Some("/mnt/c/Users/me/AppData/Roaming/cli-companion/worker-settings/ws-1.json");
+        let c = ClaudeCode.automation_command("wsl", &r).unwrap();
+        assert!(c.contains(
+            " --settings \"/mnt/c/Users/me/AppData/Roaming/cli-companion/worker-settings/ws-1.json\" --allowedTools"
+        ));
+        // Path con caratteri speciali per la shell: nessun comando.
+        for bad in ["C:\\a$b\\x.json", "C:\\a`b", "C:\\100%\\x", "C:\\a\"b", "C:\\hi!\\x"] {
+            r.settings_path = Some(bad);
+            assert!(ClaudeCode.automation_command("windows", &r).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

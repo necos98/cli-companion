@@ -388,6 +388,9 @@ pub struct AutomationRequest<'a> {
     pub permission_mode: PermissionMode,
     /// Gia' validato (`[A-Za-z0-9._-]{1,64}`).
     pub model: Option<&'a str>,
+    /// File settings con le regole di permesso del workspace (`--settings`),
+    /// gia' nel formato di path dell'ambiente in cui gira l'agente. Solo Claude Code.
+    pub settings_path: Option<&'a str>,
 }
 
 /// Una finestra di limite dell'abbonamento (5 ore o settimanale).
@@ -573,6 +576,7 @@ pub fn automation_agents() -> Vec<(&'static str, &'static str)> {
         bootstrap_prompt: "probe",
         permission_mode: PermissionMode::Default,
         model: None,
+        settings_path: None,
     };
     PROVIDERS
         .iter()

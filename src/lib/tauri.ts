@@ -45,10 +45,27 @@ export interface Workspace {
   worker_permission: WorkerPermission;
   /** Modello dei worker automatici; assente/null = predefinito dell'agente. */
   worker_model?: string | null;
+  /** Regole di permesso pre-approvate / vietate per i worker Claude Code. */
+  worker_allow?: string[];
+  worker_deny?: string[];
   /** Comando di setup dei worktree dei task (assente = nessuno). */
   worktree_setup?: string;
+  /** Regole inviate a ogni worker automatico (assente = nessuna). */
+  worker_rules?: string;
   /** Orchestratore automatico del workspace (assente = non automatico). */
   auto_orchestrate?: AutoOrchestrate | null;
+  /** Configurazione per repository (chiave = cartella relativa alla root, "." = la root). */
+  repos?: Record<string, RepoConfig>;
+}
+
+/** Preparazione e pulizia dei worktree di un repository (vedi `RepoConfig` in workspaces.rs). */
+export interface RepoConfig {
+  base_branch: string | null;
+  container_root: string | null;
+  copy_ignored: string[];
+  setup: string[];
+  cleanup: string[];
+  remove_force: boolean;
 }
 
 /** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */
@@ -176,11 +193,20 @@ export const api = {
 
   setWorkerModel: (id: string, model: string | null) =>
     invoke<Workspace>("set_worker_model", { id, model }),
+  setWorkerPermissionRules: (id: string, allow: string[], deny: string[]) =>
+    invoke<Workspace>("set_worker_permission_rules", { id, allow, deny }),
   setWorkerPermission: (id: string, mode: WorkerPermission) =>
     invoke<Workspace>("set_worker_permission", { id, mode }),
 
+  setWorkerRules: (workspaceId: string, rules: string) =>
+    invoke<Workspace>("set_worker_rules", { workspaceId, rules }),
+
   setWorktreeSetup: (id: string, command: string | null) =>
     invoke<Workspace>("set_worktree_setup", { id, command }),
+
+  /** Imposta (o con null rimuove) la configurazione di un repository del workspace. */
+  setRepoConfig: (workspaceId: string, repo: string, config: RepoConfig | null) =>
+    invoke<Workspace>("set_repo_config", { workspaceId, repo, config }),
 
   setAutoOrchestrate: (id: string, config: AutoOrchestrate | null) =>
     invoke<Workspace>("set_auto_orchestrate", { id, config }),
@@ -272,6 +298,10 @@ export const api = {
 
   // Board dei task (backend: src-tauri, contratto in docs/BOARD.MD).
   boardGet: (workspaceId: string) => invoke<BoardView>("board_get", { workspaceId }),
+
+  /** Repository del workspace: "." se la root è un repo, più le sottocartelle con un .git. */
+  workspaceDetectRepos: (workspaceId: string) =>
+    invoke<string[]>("workspace_detect_repos", { workspaceId }),
 
   boardSet: (workspaceId: string, settings: { maxParallel?: number; paused?: boolean }) =>
     invoke<BoardView>("board_set", {

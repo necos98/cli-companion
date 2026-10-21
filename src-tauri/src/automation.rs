@@ -44,6 +44,7 @@ const UPDATE_EVENT: &str = "automation-update";
 const BOARD_EVENT: &str = "board-update";
 
 mod boards;
+mod hooks;
 pub mod auto;
 pub use auto::{ORCHESTRATOR_BOOTSTRAP_PROMPT, WINDOW_CLOSED_TEXT};
 pub use boards::{GitOut, StartJob};
@@ -289,6 +290,10 @@ pub struct SessionInfo {
     /// Id del task, per i worker di una board.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Secondi dallo spawn, per un worker che non ha ancora chiamato
+    /// `get_task`: distingue un avvio lento da uno bloccato.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starting_secs: Option<u64>,
 }
 
 /// Dati di un worker da registrare (gia' validati e con il comando pronto).
@@ -334,6 +339,7 @@ pub enum Effect {
 
 struct Worker {
     session: String,
+    workspace_id: String,
     title: String,
     task: String,
     orchestrator: String,
@@ -497,6 +503,7 @@ impl Registry {
             id.clone(),
             Worker {
                 session: id,
+                workspace_id: new.workspace_id,
                 title: new.title,
                 task: new.task,
                 orchestrator: orch.to_string(),
@@ -649,12 +656,18 @@ impl Registry {
     pub fn get_task_in(&mut self, session: &str, now: i64, ws: Option<&Workspace>) -> Result<Value, String> {
         let env = self.board_environment(session, ws);
         let w = self.worker_mut(session)?;
+        // Le regole del workspace si leggono qui, a ogni get_task: le modifiche
+        // valgono per i nuovi worker. Mai nel testo `task` dell'orchestratore.
+        let mut instructions = WORKER_INSTRUCTIONS.to_string();
+        if let Some(rules) = ws.map(|w| w.worker_rules.trim()).filter(|r| !r.is_empty()) {
+            instructions.push_str(&format!("\n\nWorkspace rules (always apply):\n{rules}"));
+        }
         let mut out = json!({
             "session": w.session,
             "title": w.title,
             "task": w.task,
             "orchestrator": w.orchestrator,
-            "instructions": WORKER_INSTRUCTIONS,
+            "instructions": instructions,
         });
         if let Some((_, tid)) = &w.board_task {
             out["task_id"] = json!(tid);
@@ -812,7 +825,7 @@ impl Registry {
         Ok(())
     }
 
-    pub fn list_sessions(&self, orch: &str) -> Vec<SessionInfo> {
+    pub fn list_sessions(&self, orch: &str, now: i64) -> Vec<SessionInfo> {
         let mut v: Vec<&Worker> = self
             .workers
             .values()
@@ -829,6 +842,8 @@ impl Registry {
                 updated_at: w.updated_at,
                 last_report: w.last_report.clone(),
                 task: w.board_task.as_ref().map(|t| t.1.clone()),
+                starting_secs: (w.status == WorkerStatus::Starting && !w.started_sent)
+                    .then(|| (now - w.created_at).max(0) as u64 / 1000),
             })
             .collect()
     }
@@ -1123,6 +1138,12 @@ pub trait Host: Clone + Send + 'static {
         env_kind: &str,
         req: &AutomationRequest,
     ) -> Result<String, String>;
+    /// File settings con le regole di permesso pre-approvate/vietate del
+    /// workspace per l'agente `agent` (solo Claude Code), nel formato di path
+    /// del suo ambiente. `None` = nessuna regola o agente senza supporto.
+    fn worker_settings_path(&self, _ws: &Workspace, _agent: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     fn emit_spawn(&self, ev: &SpawnEvent);
     fn emit_close(&self, tab_id: &str);
     fn emit_update(&self, info: &AutomationTabInfo);
@@ -1136,6 +1157,23 @@ pub trait Host: Clone + Send + 'static {
     fn git(&self, ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut, String>;
     /// Aggiunge `line` al file `file` (info/exclude) se manca.
     fn append_exclude(&self, ws: &Workspace, file: &str, line: &str) -> Result<(), String>;
+    /// Repository del workspace: "." se la root e' un repo, piu' le
+    /// sottocartelle dirette con un `.git`.
+    fn list_repos(&self, ws: &Workspace) -> Result<Vec<String>, String>;
+    /// Il percorso (file o cartella) esiste nell'ambiente del workspace?
+    fn path_exists(&self, ws: &Workspace, path: &str) -> bool;
+    /// Copia ricorsiva `src` -> `dst` (file o cartella), creando le cartelle padre.
+    fn copy_path(&self, ws: &Workspace, src: &str, dst: &str) -> Result<(), String>;
+    /// Esegue un comando dell'utente (setup / pulizia) con la shell della
+    /// piattaforma, cwd `dir`, `env` in piu'. `Err` solo se non parte o scade.
+    fn run_hook(
+        &self,
+        ws: &Workspace,
+        dir: &str,
+        command: &str,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<GitOut, String>;
     fn save_board(&self, board: &Board) -> Result<(), String>;
     fn delete_board(&self, ws_id: &str);
     fn emit_board(&self, view: &BoardView);
@@ -1229,6 +1267,9 @@ pub struct AutomationState {
     awake_applied: Arc<Mutex<u64>>,
     /// Un avvio alla volta per task (git worktree sullo stesso path).
     starts: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Cache dei `git fetch` (60 s per repository e base) e turno unico per
+    /// fetch e branch di integrazione. Ordine dei lock: questo, poi `inner`.
+    repo_prep: Arc<Mutex<boards::FetchCache>>,
 }
 
 impl AutomationState {
@@ -1426,6 +1467,8 @@ pub fn dispatch<H: Host>(
                         "id": w.id, "name": w.name, "kind": w.kind, "path": w.path,
                         "worker_permission": w.worker_permission_mode().as_str(),
                         "worker_model": w.worker_model,
+                        "worker_allow": w.worker_allow,
+                        "worker_deny": w.worker_deny,
                     });
                 }
             }
@@ -1439,7 +1482,7 @@ pub fn dispatch<H: Host>(
         )),
         "spawn_session" => rpc_spawn(st, host, session, params, now),
         "list_sessions" => {
-            let list = st.inner.lock().unwrap().list_sessions(session);
+            let list = st.inner.lock().unwrap().list_sessions(session, now);
             serde_json::to_value(list).map_err(|e| e.to_string())
         }
         "send_message" => {
@@ -1463,7 +1506,7 @@ pub fn dispatch<H: Host>(
         }
         "get_workflow" | "save_workflow" => auto::rpc_workflow(host, session, method, params),
         "get_task" => {
-            let ws = st.board_workspace_of(session).and_then(|id| host.workspace(&id));
+            let ws = st.worker_workspace_of(session).and_then(|id| host.workspace(&id));
             st.run(host, |r| r.get_task_in(session, now, ws.as_ref()))
         }
         "report_fact" => {
@@ -1521,10 +1564,12 @@ fn rpc_spawn<H: Host>(
         }
     }
     let permission_mode = resolve_permission(p.permission_mode, ws.worker_permission_mode())?;
+    let settings_path = host.worker_settings_path(ws, &p.agent)?;
     let req = AutomationRequest {
         bootstrap_prompt: BOOTSTRAP_PROMPT,
         permission_mode,
         model: p.model.as_deref().or(ws.worker_model.as_deref()),
+        settings_path: settings_path.as_deref(),
     };
     let command = host.launch_command(&p.agent, &ws.kind, &req)?;
     let new = NewWorker {
@@ -1666,6 +1711,15 @@ impl Host for TauriHost {
         agents::automation_command(agent, env_kind, req)
     }
 
+    fn worker_settings_path(&self, ws: &Workspace, agent: &str) -> Result<Option<String>, String> {
+        // Solo Claude Code sa leggere `--settings`.
+        if agent != "claude-code" {
+            return Ok(None);
+        }
+        let data_dir = auto::data_dir(&self.0)?;
+        crate::worker_permissions::prepare_settings_file(&data_dir, &ws.id, &ws.kind, &ws.worker_allow, &ws.worker_deny)
+    }
+
     fn emit_spawn(&self, ev: &SpawnEvent) {
         let _ = self.0.emit(SPAWN_EVENT, ev);
     }
@@ -1696,6 +1750,29 @@ impl Host for TauriHost {
 
     fn append_exclude(&self, ws: &Workspace, file: &str, line: &str) -> Result<(), String> {
         boards::append_exclude_line(ws, file, line)
+    }
+
+    fn list_repos(&self, ws: &Workspace) -> Result<Vec<String>, String> {
+        boards::detect_repos(ws)
+    }
+
+    fn path_exists(&self, ws: &Workspace, path: &str) -> bool {
+        hooks::path_exists_real(ws, path)
+    }
+
+    fn copy_path(&self, ws: &Workspace, src: &str, dst: &str) -> Result<(), String> {
+        hooks::copy_path_real(ws, src, dst)
+    }
+
+    fn run_hook(
+        &self,
+        ws: &Workspace,
+        dir: &str,
+        command: &str,
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<GitOut, String> {
+        hooks::run_hook_real(ws, dir, command, env, timeout)
     }
 
     fn save_board(&self, board: &Board) -> Result<(), String> {
@@ -1879,6 +1956,18 @@ pub async fn board_set(
     .await
 }
 
+/// Repository del workspace (root se e' un repo, sottocartelle con `.git`):
+/// per la scelta del repository dei task. Git/disco fuori dal thread principale.
+#[tauri::command]
+pub async fn workspace_detect_repos(app: AppHandle, workspace_id: String) -> Result<Vec<String>, String> {
+    crate::blocking(move || {
+        let host = TauriHost(app);
+        let ws = host.workspace(&workspace_id).ok_or_else(|| "workspace non trovato".to_string())?;
+        host.list_repos(&ws)
+    })
+    .await
+}
+
 /// Imposta (o azzera) il modello di un task della board dalla vista Board.
 #[tauri::command]
 pub async fn board_task_set_model(
@@ -1960,7 +2049,7 @@ mod tests {
     }
 
     fn status_of(r: &Registry) -> WorkerStatus {
-        r.list_sessions(ORCH)[0].status
+        r.list_sessions(ORCH, 0)[0].status
     }
 
     #[test]
@@ -2019,7 +2108,7 @@ mod tests {
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["cwd"], "C:/x");
         assert_eq!(v["agent_id"], "claude-code");
-        let list = r.list_sessions(ORCH);
+        let list = r.list_sessions(ORCH, 0);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].status, WorkerStatus::Starting);
         assert_eq!(list[0].workspace, "Proj");
@@ -2047,7 +2136,7 @@ mod tests {
         let w = spawn(&mut r, "uno");
         assert!(r.send_message("orch-2", &w, 1).is_err());
         assert!(r.close_session("orch-2", &w, 1).is_err());
-        assert!(r.list_sessions("orch-2").is_empty());
+        assert!(r.list_sessions("orch-2", 0).is_empty());
         // Un worker non gestisce nessuno.
         assert!(r.send_message(&w, &w, 1).is_err());
         assert!(r.send_message(ORCH, "nope", 1).is_err());
@@ -2070,9 +2159,9 @@ mod tests {
         r.get_task(&w, 2001).unwrap();
         r.report_fact(&w, "  trovato X  ", 2002).unwrap();
         r.request_help(&w, "che faccio?", 2003).unwrap();
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::NeedsInput);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::NeedsInput);
         r.report_fact(&w, "ripreso", 2004).unwrap();
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Running);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Running);
         assert!(r.complete_task(&w, "completed", "fatto", 2005).unwrap());
 
         let events = r.drain(ORCH);
@@ -2091,7 +2180,7 @@ mod tests {
         assert!(events.windows(2).all(|p| p[0].seq < p[1].seq));
         assert!(r.drain(ORCH).is_empty());
 
-        let s = &r.list_sessions(ORCH)[0];
+        let s = &r.list_sessions(ORCH, 0)[0];
         assert_eq!(s.status, WorkerStatus::Completed);
         assert_eq!(s.last_report.as_deref(), Some("fatto"));
         let effects = r.take_effects();
@@ -2101,7 +2190,7 @@ mod tests {
         // finche' non si chiude: tab_closed non genera `exited`.
         r.tab_closed(&w, 3000);
         assert!(r.drain(ORCH).is_empty());
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Completed);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Completed);
         assert!(r.open_tabs().is_empty());
         // Chiuso: i tool non rispondono piu'.
         assert!(r.report_fact(&w, "tardi", 3001).is_err());
@@ -2123,7 +2212,29 @@ mod tests {
         assert!(!r.take_effects().iter().any(|e| matches!(e, Effect::Close { .. })));
         // L'orchestratore scrive al worker: riprende a lavorare.
         r.send_message(ORCH, &w, 4).unwrap();
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Running);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Running);
+    }
+
+    #[test]
+    fn permission_request_text_is_the_needs_input_event_text_without_duplicates() {
+        let mut r = Registry::default();
+        let w = spawn(&mut r, "uno");
+        r.get_task(&w, 1).unwrap();
+        r.drain(ORCH);
+        let text = "Permesso richiesto: Bash \u{2014} docker exec freud-manager composer dump-autoload";
+        // Come lo inoltra `agent_notify`: `needs-input` + `permission_prompt` + dettaglio.
+        let ev = HookEvent {
+            event: "needs-input",
+            notification_type: Some("permission_prompt"),
+            message: Some(text),
+            ..Default::default()
+        };
+        r.on_hook(&w, &ev, 2);
+        // La Notification (generica) che segue non aggiunge un secondo evento.
+        hook(&mut r, &w, "needs-input", Some("Claude needs your permission"), 3);
+        let events = r.drain(ORCH);
+        assert_eq!(kinds(&events), vec![EventKind::NeedsInput]);
+        assert_eq!(events[0].text.as_deref(), Some(text));
     }
 
     #[test]
@@ -2143,13 +2254,13 @@ mod tests {
         let ev = r.drain(ORCH);
         assert_eq!(kinds(&ev), vec![EventKind::NeedsInput, EventKind::StoppedWithoutReport]);
         assert_eq!(ev[0].text.as_deref(), Some("serve un permesso"));
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Idle);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Idle);
         // Idle: altri Stop non fanno nulla.
         assert_eq!(stop(&mut r, &w, None, None, 4), None);
         assert!(r.drain(ORCH).is_empty());
         hook(&mut r, &w, "session-end", None, 5);
         assert_eq!(kinds(&r.drain(ORCH)), vec![EventKind::Exited]);
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Closed);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Closed);
         // Dopo la chiusura nessun altro evento, nemmeno da tab_closed.
         hook(&mut r, &w, "finished", None, 6);
         r.tab_closed(&w, 7);
@@ -2166,7 +2277,7 @@ mod tests {
         // Lo Stop che segue request_help non e' un abbandono.
         hook(&mut r, &w, "finished", None, 3);
         assert!(r.drain(ORCH).is_empty());
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::NeedsInput);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::NeedsInput);
         r.report_fact(&w, "ok", 4).unwrap();
         r.complete_task(&w, "completed", "fine", 5).unwrap();
         r.drain(ORCH);
@@ -2174,7 +2285,7 @@ mod tests {
         hook(&mut r, &w, "needs-input", None, 7);
         hook(&mut r, &w, "session-end", None, 8);
         assert!(r.drain(ORCH).is_empty());
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Completed);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Completed);
     }
 
     #[test]
@@ -2248,7 +2359,7 @@ mod tests {
         r.close_session(ORCH, &w2, 12).unwrap();
         r.tab_closed(&w2, 13);
         assert!(r.drain(ORCH).is_empty());
-        let st2 = r.list_sessions(ORCH).into_iter().find(|x| x.session == w2).unwrap().status;
+        let st2 = r.list_sessions(ORCH, 0).into_iter().find(|x| x.session == w2).unwrap().status;
         assert_eq!(st2, WorkerStatus::Closed);
         // Il tab si chiude con il worker in background: exited.
         let w3 = spawn(&mut r, "tre");
@@ -2339,7 +2450,7 @@ mod tests {
         assert!(r.take_effects().contains(&Effect::Close { tab_id: w.clone(), delay: Duration::ZERO }));
         r.tab_closed(&w, 3);
         assert!(r.drain(ORCH).is_empty());
-        assert_eq!(r.list_sessions(ORCH)[0].status, WorkerStatus::Closed);
+        assert_eq!(r.list_sessions(ORCH, 0)[0].status, WorkerStatus::Closed);
         assert!(r.close_session(ORCH, &w, 4).is_err());
         assert!(r.send_message(ORCH, &w, 4).is_err());
     }
@@ -2573,8 +2684,12 @@ mod tests {
             worker_permission: "accept-edits".to_string(),
             worktree_setup: None,
             worker_model: None,
+            worker_allow: Vec::new(),
+            worker_deny: Vec::new(),
             auto_orchestrate: None,
             default_launch: None,
+            worker_rules: String::new(),
+            repos: Default::default(),
         }
     }
 
@@ -2663,12 +2778,25 @@ mod tests {
         workflows: Arc<Mutex<HashMap<String, String>>>,
         /// Modello di default dei worker del workspace "ws-1".
         worker_model: Arc<Mutex<Option<String>>>,
+        /// Regole per i worker del workspace "ws-1".
+        worker_rules: Arc<Mutex<String>>,
         /// Errore forzato di `append_exclude`.
         exclude_err: Arc<Mutex<Option<String>>>,
         /// `true` = i `git worktree add` restano bloccati (prova della serializzazione).
         add_hold: Arc<(Mutex<bool>, std::sync::Condvar)>,
         add_in_flight: Arc<std::sync::atomic::AtomicUsize>,
         add_max_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        /// Repository "rilevati" dal workspace finto e quante volte si sono cercati.
+        repos: Arc<Mutex<Vec<String>>>,
+        list_repos_calls: Arc<std::sync::atomic::AtomicUsize>,
+        /// Configurazione per repository del workspace "ws-1".
+        repo_cfg: Arc<Mutex<std::collections::BTreeMap<String, crate::workspaces::RepoConfig>>>,
+        /// "<dir>|<comando>|<ENV=V,...>" di ogni hook eseguito, e copie "src->dst".
+        hook_log: Arc<Mutex<Vec<String>>>,
+        /// Esiti forzati degli hook: il primo il cui testo e' contenuto in "<dir>|<comando>".
+        hook_rules: Arc<Mutex<Vec<(String, GitOut)>>>,
+        /// Percorsi che "esistono" per `path_exists` (copie dei file ignorati).
+        files: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeHost {
@@ -2691,6 +2819,8 @@ mod tests {
                     let mut w = ws("ws-1", "Proj", "windows");
                     w.worktree_setup = self.setup.lock().unwrap().clone();
                     w.worker_model = self.worker_model.lock().unwrap().clone();
+                    w.worker_rules = self.worker_rules.lock().unwrap().clone();
+                    w.repos = self.repo_cfg.lock().unwrap().clone();
                     w.auto_orchestrate = self.auto.lock().unwrap().get(id).cloned();
                     Some(w)
                 }
@@ -2778,6 +2908,35 @@ mod tests {
             self.excludes.lock().unwrap().push(format!("{file}|{line}"));
             Ok(())
         }
+        fn list_repos(&self, _ws: &Workspace) -> Result<Vec<String>, String> {
+            self.list_repos_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.repos.lock().unwrap().clone())
+        }
+        fn path_exists(&self, _ws: &Workspace, path: &str) -> bool {
+            self.files.lock().unwrap().iter().any(|f| f == path)
+        }
+        fn copy_path(&self, _ws: &Workspace, src: &str, dst: &str) -> Result<(), String> {
+            self.hook_log.lock().unwrap().push(format!("copy {src}->{dst}"));
+            Ok(())
+        }
+        fn run_hook(
+            &self,
+            _ws: &Workspace,
+            dir: &str,
+            command: &str,
+            env: &[(String, String)],
+            _timeout: Duration,
+        ) -> Result<GitOut, String> {
+            let vars: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let line = format!("{dir}|{command}");
+            self.hook_log.lock().unwrap().push(format!("{line}|{}", vars.join(",")));
+            // Anche nel log di git: serve a provare l'ordine rispetto ai comandi git.
+            self.git_log.lock().unwrap().push(format!("hook|{command}"));
+            if let Some((_, out)) = self.hook_rules.lock().unwrap().iter().find(|(n, _)| line.contains(n.as_str())) {
+                return Ok(out.clone());
+            }
+            Ok(GitOut { ok: true, stdout: String::new(), stderr: String::new() })
+        }
         fn save_board(&self, board: &Board) -> Result<(), String> {
             self.saved.lock().unwrap().insert(board.workspace_id.clone(), board.clone());
             Ok(())
@@ -2852,7 +3011,7 @@ mod tests {
         let me = call(&st, &h, ORCH, "whoami", Value::Null).unwrap();
         assert_eq!(
             me["workspace"],
-            json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p","worker_permission":"accept-edits","worker_model":null})
+            json!({"id":"ws-1","name":"Proj","kind":"windows","path":"C:\\p","worker_permission":"accept-edits","worker_model":null,"worker_allow":[],"worker_deny":[]})
         );
         // Orchestratore senza workspace noto: whoami funziona, senza il campo.
         assert!(call(&st, &h, "orch-2", "whoami", Value::Null).unwrap().get("workspace").is_none());
@@ -2892,7 +3051,7 @@ mod tests {
             let (st, h) = (AutomationState::default(), FakeHost::default());
             let r = call(&st, &h, "orch-wsl", "spawn_session", json!({"task":"l","cwd":"/home/u/.worktrees/esiste"})).unwrap();
             assert!(h.log()[0].starts_with(&format!("spawn:{}:fake wsl", r["session"].as_str().unwrap())));
-            assert_eq!(st.inner.lock().unwrap().list_sessions("orch-wsl")[0].workspace, "Linux");
+            assert_eq!(st.inner.lock().unwrap().list_sessions("orch-wsl", 0)[0].workspace, "Linux");
         }
 
         // Il worker eredita il workspace dell'orchestratore (windows), cwd con maiuscole e slash diversi.

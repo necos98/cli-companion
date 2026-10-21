@@ -28,6 +28,9 @@ atomica con `write_atomic`, come `workspaces.json`). Serde `snake_case`.
   "max_parallel": 3,          // 1..=16, worker di board in esecuzione insieme
   "paused": false,            // board in pausa: lo scheduler non avvia nulla
   "base_branch": null,        // default per i worktree; null = branch corrente della root
+  "base_branches": {},        // repo -> branch base (multi-repository, vedi sotto)
+  "integration_branch": null, // modello del branch di integrazione ("integration/{date}"); null = spento
+  "integrations": {},         // repo -> { branch, path, base }, risolti dall'app (persistiti)
   "owner": null,              // tab dell'orchestratore proprietario (non persistito: null al caricamento)
   "updated_at": 0,
   "tasks": [ /* Task */ ]
@@ -45,6 +48,7 @@ Task:
   "touches": ["src/auth/"],   // aree toccate, path relativi alla root (max 50, ognuno <=256, niente "..")
   "isolation": "worktree",    // "worktree" (default) | "none"
   "base_branch": null,        // override del base branch per questo task
+  "repo": null,               // repository del task (cartella relativa alla root); null = la root
   "agent": "claude-code",
   "model": null,
   "permission_mode": null,    // null = tetto del workspace; solo restrizioni
@@ -57,6 +61,8 @@ Task:
   "worktree": null,           // { "path": "...", "branch": "task/auth-api", "base": "main" }
   "last_report": null,        // ultimo fact/report troncato (200)
   "note": null,               // nota dell'app/utente: "interrupted: the app was restarted", errori di worktree, ...
+  "external": false,          // true = completato fuori dalla board (done da queued, la nota dice come)
+  "orchestrator_note": null,  // nota privata dell'orchestratore (max 2000): mai inviata al worker
   "report": null,             // TaskReport, vedi sotto
   "created_at": 0, "updated_at": 0, "started_at": null, "finished_at": null
 }
@@ -98,7 +104,13 @@ campo `column` calcolato dal backend:
 Una dipendenza `cancelled` **non** soddisfa: il dipendente resta in backlog
 finché l'orchestratore non aggiorna le dipendenze.
 
-`held` è un flag mostrato a parte ("In pausa"), non una colonna.
+`held` è un flag mostrato a parte ("In pausa"), non una colonna. Un task trattenuto
+è nella colonna `ready` ma non parte: `get_board` lo marca con `held: true` e il campo
+`held` di primo livello ne dà il numero (assente se 0); la legenda della UI mostra
+"Pronto N · M in pausa".
+
+Un task `external` è in colonna `done` (sblocca i dipendenti) ma non ha avuto worker né
+worktree: la UI mostra "Completato fuori board" con la nota.
 
 ## Ciclo di vita
 
@@ -142,7 +154,10 @@ cambio stato, transizione di un worker, azione utente, `set_board`):
    fuori dal lock su un thread separato (mai sul main thread: git è lento).
 
 Quando tutti i task sono `done` o `cancelled` (e ce n'è almeno uno) parte
-l'evento `plan_completed`, una volta sola per transizione.
+l'evento `plan_completed`, una volta sola per transizione. Il testo dà i conteggi:
+"Plan completed: N done (of which E completed outside the board), F failed, C cancelled."
+Se tutti i task sono stati annullati senza mai partire (`attempts` 0) non parte nessun
+evento: non c'è nulla da riferire (l'orchestratore li ha annullati lui).
 
 ## Worktree gestiti dall'app
 
@@ -175,11 +190,13 @@ Per i task con `isolation: "worktree"`:
 - Git su Windows: `git` con `current_dir` e `CREATE_NO_WINDOW`; su WSL:
   `wsl.exe -d <distro> --cd <dir> -- git ...` (argomenti passati come argv,
   mai interpolati in una shell).
-- `submit_plan` con task `worktree` fallisce se la root non è un repo git.
+- `submit_plan` con task `worktree` fallisce se la cartella del repository del task
+  (la root, o `repo` sotto la root) non è un repo git.
 - **Setup**: nuovo campo del workspace `worktree_setup: Option<String>` (es.
   `npm ci`), impostato nelle impostazioni del workspace. Non lo esegue
   l'app: viene scritto nell'ambiente del task restituito da `get_task` come
-  primo passo da eseguire.
+  primo passo da eseguire. Il setup eseguito dall'app, per repository, e' descritto
+  in "Hook per repository" (sotto).
 - **Diffstat**: a `complete_task` l'app calcola `git diff --stat <base>...HEAD`
   più il numero di file non committati (`git status --porcelain`), troncato a
   4000 caratteri, e lo salva in `report.diffstat`.
@@ -187,6 +204,109 @@ Per i task con `isolation: "worktree"`:
   `git worktree remove <path>` (senza `--force`) e `git branch -d task/<id>`
   (safe). Gli errori non bloccano il passaggio a `done`: tornano come
   `warnings` nel risultato e in `note`.
+
+### Workspace multi-repository
+
+A workspace whose root is not a git repository but contains several (e.g.
+`/home/u/freud-container/{freud-manager,DDB,...}`) works through the task field
+`repo` and two board settings. Tasks without `repo` behave exactly as before.
+
+- `task.repo`: folder relative to the workspace root, normalized to `/`, no
+  trailing `/`, no absolute path, no `..`; `"."` or `null` = the root (stored as
+  `null`). Settable in `submit_plan` and in `update_task` (only while the task is
+  updatable and has no worktree yet). `touches` are relative to the repo.
+- Validation: `submit_plan` / `update_task` check, once per distinct repo
+  directory, that every `worktree` task has a git repo (`rev-parse
+  --is-inside-work-tree`); the error names the repo. Outside the registry lock.
+- Worktree: `<root>/<repo>/.worktrees/<id>`, branch `task/<id>`, `.worktrees/`
+  added to that repo's `info/exclude`, every git command runs with the repo as
+  cwd (also diffstat and cleanup). `isolation: "none"` runs in `<root>/<repo>`.
+- Base branch of a task: `task.base_branch` → (integration branch, below) →
+  `board.base_branches[repo]` (key `"."` = root) → the workspace setting
+  `repos[repo].base_branch` (see "Hook per repository") → `board.base_branch` (root
+  tasks only) → for a repo task the default of `origin`
+  (`git symbolic-ref --short refs/remotes/origin/HEAD`) → the repo's current branch.
+  `base_branches` is set by `submit_plan` / `set_board` and merged key by key (an
+  empty string or null removes a key).
+- Repo tasks: before creating the worktree the app runs `git fetch origin
+  <base>` (30 s timeout, skipped without an `origin` remote; cached in memory
+  60 s per repo and base) and creates the worktree from `origin/<base>` if it
+  exists, else from the local `<base>`. A failed fetch does not block: the task
+  starts from the local refs and `note` gets `start warnings: ...`.
+- Scheduler: touch conflicts and "one writing `isolation: none` task at a time"
+  apply only between tasks with the same repo (`null` and `"x"` never conflict).
+- Integration branch (`integration_branch`, also in `submit_plan` / `set_board`;
+  `{date}` = local date `YYYY-MM-DD`; empty or null turns it off): before the first
+  worktree task of a repo the app creates that branch (from the base the task would
+  use, after the fetch) with a worktree `<repoDir>/.worktrees/integration`. If the
+  branch exists and was not created by this board, `-2`, `-3`, ... is appended. The
+  resolved `{ branch, path, base }` is stored in `board.integrations[repo]` (`"."` =
+  root) and reused after restarts; changing the template discards it. Worktree tasks
+  of that repo without an explicit `base_branch` start from the integration branch
+  (local ref), so dependents see what the orchestrator merged there. The orchestrator
+  merges and tests in that worktree. The app never pushes, never removes the
+  integration worktree and never runs checkout/switch in the main checkout.
+- Repo discovery: `detect_repos(root)` lists depth-1 subfolders (not hidden) with a
+  `.git` dir or file, plus `"."` if the root is a repo (WSL: one `sh -c` call).
+  `get_board` returns it as `repos`, computed lazily on the first `get_board` and
+  cached per board until `submit_plan` / `set_board`; `get_board` also returns
+  `base_branches`, `integration_branch` and `integrations` when set. Tauri command
+  `workspace_detect_repos(workspace_id) -> string[]` (async, off the main thread).
+
+#### Hook per repository (setup e pulizia eseguiti dall'app)
+
+Impostazione del workspace `repos: { "<repo>": RepoConfig }` (chiave = cartella
+relativa alla root, `"."` = la root; pagina Impostazioni > Workspace > Repository;
+comando Tauri `set_repo_config(workspace_id, repo, config | null)`):
+
+```
+RepoConfig { base_branch?, container_root?, copy_ignored: [], setup: [], cleanup: [], remove_force }
+```
+
+- Validazione: `base_branch` come gli altri nomi di branch; `copy_ignored` solo percorsi
+  relativi al repository (niente assoluti ne' `..`); `setup`/`cleanup` comandi non vuoti
+  su una riga, al massimo 2000 caratteri, al massimo 30 per elenco.
+- `base_branch`: nell'ordine della base, subito dopo `board.base_branches[repo]` e prima
+  del default di `origin` (per la root, prima di `board.base_branch`). Si legge dal
+  workspace al momento dell'avvio del task.
+- Quando: subito dopo la creazione (non al riuso) del worktree del task e di quello di
+  integrazione. Sotto il lock dei repository per l'integrazione (un'integrazione per
+  volta), nel thread di avvio del task per i task; mai sul main thread ne' sotto il
+  lock del registro.
+- Ordine: (1) `copy_ignored`: per ogni percorso, solo se `git check-ignore -q` lo
+  conferma ignorato e la sorgente esiste, copia da `<repo>` al worktree (file o
+  cartelle, ricorsiva; WSL `cp -a`); gli altri sono saltati con un avviso. (2) i
+  comandi di `setup` in ordine, con cwd = il worktree.
+- Shell: WSL `wsl -d <distro> --cd <dir> -e env K=V... sh -c <comando>` (le variabili
+  viaggiano come argv di `env`: `WSLENV` non porta variabili arbitrarie e non c'e'
+  nessun escape); Windows `cmd /D /S /C` senza finestra.
+- Variabili: `REPO` (cartella del repository), `WORKTREE`, `TASK_ID` (`integration`
+  per il worktree di integrazione), `BRANCH`, `BASE`, `CONTAINER_WORKTREE`
+  (`container_root` + percorso del worktree relativo a `REPO`, con `/`; vuota senza
+  `container_root`).
+- Tetti: 10 minuti per comando; dell'output si tengono gli ultimi 2 KB (stdout e stderr).
+- Fallimento: l'avvio del task fallisce (`start_failed`, task `failed`, nota con il
+  worktree, il passo, `setup 2/3: <comando>`, e la coda dell'output). Il worktree resta
+  per l'ispezione ed e' registrato con `worktree.setup_done = false`: al retry si
+  riusa e il setup si rifa **tutto** (scrivi comandi ripetibili, es. `rm -rf vendor &&
+  cp -a ...`). Lo stesso vale per l'integrazione (`integrations[repo].setup_done`): il
+  prossimo avvio di un task del repository la riprepara. Dopo un setup riuscito il
+  riuso non lo ripete; un worktree trovato in cartella senza registrazione non e' nostro
+  e non si prepara.
+- Avvisi (file non ignorati o assenti): finiscono in `note` come `start warnings: ...`.
+- Stato visibile: mentre l'app prepara (setup in corso) il task e' `running` senza
+  sessione con `preparing = "<passo>"` (nella vista e in `get_board`); la UI lo mostra
+  come "Preparazione…".
+- Guardiano dell'avvio (5 minuti senza sessione): con un passo in corso aspetta
+  10 minuti + 2 dall'ultimo battito (`preparing_since`, aggiornato a ogni passo e
+  mentre un avvio aspetta il lock dei repository), poi 5 minuti dalla fine del setup per
+  il resto dell'avvio: i setup lunghi non vengono uccisi, un thread morto si scopre.
+- Pulizia a `done` (se `cleanup` non e' false): se il worktree esiste, prima i comandi di
+  `cleanup` (cwd = worktree, stesse variabili, 2 minuti ciascuno, un errore e' un avviso
+  e non blocca mai), poi `git worktree remove` (con `--force` se `remove_force`), poi
+  `git branch -d`. Il worktree di integrazione non si rimuove da solo.
+- Il worker: `environment` dice che il worktree e' gia' stato preparato dall'app
+  (file copiati e comandi eseguiti) e dove e' montato nel container.
 
 ### Ambiente del worker
 
@@ -213,26 +333,28 @@ senza toccare aree fuori da `touches`.
 
 Nuovi (descrizioni in inglese, come gli altri):
 
-- `submit_plan { tasks: TaskSpec[], max_parallel?, base_branch? }` — aggiunge
+- `submit_plan { tasks: TaskSpec[], max_parallel?, base_branch?, base_branches?, integration_branch? }` — aggiunge
   task alla board del workspace (le dipendenze possono riferirsi a task della
   stessa chiamata o già presenti), valida tutto prima di modificare (id unici,
   dipendenze esistenti, niente cicli, permessi entro il tetto, repo git se
   serve), diventa owner, esegue lo scheduler. Ritorna la board compatta (come
   `get_board`) più `added` (gli id aggiunti).
   `TaskSpec` = i campi di input del task: `id`, `title`, `task`,
-  `depends_on`, `touches`, `isolation`, `base_branch`, `agent`, `model`,
-  `permission_mode`, `priority`, `held`.
+  `depends_on`, `touches`, `isolation`, `base_branch`, `repo`, `agent`, `model`,
+  `permission_mode`, `priority`, `held`, `orchestrator_note` (privata: get_board e
+  get_task_details la restituiscono, `get_task` del worker no).
 - `get_board { columns?: string[] }` — vista compatta della board (niente testo dei
   task, risparmia token):
   `{ workspace_id, rev, max_parallel, paused, base_branch, owner, updated_at,
-  automation, counts, tasks }`. `counts` = numero di task per colonna (solo le
+  automation, counts, tasks }` (più, se presenti, `base_branches`,
+  `integration_branch`, `integrations`, `repos`; le righe dei task hanno `repo`). `counts` = numero di task per colonna (solo le
   colonne non vuote); `tasks` = una riga per ogni task non `done`/`cancelled`, nell'ordine
   della board. Con `columns` (nomi tra `backlog`, `ready`, `running`, `review`, `done`,
   `failed`, `blocked`, `cancelled`; un nome sconosciuto o un non-array è un errore che
   elenca i nomi validi) le righe sono solo quelle delle colonne indicate, anche `done`.
   Riga: `id`, `title`, `column`, `attempts` e, solo se significativi, `held`,
-  `worker_status`, `waiting_on` (solo in `backlog`: dipendenze non ancora `done`),
-  `priority` (se diversa da 0), `model`, `note` (max 200 caratteri) e `summary` (il
+  `worker_status`, `external`, `waiting_on` (solo in `backlog`: dipendenze non ancora `done`),
+  `priority` (se diversa da 0), `model`, `note` e `orchestrator_note` (max 200 caratteri) e `summary` (il
   riassunto del report, max 300 caratteri); il taglio aggiunge "…".
 - `get_task_details { id }` — il dettaglio completo di un task: `{ task }` con tutti i campi,
   testo, worktree, `last_report` e `report` strutturato (commit, files_changed, tests,
@@ -243,17 +365,19 @@ Nuovi (descrizioni in inglese, come gli altri):
   ancora un worktree. Rivalida dipendenze e cicli. Ritorna `{ task }` senza il testo.
 - `set_task_status { id, status: "done" | "cancelled" | "queued", note?, cleanup? }`
   - `done`: da `review`, `failed`, `blocked` (non da `running`); sblocca i
-    dipendenti; pulizia worktree se `cleanup != false`.
+    dipendenti; pulizia worktree se `cleanup != false`. Anche da `queued` (anche
+    trattenuto) per lavoro fatto fuori dalla board: `note` non vuota obbligatoria, il task
+    diventa `external`; nessuna pulizia (non ha worktree). La UI non offre questa azione.
   - `cancelled`: da qualunque stato non `done`; se `running` chiude il tab.
   - `queued` (retry): da `failed`, `blocked`, `cancelled`, `review`.
   Ritorna `{ task, warnings? }` senza il testo del task.
-- `set_board { max_parallel?, paused? }` — ritorna la board compatta.
+- `set_board { max_parallel?, paused?, base_branches?, integration_branch? }` — ritorna la board compatta.
 
 Esistenti, estesi:
 
 - `get_events`: ogni evento ha `task` (id del task, se il worker è di board).
   Nuovi `kind`: `start_failed` (azionabile: l'avvio del task è fallito, testo
-  con l'errore), `plan_completed` (azionabile), `user_action` (non azionabile:
+  con l'errore), `plan_completed` (azionabile, con i conteggi), `user_action` (non azionabile:
   l'utente ha agito dalla board, testo con l'azione).
 - `complete_task` (worker): parametri opzionali `commit`, `files_changed`,
   `tests`, `follow_ups`, oltre a `status` e `summary`. Per un worker di board
@@ -271,6 +395,12 @@ Argomenti in camelCase lato JS (convenzione Tauri, vedi `tests/tauri-args.test.m
 - `board_task_set_model(workspace_id, task_id, model: Option<String>) -> BoardView`:
   cambia il modello di un task non ancora partito (stesse regole di `update_task`;
   `None` = modello di default del workspace) e genera un evento `user_action`.
+- `set_worker_rules(workspace_id, rules: String) -> Workspace`: regole per i worker
+  (trim, max 4000 caratteri). `get_task` le accoda a `instructions` come
+  "Workspace rules (always apply): ..." per ogni worker, di board o `spawn_session`; sono
+  lette a ogni `get_task`, quindi valgono per i nuovi worker. Mai nel testo `task`.
+- `list_sessions`: un worker che non ha ancora chiamato `get_task` ha `starting_secs`
+  (secondi dallo spawn) per distinguere un avvio lento da uno bloccato.
 - `set_worktree_setup(id, command: Option<String>) -> Workspace` (trim, vuoto =
   nessuno, max 1000 caratteri).
 - Evento `board-update` con payload `BoardView` a ogni modifica.

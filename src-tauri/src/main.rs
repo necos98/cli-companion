@@ -9,7 +9,7 @@ fn print_help() {
            cli-companion --check-update  Controlla le release su GitHub ed esce\n  \
            cli-companion --check-update --json  Come sopra, output JSON\n  \
            cli-companion --notify <evento> [agente]  Segnala un evento di un coding\n  \
-             agent (session-start|session-end|finished|needs-input|test) all'istanza in esecuzione ed\n  \
+             agent (session-start|session-end|finished|needs-input|permission-request|test) all'istanza in esecuzione ed\n  \
              esce; legge il JSON dell'hook da stdin e l'id tab da CLI_COMPANION_SESSION\n  \
              (eventi non riconosciuti o senza tab: ignorati, exit 0)\n  \
            cli-companion --mcp           Server MCP (stdio) con i tool per orchestrare sessioni\n  \

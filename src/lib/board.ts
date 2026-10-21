@@ -32,6 +32,17 @@ export interface TaskWorktree {
   path: string;
   branch: string;
   base: string;
+  /** Repository del task (cartella relativa alla root); assente = la root. */
+  repo?: string | null;
+  /** Setup del repository completato; false = da rifare al prossimo avvio. */
+  setup_done?: boolean;
+}
+
+/** Branch di integrazione di un repository (chiave "." = root nella mappa). */
+export interface BoardIntegration {
+  branch: string;
+  path: string;
+  base: string;
 }
 
 export interface TaskTestResult {
@@ -58,6 +69,8 @@ export interface Task {
   touches: string[];
   isolation: "worktree" | "none" | string;
   base_branch?: string | null;
+  /** Repository (cartella relativa alla root del workspace); assente = la root. */
+  repo?: string | null;
   agent: string;
   model?: string | null;
   permission_mode?: string | null;
@@ -66,11 +79,17 @@ export interface Task {
   status: TaskStatus;
   column: TaskColumn;
   worker_status?: string | null;
+  /** Passo di preparazione in corso (setup del repository): l'app sta preparando il worktree. */
+  preparing?: string | null;
   session?: string | null;
   attempts: number;
   worktree?: TaskWorktree | null;
   last_report?: string | null;
   note?: string | null;
+  /** Completato fuori dalla board (done da queued, con nota): niente worker né worktree. */
+  external?: boolean;
+  /** Nota privata dell'orchestratore: mai inviata al worker. */
+  orchestrator_note?: string | null;
   report?: TaskReport | null;
   created_at: number;
   updated_at: number;
@@ -83,6 +102,14 @@ export interface BoardView {
   max_parallel: number;
   paused: boolean;
   base_branch?: string | null;
+  /** Branch base per repository ("." = root). */
+  base_branches?: Record<string, string>;
+  /** Modello del branch di integrazione ({date} = data locale). */
+  integration_branch?: string | null;
+  /** Integrazioni risolte per repository ("." = root). */
+  integrations?: Record<string, BoardIntegration>;
+  /** Repository rilevati nel workspace; null finché non calcolati. */
+  repos?: string[] | null;
   owner?: string | null;
   updated_at: number;
   /** Revisione monotona: cresce a ogni modifica della board serializzata. */
@@ -166,6 +193,16 @@ const COLUMN_HEX: Record<TaskColumn, string> = {
   cancelled: "#5d6b79",
 };
 
+/** Testo del marcatore dei task completati fuori dalla board. */
+export const EXTERNAL_LABEL = "Completato fuori board";
+
+/** Task trattenuti (in coda, non partiranno finché non vengono rilasciati). */
+export function heldCount(tasks: Pick<Task, "held" | "status">[]): number {
+  let n = 0;
+  for (const t of tasks) if (t.held && t.status === "queued") n++;
+  return n;
+}
+
 export function columnLabel(c: string): string {
   return COLUMN_LABELS[c as TaskColumn] ?? c;
 }
@@ -198,7 +235,8 @@ export const ACTION_LABELS: Record<TaskAction, string> = {
 /**
  * Azioni consentite per un task (regole del ciclo di vita):
  * hold/unhold solo per `queued`; retry da failed/blocked/cancelled/review;
- * cancel da qualunque stato non `done` né `cancelled`; done da review/failed/blocked.
+ * cancel da qualunque stato non `done` né `cancelled`; done da review/failed/blocked
+ * (da `queued` il backend lo accetta solo con una nota: la UI non lo offre, lo fa l'orchestratore).
  */
 /** Il modello di un task si cambia solo prima che parta (o dopo che è finito male). */
 export function canEditModel(status: TaskStatus): boolean {
@@ -262,10 +300,17 @@ export function activeCount(board: Pick<BoardView, "tasks"> | null | undefined):
   return n;
 }
 
+/** Etichetta del task mentre l'app ne prepara il worktree. */
+export const PREPARING_LABEL = "Preparazione…";
+
 /** Sotto-stato del worker di un task in corso (parola italiana + colore), se c'e'. */
 export function workerSubStatus(
-  task: Pick<Task, "status" | "worker_status">,
+  task: Pick<Task, "status" | "worker_status" | "preparing">,
 ): { text: string; className: string } | null {
+  // Il worker non c'e' ancora: l'app esegue il setup del repository.
+  if (task.status === "running" && task.preparing) {
+    return { text: PREPARING_LABEL, className: "text-status-attention" };
+  }
   if (task.status !== "running" || !task.worker_status) return null;
   return statusWord(task.worker_status);
 }
@@ -315,6 +360,14 @@ export function mergeBoard(current: BoardView | undefined, next: BoardView): Boa
   }
   // Senza `rev` (backend vecchio): ripiego su updated_at.
   return current.updated_at > next.updated_at ? current : next;
+}
+
+/** Lunghezza massima delle regole per i worker del workspace. */
+export const WORKER_RULES_MAX = 4000;
+
+/** Regole normalizzate: trim e massimo `WORKER_RULES_MAX` caratteri. */
+export function sanitizeWorkerRules(raw: string): string {
+  return raw.trim().slice(0, WORKER_RULES_MAX).trim();
 }
 
 /** Lunghezza massima del comando di setup dei worktree. */

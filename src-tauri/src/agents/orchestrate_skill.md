@@ -48,6 +48,21 @@ carry on with this method and suggest the user create one with
   each other. `none` only for read-only or analysis tasks, or a tiny change by a single
   worker: such tasks work in the workspace folder, and at most one non-read-only `none`
   task runs at a time.
+- Multi-repository workspaces: if the workspace folder is not a git repo but holds several
+  (get_board lists them in `repos`), set `repo` on every task (the folder name relative to
+  the workspace root; `touches` are then relative to that repo, and tasks of different repos
+  never conflict). Set the base branch of each repo with `base_branches` (e.g.
+  `{"freud-manager": "master", "DDB": "main"}`; otherwise the default branch of its origin is
+  used, after a fetch). Turn on `integration_branch` (e.g. `integration/{date}`): the app
+  creates that branch and a worktree `<repo>/.worktrees/integration` per repo (see
+  `integrations` in get_board), and every task of the repo starts from it. Merge reviewed task
+  branches into the integration branch from that worktree and run the tests there, never in
+  the main checkout; do not push unless the user or the workflow says so.
+  The user may configure per-repo hooks in the workspace settings: the app itself copies
+  git-ignored config files and runs the setup commands in every new task and integration
+  worktree, and runs the cleanup commands (then removes the worktree) when a task is done.
+  Do not redo that in task texts or by hand; a failed setup fails the start (start_failed)
+  with the failing step in the task note, and a retry runs it again.
 - Set `priority` (higher first) and `max_parallel` (start with 2 to 5; the hard limit is
   16). Use `permission_mode` only to restrict below the workspace maximum.
 - Choose the `model` of every task, weighing quality against token cost. The
@@ -123,6 +138,9 @@ Each event carries the `task` id when the worker belongs to the board.
   4. When the base branch is green, call set_task_status `done`. This unblocks the
      dependents and removes the worktree and branch; read any `warnings` it returns and
      clean up by hand if needed.
+  If a queued (even held) task was done outside the board, call set_task_status `done` on
+  it with a `note` saying how (required); it is shown as completed outside the board and
+  unblocks its dependents.
   Keep the repository tidy: no leftover branches, worktrees or stray files.
 - `failed`, `blocked` (reported by the worker), `stopped_without_report`, `exited`,
   `start_failed`: read the summary or error and decide: retry (update_task with a
@@ -133,10 +151,17 @@ Each event carries the `task` id when the worker belongs to the board.
 - `user_action`: the user acted from the Board view (hold, retry, cancel, done, model
   change). Not
   actionable by itself: take it into account.
-- `plan_completed`: every task is `done` or `cancelled`. Verify the base branch one last
+- `plan_completed`: every task is `done` or `cancelled` (the text gives the counts; it is not
+  sent if you cancelled everything before any task started). Verify the base branch one last
   time (full build and tests) and give the final report.
 - Use set_board to pause or change `max_parallel`. Use close_session only for workers
   that are stuck or no longer needed: their unfinished work is lost.
+
+Workers (board and spawn_session) already receive the workspace rules set by the user, so do
+not repeat them in task texts. Use `orchestrator_note` on a task for private reminders to
+yourself (merge order, what to check): it is never sent to the worker. A held task shows
+`held: true` in get_board. list_sessions shows `starting_secs` for workers that have not
+read their task yet: a few seconds is normal, minutes means stuck.
 
 `spawn_session` still exists for one-off work outside the board (a quick question, an
 experiment). Anything that is part of the plan belongs on the board.

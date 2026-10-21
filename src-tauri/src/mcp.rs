@@ -48,6 +48,8 @@ pub struct Server {
     worker_permission: Option<String>,
     /// Modello di default dei worker nel workspace (da `whoami`), se impostato.
     worker_model: Option<String>,
+    /// Regole di permesso pre-approvate/vietate dei worker (da `whoami`), a parole.
+    worker_rules: Option<String>,
 }
 
 
@@ -76,6 +78,14 @@ impl Server {
             .and_then(|w| w.get("worker_model"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let rules = |k: &str| -> Vec<String> {
+            v.get("workspace")
+                .and_then(|w| w.get(k))
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        self.worker_rules = worker_rules_text(&rules("worker_allow"), &rules("worker_deny"));
         self.role = Some(role);
         Ok(role)
     }
@@ -137,7 +147,12 @@ fn task_spec_properties() -> Value {
         },
         "base_branch": {
             "type": ["string", "null"],
-            "description": "Branch the worktree starts from, read when the task starts. Default: the board's base_branch, else the branch currently checked out in the workspace folder (so dependents start from a base that already contains the merged work of their dependencies)."
+            "description": "Branch the worktree starts from, read when the task starts. Default: the integration branch of the board when integration_branch is on, else the board's base_branches entry for the task's repo, else the board's base_branch (root tasks), else for a repo task the default branch of its origin, else the branch currently checked out in the workspace folder (so dependents start from a base that already contains the merged work of their dependencies)."
+        },
+        "repo": {
+            "type": ["string", "null"],
+            "maxLength": 256,
+            "description": "Multi-repository workspaces (the workspace folder is not a git repo but contains several): the repository this task works in, as a folder relative to the workspace root (e.g. freud-manager). The worktree is created in that repository (<repo>/.worktrees/<id>), 'touches' are relative to it and tasks of different repositories never conflict. Omit (or '.') for the workspace root itself. See the repos field of get_board. Cannot change once the task has a worktree."
         },
         "agent": { "type": "string", "description": "Id of the coding agent (see list_agents). Default: claude-code." },
         "model": {
@@ -157,8 +172,36 @@ fn task_spec_properties() -> Value {
         "held": {
             "type": "boolean",
             "description": "If true the scheduler does not start the task until you release it with update_task (held: false) or the user does from the board view."
+        },
+        "orchestrator_note": {
+            "type": ["string", "null"],
+            "maxLength": 2000,
+            "description": "Private note for yourself (e.g. merge order, what to check at review). Shown on the board and returned by get_board and get_task_details, but NEVER sent to the worker. null clears it."
         }
     })
+}
+
+/// Impostazioni multi-repository della board (`submit_plan` e `set_board`).
+fn repo_settings_properties() -> Value {
+    json!({
+        "base_branches": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "null"] },
+            "description": "Base branch per repository: {\"freud-manager\": \"master\", \"DDB\": \"main\"} (key '.' = the workspace root). Merged into the current entries; an empty string or null removes an entry. Tasks of a repo start from it (fetched from origin first when origin exists) unless integration_branch is on or the task has its own base_branch. Default for a repo: the default branch of its origin, else its current branch."
+        },
+        "integration_branch": {
+            "type": ["string", "null"],
+            "description": "Template of the integration branch, e.g. 'integration/{date}' ({date} = local date YYYY-MM-DD). When set, before the first task of a repository starts cli-companion creates that branch (from the repo base, after a fetch) with its own worktree <repo>/.worktrees/integration, and every worktree task of the repo without an explicit base_branch starts from it, so dependents see what you merged there. get_board returns `integrations` (repo -> branch, path): merge and test in that worktree. If the branch name already exists and is not ours, -2, -3... is appended. The app never pushes and never switches branches in the main checkout. Empty string or null turns it off."
+        }
+    })
+}
+
+/// `props` piu' le impostazioni multi-repository.
+fn with_repo_settings(mut props: Value) -> Value {
+    if let (Some(p), Some(extra)) = (props.as_object_mut(), repo_settings_properties().as_object()) {
+        p.extend(extra.clone());
+    }
+    props
 }
 
 /// Come `task_spec_properties`, senza `id` obbligatorio nel testo.
@@ -230,7 +273,9 @@ fn orchestrator_tools() -> Vec<Value> {
             "List the automated sessions you started, with their status: starting (task not read yet), \
              running, background (turn ended while waiting for a background command: it resumes by itself), \
              needs_input (waiting for a permission or an answer from the user), idle (stopped without having \
-             called complete_task), completed, failed, blocked, closed. Includes the last report. \
+             called complete_task), completed, failed, blocked, closed. A starting session also has \
+             `starting_secs` (seconds since it was spawned) so you can tell a slow start from a stuck one. \
+             Includes the last report. \
              For news prefer get_events.",
             json!({}),
             &[],
@@ -267,7 +312,8 @@ fn orchestrator_tools() -> Vec<Value> {
              in its tab), stopped_without_report (it stopped without complete_task, even after being \
              nudged), exited (the tab was closed), start_failed (a board task could not be started, e.g. \
              a git error: text has the reason), plan_completed (every task on the board is done or \
-             cancelled), user_action (the user acted from the board view; informational, it does not \
+             cancelled; text gives the counts: done, of which outside the board, failed, cancelled; not sent \
+             when every task was cancelled without ever starting), user_action (the user acted from the board view; informational, it does not \
              wake you). Events of board workers also carry the id of their task in `task`.",
             json!({}),
             &[],
@@ -290,7 +336,7 @@ fn orchestrator_tools() -> Vec<Value> {
              yours: when a task reaches review, check its report and diffstat, merge its branch task/<id> into \
              the base branch, run the regression tests, then call set_task_status with done (this unblocks the \
              dependents and removes the worktree). Limits: 50 tasks per call, 200 per board.",
-            json!({
+            with_repo_settings(json!({
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -311,19 +357,22 @@ fn orchestrator_tools() -> Vec<Value> {
                 },
                 "base_branch": {
                     "type": "string",
-                    "description": "Default base branch of the board for the worktrees (default: the branch currently checked out, read when each task starts)."
+                    "description": "Default base branch of the board for the worktrees of root tasks (default: the branch currently checked out, read when each task starts). For repo tasks use base_branches."
                 }
-            }),
+            })),
             &["tasks"],
         ),
         tool(
             "get_board",
             "Return a compact summary of the task board of your workspace (and make you its owner): settings \
-             (max_parallel, paused, base_branch), `automation`, `counts` (tasks per derived column: backlog, \
+             (max_parallel, paused, base_branch, plus base_branches, integration_branch and `integrations` \
+             (repo -> branch and worktree path to merge and test in) when set, and `repos`: the git repositories \
+             found in the workspace, \".\" being the workspace root itself), `automation`, `counts` (tasks per derived column: backlog, \
              ready, running, review, done, failed, blocked, cancelled; empty columns left out) and `tasks`, one \
-             short row per open task (id, title, column, attempts, plus held, worker_status, waiting_on for a \
-             backlog task, priority, model, note and the report summary when they apply; note and summary are \
-             truncated). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
+             short row per open task (id, title, column, attempts, plus held, external, worker_status, waiting_on for a \
+             backlog task, priority, model, note, orchestrator_note and the report summary when they apply; note, \
+             orchestrator_note and summary are truncated). A held task is in the ready column but does not start: \
+             it has `held: true`, and the top-level `held` is the number of held tasks (left out when 0). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
              [\"done\"]. Use get_task_details for the full text, report (commit, files_changed, tests, \
              follow_ups, diffstat), worktree and note of one task. `automation` is null for a normal workspace; \
              for an automatic one it tells whether execution windows are enabled, whether the window is open \
@@ -344,7 +393,8 @@ fn orchestrator_tools() -> Vec<Value> {
         tool(
             "get_task_details",
             "Return the full detail of one task of the board: its text, dependencies, touches, isolation, \
-             status and column, worker status, attempts, worktree, last report, note and the structured report \
+             status and column, worker status, attempts, worktree, last report, note, your private orchestrator_note, \
+             external (completed outside the board) and the structured report \
              (summary, commit, files_changed, tests, follow_ups, diffstat). Use it when you review a task in \
              review, failed or blocked, before merging or retrying it. It never waits.",
             json!({
@@ -369,7 +419,10 @@ fn orchestrator_tools() -> Vec<Value> {
              (merged the branch task/<id>, ran the tests); it unblocks the dependents and, unless cleanup is \
              false, removes the task worktree and branch (git worktree remove and git branch -d, without \
              force: problems come back as warnings and in the task note, they never block the change). Not \
-             allowed for a running task. cancelled: from any status except done; a running task has its tab \
+             allowed for a running task. done also works from queued (including held) for work completed \
+             outside the board (e.g. you or the user did it by hand): a non-empty `note` saying how is then \
+             required, the task is marked as completed outside the board (`external`) and the dependents are \
+             unblocked. cancelled: from any status except done; a running task has its tab \
              closed and its work is lost; tasks depending on it stay in backlog until you update their \
              dependencies. queued: retry a failed, blocked, cancelled or review task; the scheduler starts it \
              again when possible (the existing worktree is reused). Returns the task (without its text).",
@@ -383,7 +436,7 @@ fn orchestrator_tools() -> Vec<Value> {
                 "note": {
                     "type": "string",
                     "maxLength": 2000,
-                    "description": "Optional note stored on the task (e.g. why it was cancelled)."
+                    "description": "Note stored on the task (e.g. why it was cancelled). Required (non-empty) for done from queued."
                 },
                 "cleanup": {
                     "type": "boolean",
@@ -395,11 +448,12 @@ fn orchestrator_tools() -> Vec<Value> {
         tool(
             "set_board",
             "Change the settings of the board: max_parallel (how many board workers run at once, 1..16) and/or \
-             paused (true = the scheduler starts nothing new; running workers go on). Returns the compact board (as get_board).",
-            json!({
+             paused (true = the scheduler starts nothing new; running workers go on), and for multi-repository \
+             workspaces base_branches and integration_branch. Returns the compact board (as get_board).",
+            with_repo_settings(json!({
                 "max_parallel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Board workers running at the same time." },
                 "paused": { "type": "boolean", "description": "Pause or resume the scheduler." }
-            }),
+            })),
             &[],
         ),
         tool(
@@ -519,12 +573,34 @@ fn tools_for(role: Role) -> Vec<Value> {
     }
 }
 
+/// Frase sulle regole di permesso dei worker (`None` se non ce ne sono).
+fn worker_rules_text(allow: &[String], deny: &[String]) -> Option<String> {
+    if allow.is_empty() && deny.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    if !allow.is_empty() {
+        text.push_str(&format!(
+            " Pre-approved for workers (they run these without asking, so do not tell them to ask the user): {}.",
+            allow.join(", ")
+        ));
+    }
+    if !deny.is_empty() {
+        text.push_str(&format!(
+            " Forbidden for workers (always refused, even in bypass mode): {}.",
+            deny.join(", ")
+        ));
+    }
+    Some(text)
+}
+
 /// Istruzioni generali restituite in `initialize`.
 fn instructions(
     role: Option<Role>,
     workspace: Option<&str>,
     ceiling: Option<&str>,
     worker_model: Option<&str>,
+    worker_rules: Option<&str>,
 ) -> String {
     match role {
         Some(Role::Orchestrator) => {
@@ -537,7 +613,7 @@ fn instructions(
                 and message texts for workers in English. For a batch of tasks with dependencies use the \
                 task board: submit_plan adds the tasks, cli-companion starts the workers when they are \
                 ready (it creates their git worktrees) and, when a task reaches review, you integrate it \
-                (merge, test) and call set_task_status done; get_board shows a compact state, get_task_details the full detail of one task. Tool results are already structured: read them directly, never parse them with shell scripts. For a single \
+                (merge, test) and call set_task_status done; get_board shows a compact state, get_task_details the full detail of one task. If the workspace folder holds several git repositories (get_board lists them in `repos`) set `repo` on each task and consider integration_branch. Tool results are already structured: read them directly, never parse them with shell scripts. For a single \
                 ad-hoc session use spawn_session. Before orchestrating a batch of tasks, load \
                 the orchestrate skill (cli-companion-notify:orchestrate) if your agent supports skills: \
                 it has the full method (planning, task template, isolation, review and merge). Before planning call \
@@ -545,7 +621,9 @@ fn instructions(
                 method of the skill. You may be the automatic orchestrator that cli-companion opens in a \
                 workspace during its execution windows: the board scheduler only starts tasks while a window is \
                 open; when cli-companion types that the execution window is closed, finish integrating the tasks \
-                that complete, do not plan new work, and end your turn."
+                that complete, do not plan new work, and end your turn. Every worker (board or spawn_session) \
+                already receives the workspace rules the user set in the workspace settings (as \"Workspace rules\" \
+                in its instructions): do not repeat them in task texts."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));
@@ -564,6 +642,9 @@ fn instructions(
                         " No default worker model is set in this workspace: workers use the coding agent's default \
                          model unless a task or spawn_session sets one.",
                     ),
+                }
+                if let Some(r) = worker_rules {
+                    text.push_str(r);
                 }
             }
             text
@@ -627,7 +708,7 @@ pub fn handle_message(server: &mut Server, msg: &Value, backend: &dyn Backend) -
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "cli-companion", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": instructions(role, server.workspace.as_deref(), server.worker_permission.as_deref(), server.worker_model.as_deref()),
+                    "instructions": instructions(role, server.workspace.as_deref(), server.worker_permission.as_deref(), server.worker_model.as_deref(), server.worker_rules.as_deref()),
                 }),
             )
         }
@@ -900,7 +981,10 @@ mod tests {
         let mut spec_keys: Vec<String> = crate::board::SPEC_KEYS.iter().map(|s| s.to_string()).collect();
         spec_keys.sort();
         let plan = by("submit_plan");
-        assert_eq!(keys(&plan["inputSchema"]["properties"]), ["base_branch", "max_parallel", "tasks"]);
+        assert_eq!(
+            keys(&plan["inputSchema"]["properties"]),
+            ["base_branch", "base_branches", "integration_branch", "max_parallel", "tasks"]
+        );
         let item = &plan["inputSchema"]["properties"]["tasks"]["items"];
         assert_eq!(keys(&item["properties"]), spec_keys);
         assert_eq!(item["required"], json!(["id", "task"]));
@@ -911,8 +995,18 @@ mod tests {
         assert_eq!(upd["inputSchema"]["required"], json!(["id"]));
         assert_eq!(keys(&by("set_task_status")["inputSchema"]["properties"]), ["cleanup", "id", "note", "status"]);
         assert_eq!(by("set_task_status")["inputSchema"]["properties"]["status"]["enum"], json!(["done", "cancelled", "queued"]));
-        assert_eq!(keys(&by("set_board")["inputSchema"]["properties"]), ["max_parallel", "paused"]);
+        assert_eq!(
+            keys(&by("set_board")["inputSchema"]["properties"]),
+            ["base_branches", "integration_branch", "max_parallel", "paused"]
+        );
+        assert!(item["properties"]["repo"]["description"].as_str().unwrap().contains("Multi-repository"));
         assert_eq!(keys(&by("get_board")["inputSchema"]["properties"]), ["columns"]);
+        let sts = by("set_task_status")["description"].as_str().unwrap().to_string();
+        assert!(sts.contains("from queued") && sts.contains("outside the board") && sts.contains("note"));
+        let on = &plan["inputSchema"]["properties"]["tasks"]["items"]["properties"]["orchestrator_note"];
+        assert_eq!(on["maxLength"], 2000);
+        assert!(on["description"].as_str().unwrap().contains("NEVER sent to the worker"));
+        assert!(instructions(Some(Role::Orchestrator), None, None, None, None).contains("workspace rules"));
         assert_eq!(keys(&by("get_task_details")["inputSchema"]["properties"]), ["id"]);
         assert_eq!(by("get_task_details")["inputSchema"]["required"], json!(["id"]));
         // Il modello non deve attendere; la colonna e l'integrazione sono spiegate.
@@ -940,7 +1034,7 @@ mod tests {
             json!(["passed", "failed", "not_run"])
         );
         // Le istruzioni dell'orchestratore citano il flusso della board.
-        let text = instructions(Some(Role::Orchestrator), None, None, None);
+        let text = instructions(Some(Role::Orchestrator), None, None, None, None);
         assert!(text.contains("submit_plan") && text.contains("spawn_session") && text.contains("set_task_status"));
     }
 
@@ -1019,6 +1113,16 @@ mod tests {
     }
 
     #[test]
+    fn instructions_list_worker_rules() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(worker_rules_text(&[], &[]), None);
+        let r = worker_rules_text(&v(&["Bash(git:*)"]), &v(&["Bash(rm:*)"]));
+        let text = instructions(Some(Role::Orchestrator), Some("w"), Some("default"), None, r.as_deref());
+        assert!(text.contains("Pre-approved for workers") && text.contains("Bash(git:*)"));
+        assert!(text.contains("Forbidden for workers") && text.contains("Bash(rm:*)"));
+    }
+
+    #[test]
     fn workflow_tools_and_window_instructions() {
         let tools = orchestrator_tools();
         let by = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
@@ -1028,7 +1132,7 @@ mod tests {
         assert_eq!(save["inputSchema"]["required"], json!(["content"]));
         assert_eq!(save["inputSchema"]["properties"]["content"]["maxLength"], 50000);
         assert!(by("get_board")["description"].as_str().unwrap().contains("`automation`"));
-        let text = instructions(Some(Role::Orchestrator), None, None, None);
+        let text = instructions(Some(Role::Orchestrator), None, None, None, None);
         assert!(text.contains("get_workflow") && text.contains("takes precedence"));
         assert!(text.contains("execution window is closed") && text.contains("end your turn"));
         // I tool del workflow non esistono per i worker.
@@ -1042,7 +1146,7 @@ mod tests {
         assert_eq!(get["inputSchema"]["properties"], json!({}));
         let desc = get["description"].as_str().unwrap();
         assert!(desc.contains("never waits") && desc.contains("end your turn"));
-        let text = instructions(Some(Role::Orchestrator), None, None, None);
+        let text = instructions(Some(Role::Orchestrator), None, None, None, None);
         assert!(text.contains("end your turn") && text.contains("Never wait"));
         assert!(text.contains("cli-companion-notify:orchestrate"));
         // Nessun testo per il modello nomina ancora il vecchio long-poll.
