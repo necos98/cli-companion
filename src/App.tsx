@@ -7,6 +7,7 @@ import Sidebar from "./components/Sidebar";
 import type { SidebarTerminal } from "./components/Sidebar";
 import AddWorkspaceDialog from "./components/AddWorkspaceDialog";
 import SettingsDialog from "./components/SettingsDialog";
+import PluginUpdateDialog from "./components/PluginUpdateDialog";
 import type { SettingsTab } from "./components/SettingsDialog";
 import TitleBar from "./components/TitleBar";
 import type { TitleTab } from "./components/TitleBar";
@@ -31,6 +32,7 @@ import type {
   AgentProfile,
   BuiltinLaunch,
   Launch,
+  OutdatedPlugin,
   Workspace,
 } from "./lib/tauri";
 import { allLaunches, launchCommands, resolveDefaultLaunch } from "./lib/launch";
@@ -188,6 +190,8 @@ export default function App() {
   // Plugin degli agenti installati per ambiente (barra di stato): caricati una
   // volta, in background, dopo l'avvio; aggiornati dalle Impostazioni.
   const [agentEnvs, setAgentEnvs] = useState<AgentEnvStatus[]>([]);
+  const [outdatedPlugins, setOutdatedPlugins] = useState<OutdatedPlugin[]>([]);
+  const pluginCheckStarted = useRef(false);
   // Utilizzo (limiti e token): interruttore globale delle Impostazioni.
   const [showUsage, setShowUsage] = useState(true);
   const [appVersion, setAppVersion] = useState<string | null>(null);
@@ -406,24 +410,26 @@ export default function App() {
   const closingRef = useRef(false);
   const saveEnabledRef = useRef(false);
   saveEnabledRef.current = saveEnabled;
+  // Usato anche prima di un riavvio (`relaunch` non passa da onCloseRequested).
+  const flushBeforeExit = useCallback(async () => {
+    closingRef.current = true;
+    const work = Promise.all([
+      saveEnabledRef.current
+        ? api.saveSession(buildSessionRef.current(true))
+        : Promise.resolve(),
+      ...[...flushersRef.current.values()].map((f) => f()),
+    ]).catch(() => undefined);
+    await Promise.race([
+      work,
+      new Promise((resolve) => setTimeout(resolve, CLOSE_FLUSH_TIMEOUT_MS)),
+    ]);
+  }, []);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     try {
       void getCurrentWindow()
-        .onCloseRequested(async () => {
-          closingRef.current = true;
-          const work = Promise.all([
-            saveEnabledRef.current
-              ? api.saveSession(buildSessionRef.current(true))
-              : Promise.resolve(),
-            ...[...flushersRef.current.values()].map((f) => f()),
-          ]).catch(() => undefined);
-          await Promise.race([
-            work,
-            new Promise((resolve) => setTimeout(resolve, CLOSE_FLUSH_TIMEOUT_MS)),
-          ]);
-        })
+        .onCloseRequested(flushBeforeExit)
         .then((u) => {
           if (cancelled) u();
           else unlisten = u;
@@ -705,6 +711,31 @@ export default function App() {
       clearTimeout(id);
     };
   }, [sessionReady]);
+
+  // Plugin installati con versione diversa dall'app: controllo una sola volta
+  // per avvio (il ref evita il doppio effect di StrictMode); errori ignorati.
+  useEffect(() => {
+    if (!sessionReady || pluginCheckStarted.current) return;
+    pluginCheckStarted.current = true;
+    // Niente cleanup del timer: col ref, il rerun StrictMode non lo riarmerebbe.
+    setTimeout(() => {
+      api
+        .agentPluginsOutdated()
+        .then((list) => {
+          if (list.length > 0) setOutdatedPlugins(list);
+        })
+        .catch((e) => console.error("agent_plugins_outdated", e));
+    }, 1500);
+  }, [sessionReady]);
+
+  const closePluginUpdate = useCallback(() => {
+    setOutdatedPlugins([]);
+    // Dopo un aggiornamento non seguito da riavvio lo stato va riletto.
+    api
+      .agentEnvStatus()
+      .then(setAgentEnvs)
+      .catch(() => undefined);
+  }, []);
 
   const openLaunchSettings =useCallback((ws: Workspace) => {
     setSettingsTab("launches");
@@ -1228,6 +1259,11 @@ export default function App() {
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onAdded={handleAdded}
+      />
+      <PluginUpdateDialog
+        outdated={outdatedPlugins}
+        onClose={closePluginUpdate}
+        onBeforeRestart={flushBeforeExit}
       />
       <SettingsDialog
         isOpen={settingsOpen}

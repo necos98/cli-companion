@@ -167,6 +167,8 @@ pub fn run() {
             agents::agent_usage_limits,
             agents::agent_session_usage,
             agents::install_agent_plugin,
+            agents::agent_plugins_outdated,
+            agents::agent_plugins_update,
             agents::remove_agent_plugin,
             session::load_session,
             session::save_session,

@@ -107,16 +107,31 @@ fn fnv32(s: &str) -> u32 {
         .fold(0x811c9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x01000193))
 }
 
-/// La versione dipende da hook, server MCP e skill: Claude Code copia il plugin in una
-/// cache per versione, quindi se cambia il percorso dell'exe (app spostata o
-/// aggiornata) o il testo della skill la versione deve cambiare, altrimenti
-/// resterebbe la copia vecchia.
-fn plugin_json(hooks: &str, mcp: &str, skills: &str) -> String {
+/// La versione dipende dalla release dell'app e da hook, server MCP e skill:
+/// Claude Code copia il plugin in una cache per versione, quindi se cambia il
+/// percorso dell'exe (app spostata), il testo della skill o la release (ogni
+/// aggiornamento forza la reinstallazione) la versione deve cambiare, altrimenti
+/// resterebbe la copia vecchia. Semver valido: il suffisso e' un prerelease alfanumerico.
+fn plugin_version(hooks: &str, mcp: &str, skills: &str) -> String {
+    format!(
+        "{}-h{:08x}",
+        env!("CARGO_PKG_VERSION"),
+        fnv32(&format!("{hooks}\n{mcp}\n{skills}"))
+    )
+}
+
+/// Versione che avrebbe il plugin generato ora per `exe` (come lo vede l'agente).
+fn plugin_version_for(exe: &str) -> String {
+    let skills = format!("{}\n{}", orchestrate_skill(), workflow_skill());
+    plugin_version(&hooks_json(exe), &mcp_json(exe), &skills)
+}
+
+fn plugin_json(version: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
         "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta \
                         e fornisce i tool MCP e la skill per orchestrare sessioni automatiche.",
-        "version": format!("1.2.{}", fnv32(&format!("{hooks}\n{mcp}\n{skills}")) % 1_000_000),
+        "version": version,
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
@@ -128,7 +143,7 @@ fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let mcp = mcp_json(exe);
     let skill = orchestrate_skill();
     let workflow = workflow_skill();
-    let version = plugin_json(&hooks, &mcp, &format!("{skill}\n{workflow}"));
+    let version = plugin_json(&plugin_version(&hooks, &mcp, &format!("{skill}\n{workflow}")));
     vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (
@@ -194,6 +209,10 @@ fn step_lenient(log: &mut Vec<String>, env: &Env, program: &str, label: &str, ar
 impl AgentProvider for ClaudeCode {
     fn id(&self) -> &'static str {
         AGENT_ID
+    }
+
+    fn plugin_version(&self, ctx: &InstallCtx, env: &Env) -> Option<String> {
+        ctx.exe_for(env).ok().map(|exe| plugin_version_for(&exe))
     }
 
     fn display_name(&self) -> &'static str {
@@ -474,12 +493,29 @@ mod tests {
     fn version_depends_on_hooks_mcp_and_skill() {
         let (hooks, mcp) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"));
         let skill = format!("{}\n{}", orchestrate_skill(), workflow_skill());
-        let v1 = plugin_json(&hooks, &mcp, &skill);
-        assert_eq!(v1, plugin_json(&hooks, &mcp, &skill));
+        let v1 = plugin_version(&hooks, &mcp, &skill);
+        assert_eq!(v1, plugin_version(&hooks, &mcp, &skill));
+        assert_eq!(v1, plugin_version_for("C:/a.exe"));
         // Stessi hook, MCP diverso => versione diversa.
-        assert_ne!(v1, plugin_json(&hooks, &mcp_json("C:/b.exe"), &skill));
-        assert_ne!(v1, plugin_json(&hooks_json("C:/b.exe"), &mcp, &skill));
-        assert_ne!(v1, plugin_json(&hooks, &mcp, "altra skill"));
+        assert_ne!(v1, plugin_version(&hooks, &mcp_json("C:/b.exe"), &skill));
+        assert_ne!(v1, plugin_version(&hooks_json("C:/b.exe"), &mcp, &skill));
+        assert_ne!(v1, plugin_version(&hooks, &mcp, "altra skill"));
+    }
+
+    #[test]
+    fn version_tracks_the_app_release() {
+        let v = plugin_version_for("C:/a.exe");
+        let (release, hash) = v.split_once("-h").unwrap();
+        assert_eq!(release, env!("CARGO_PKG_VERSION"));
+        assert_eq!(hash.len(), 8);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        let files = plugin_files("C:/a.exe");
+        let (_, manifest) = files
+            .iter()
+            .find(|(p, _)| p.ends_with(".claude-plugin/plugin.json") && p.starts_with("plugins/"))
+            .unwrap();
+        let m: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        assert_eq!(m["version"], v.as_str());
     }
 
     #[test]

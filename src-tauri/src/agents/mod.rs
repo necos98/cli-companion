@@ -5,6 +5,10 @@
 //! Aggiungere un agente = un file che implementa `AgentProvider` (vedi
 //! `claude_code.rs`) + una riga in `PROVIDERS`: comandi Tauri e UI
 //! (Impostazioni -> Coding agent) sono generici e non vanno toccati.
+//! Il plugin e' versionato (release dell'app + hash del contenuto): dopo ogni
+//! installazione la versione va nel marcatore `.installed-version` della sua
+//! cartella. All'avvio il frontend chiama `agent_plugins_outdated` (solo
+//! letture di file) e, se serve, `agent_plugins_update` per reinstallarli tutti.
 //! Per mostrare i consumi (limiti dell'abbonamento, token di sessione)
 //! l'agente implementa anche `usage_limits` / `session_usage` (opzionali,
 //! default "non supportato"); `claude_usage.rs` ne e' l'esempio.
@@ -37,6 +41,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const DETECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout di `plugin list` (l'agente puo' consultare i marketplace).
 pub(crate) const PLUGIN_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+/// File nella cartella del plugin generato con la versione installata.
+const INSTALLED_MARKER: &str = ".installed-version";
 /// Validita' della cache dei path risolti.
 const RESOLVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
@@ -458,6 +464,12 @@ pub trait AgentProvider: Sync {
     fn input_profile(&self) -> InputProfile {
         InputProfile::default()
     }
+    /// Versione che avrebbe il plugin generato ora per questo env (`None` =
+    /// agente senza plugin versionato: non e' mai considerato da aggiornare).
+    /// Solo calcolo, nessun processo.
+    fn plugin_version(&self, _ctx: &InstallCtx, _env: &Env) -> Option<String> {
+        None
+    }
     fn detect(&self, env: &Env) -> Detection;
     /// Solo se `det.found`: il plugin e' gia' installato?
     fn is_installed(&self, env: &Env, det: &Detection) -> bool;
@@ -736,6 +748,16 @@ pub async fn agent_session_usage(
     .await
 }
 
+/// Contesto di installazione: exe corrente e cartella dati dell'app.
+fn install_ctx(app: &AppHandle) -> Result<InstallCtx, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("percorso exe: {e}"))?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(InstallCtx {
+        exe: forward_slashes(&exe.to_string_lossy()),
+        data_dir,
+    })
+}
+
 /// Risolve agente + ambiente (la distro deve esistere) e rileva l'agente.
 fn prepare(
     app: &AppHandle,
@@ -749,14 +771,146 @@ fn prepare(
             return Err(format!("distro non trovata: {d}"));
         }
     }
-    let exe = std::env::current_exe().map_err(|e| format!("percorso exe: {e}"))?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let ctx = InstallCtx {
-        exe: forward_slashes(&exe.to_string_lossy()),
-        data_dir,
-    };
+    let ctx = install_ctx(app)?;
     let det = provider.detect(&env);
     Ok((provider, env, det, ctx))
+}
+
+/// Installa il plugin e annota nella sua cartella la versione installata.
+fn install_and_mark(
+    provider: &dyn AgentProvider,
+    ctx: &InstallCtx,
+    env: &Env,
+    det: &Detection,
+) -> Result<String, String> {
+    let log = provider.install(ctx, env, det)?;
+    if let Some(v) = provider.plugin_version(ctx, env) {
+        let marker = ctx.plugin_root(provider.id(), env).join(INSTALLED_MARKER);
+        std::fs::write(&marker, v).map_err(|e| format!("marcatore versione: {e}\n{log}"))?;
+    }
+    Ok(log)
+}
+
+/// Plugin installato con una versione diversa da quella che l'app genererebbe ora.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutdatedPlugin {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub env_key: String,
+    pub env_label: String,
+    /// `None` = installato prima del marcatore di versione.
+    pub installed_version: Option<String>,
+    pub expected_version: String,
+}
+
+/// Plugin installati (cartella presente) la cui versione non e' quella attesa.
+/// Solo letture di file: `envs` (costoso, WSL) e' chiamato solo se esiste una
+/// cartella diversa da "windows", e al massimo una volta.
+fn find_outdated(
+    providers: &[&dyn AgentProvider],
+    ctx: &InstallCtx,
+    envs: &mut dyn FnMut() -> Vec<Env>,
+) -> Vec<OutdatedPlugin> {
+    let mut all: Option<Vec<Env>> = None;
+    let mut out = Vec::new();
+    for provider in providers {
+        let base = ctx.data_dir.join("agent-plugins").join(provider.id());
+        let Ok(entries) = std::fs::read_dir(&base) else { continue };
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        for name in names {
+            let env = if name == "windows" {
+                Env::Windows
+            } else {
+                let list = all.get_or_insert_with(&mut *envs);
+                // Distro rimossa: nessun env da aggiornare.
+                match list.iter().find(|e| sanitize_env_key(&e.key()) == name) {
+                    Some(e) => e.clone(),
+                    None => continue,
+                }
+            };
+            let Some(expected) = provider.plugin_version(ctx, &env) else { continue };
+            let installed = std::fs::read_to_string(base.join(&name).join(INSTALLED_MARKER))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if installed.as_deref() != Some(expected.as_str()) {
+                out.push(OutdatedPlugin {
+                    agent_id: provider.id().to_string(),
+                    agent_name: provider.display_name().to_string(),
+                    env_key: env.key(),
+                    env_label: env.label(),
+                    installed_version: installed,
+                    expected_version: expected,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Plugin installati da aggiornare (nessun processo dell'agente).
+#[tauri::command]
+pub async fn agent_plugins_outdated(app: AppHandle) -> Result<Vec<OutdatedPlugin>, String> {
+    crate::blocking(move || {
+        let ctx = install_ctx(&app)?;
+        Ok(find_outdated(PROVIDERS, &ctx, &mut list_envs))
+    })
+    .await
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginUpdateResult {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub env_key: String,
+    pub env_label: String,
+    pub ok: bool,
+    /// Log dell'installazione, o il testo dell'errore.
+    pub log: String,
+}
+
+/// Reinstalla tutti i plugin non aggiornati, in parallelo.
+#[tauri::command]
+pub async fn agent_plugins_update(app: AppHandle) -> Result<Vec<PluginUpdateResult>, String> {
+    crate::blocking(move || {
+        invalidate_detection_cache();
+        let ctx = install_ctx(&app)?;
+        let outdated = find_outdated(PROVIDERS, &ctx, &mut list_envs);
+        let ctx = &ctx;
+        Ok(std::thread::scope(|s| {
+            let handles: Vec<_> = outdated
+                .into_iter()
+                .map(|o| s.spawn(move || update_one(ctx, o)))
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        }))
+    })
+    .await
+}
+
+fn update_one(ctx: &InstallCtx, o: OutdatedPlugin) -> PluginUpdateResult {
+    let res = (|| {
+        let provider = find_provider(&o.agent_id)?;
+        let env = Env::from_key(&o.env_key)?;
+        let det = provider.detect(&env);
+        if !det.found {
+            return Err(format!("{} non trovato in questo env", provider.display_name()));
+        }
+        install_and_mark(provider, ctx, &env, &det)
+    })();
+    PluginUpdateResult {
+        agent_id: o.agent_id,
+        agent_name: o.agent_name,
+        env_key: o.env_key,
+        env_label: o.env_label,
+        ok: res.is_ok(),
+        log: res.unwrap_or_else(|e| e),
+    }
 }
 
 #[tauri::command]
@@ -774,7 +928,7 @@ pub async fn install_agent_plugin(
                 provider.display_name()
             ));
         }
-        provider.install(&ctx, &env, &det)
+        install_and_mark(provider, &ctx, &env, &det)
     })
     .await
 }
@@ -1004,6 +1158,73 @@ mod tests {
         let n = Fake { id: "n", interactive: Some("n-cli"), orchestrator: None };
         assert_eq!(collect_builtin_launches(&[&n], "n").len(), 1);
         assert!(collect_builtin_launches(&[&c], "c").is_empty());
+    }
+
+    struct Versioned;
+
+    impl AgentProvider for Versioned {
+        fn id(&self) -> &'static str {
+            "versioned"
+        }
+        fn display_name(&self) -> &'static str {
+            "Versioned"
+        }
+        fn plugin_version(&self, _: &InstallCtx, _: &Env) -> Option<String> {
+            Some("1.0-habc".to_string())
+        }
+        fn detect(&self, _: &Env) -> Detection {
+            Detection::default()
+        }
+        fn is_installed(&self, _: &Env, _: &Detection) -> bool {
+            false
+        }
+        fn install(&self, _: &InstallCtx, _: &Env, _: &Detection) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn uninstall(&self, _: &InstallCtx, _: &Env, _: &Detection) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn outdated_detection_reads_markers() {
+        let dir = std::env::temp_dir().join(format!("mc-outdated-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let base = dir.join("agent-plugins").join("versioned");
+        for (folder, marker) in [
+            ("windows", None),
+            ("Ubuntu", Some("1.0-habc\n")),
+            ("Debian", Some("0.9-hold")),
+            ("Gone", None),
+        ] {
+            std::fs::create_dir_all(base.join(folder)).unwrap();
+            if let Some(m) = marker {
+                std::fs::write(base.join(folder).join(INSTALLED_MARKER), m).unwrap();
+            }
+        }
+        let ctx = InstallCtx { exe: "C:/a.exe".into(), data_dir: dir.clone() };
+        let mut calls = 0;
+        let mut envs = || {
+            calls += 1;
+            vec![Env::Windows, Env::Wsl("Ubuntu".into()), Env::Wsl("Debian".into())]
+        };
+        let out = find_outdated(&[&Versioned, &Fake { id: "none", interactive: None, orchestrator: None }], &ctx, &mut envs);
+        let found: Vec<_> = out
+            .iter()
+            .map(|o| (o.env_key.as_str(), o.installed_version.as_deref()))
+            .collect();
+        // Marcatore mancante => da aggiornare; uguale => no; vecchio => si'; distro ignota => saltata.
+        assert_eq!(found, vec![("Debian", Some("0.9-hold")), ("windows", None)]);
+        assert!(out.iter().all(|o| o.expected_version == "1.0-habc" && o.agent_id == "versioned"));
+        assert_eq!(calls, 1);
+
+        // Solo "windows": la lista degli env non viene nemmeno calcolata.
+        std::fs::remove_dir_all(base.join("Ubuntu")).unwrap();
+        std::fs::remove_dir_all(base.join("Debian")).unwrap();
+        std::fs::remove_dir_all(base.join("Gone")).unwrap();
+        let mut never = || -> Vec<Env> { panic!("list_envs non deve essere chiamata") };
+        assert_eq!(find_outdated(&[&Versioned], &ctx, &mut never).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

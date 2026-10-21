@@ -327,3 +327,14 @@ ma contiene più repository:
 
 Il plugin dell'agente cambia (nuovo hook dei permessi): reinstallalo da
 **Impostazioni → Coding agent**.
+
+## Aggiornamento automatico del plugin (v0.10.1)
+
+Il plugin dell'agente è versionato con la release dell'app (`<versione>-h<hash>`)
+e ogni installazione annota la versione nella sua cartella (`.installed-version`).
+All'avvio, in background, l'app controlla gli ambienti in cui il plugin è
+installato: se qualcuno è rimasto indietro (ad esempio dopo un aggiornamento
+dell'app) chiede se aggiornarlo. Con “Aggiorna” il plugin viene reinstallato in
+tutti quegli ambienti e l'app si riavvia, riprendendo le sessioni aperte; con
+“Non ora” non succede nulla e la domanda torna al prossimo avvio. Non serve più
+reinstallare il plugin a mano dopo un aggiornamento.

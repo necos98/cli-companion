@@ -115,6 +115,26 @@ export interface SessionUsage {
 }
 
 /** Stato di un agente in un ambiente (vedi `AgentEnvStatus` in agents/mod.rs). */
+/** Plugin installato con versione diversa da quella attesa dall'app. */
+export interface OutdatedPlugin {
+  agent_id: string;
+  agent_name: string;
+  env_key: string;
+  env_label: string;
+  installed_version: string | null;
+  expected_version: string;
+}
+
+export interface PluginUpdateResult {
+  agent_id: string;
+  agent_name: string;
+  env_key: string;
+  env_label: string;
+  ok: boolean;
+  /** Testo d'errore quando !ok. */
+  log: string;
+}
+
 export interface AgentEnvStatus {
   agent_id: string;
   agent_name: string;
@@ -279,6 +299,10 @@ export const api = {
 
   installAgentPlugin: (agentId: string, envKey: string) =>
     invoke<string>("install_agent_plugin", { agentId, envKey }),
+
+  agentPluginsOutdated: () => invoke<OutdatedPlugin[]>("agent_plugins_outdated"),
+
+  agentPluginsUpdate: () => invoke<PluginUpdateResult[]>("agent_plugins_update"),
 
   removeAgentPlugin: (agentId: string, envKey: string) =>
     invoke<string>("remove_agent_plugin", { agentId, envKey }),
