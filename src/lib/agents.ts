@@ -89,6 +89,8 @@ export interface AgentTabState {
   agentSessionId?: string;
   /** Id del provider (es. "claude-code"), se noto. */
   agentId?: string;
+  /** Percorso del transcript della sessione (come lo vede l'agente); non si salva. */
+  transcriptPath?: string;
   /**
    * `true` dopo `session-end`: l'agente e' uscito, il tab torna ad avere
    * l'euristica busy/idle ma conserva `agentSessionId` per la ripresa.
@@ -101,6 +103,7 @@ export interface AgentEventLike {
   event: string;
   agent?: string | null;
   agent_session_id?: string | null;
+  transcript_path?: string | null;
 }
 
 /**
@@ -129,9 +132,11 @@ export function applyAgentEvent(
   if (phase === null) return prev;
   const sid = ev.agent_session_id?.trim() || prev?.agentSessionId;
   const agentId = ev.agent?.trim() || prev?.agentId;
+  const transcript = ev.transcript_path?.trim() || prev?.transcriptPath;
   const next: AgentTabState = { phase };
   if (sid) next.agentSessionId = sid;
   if (agentId) next.agentId = agentId;
+  if (transcript) next.transcriptPath = transcript;
   return next;
 }
 

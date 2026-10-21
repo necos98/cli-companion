@@ -5,14 +5,21 @@
 //! Aggiungere un agente = un file che implementa `AgentProvider` (vedi
 //! `claude_code.rs`) + una riga in `PROVIDERS`: comandi Tauri e UI
 //! (Impostazioni -> Coding agent) sono generici e non vanno toccati.
+//! Per mostrare i consumi (limiti dell'abbonamento, token di sessione)
+//! l'agente implementa anche `usage_limits` / `session_usage` (opzionali,
+//! default "non supportato"); `claude_usage.rs` ne e' l'esempio.
 
 mod claude_code;
+mod claude_usage;
 
+pub use claude_usage::TranscriptCache;
+
+use crate::launch_settings::LaunchSettingsStore;
 use crate::wsl::{installed_distros, windows_to_wsl_path};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -323,6 +330,61 @@ pub struct AutomationRequest<'a> {
     pub model: Option<&'a str>,
 }
 
+/// Una finestra di limite dell'abbonamento (5 ore o settimanale).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LimitWindow {
+    /// Percentuale consumata (0..=100, puo' superare 100 in sforamento).
+    pub used_percentage: f64,
+    /// Fine della finestra, RFC3339 come ricevuto.
+    pub resets_at: Option<String>,
+}
+
+/// Limiti dell'abbonamento e loro stato.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UsageLimitsReply {
+    /// "ok" | "expired" | "unavailable" | "disabled" | "unsupported".
+    pub state: String,
+    pub five_hour: Option<LimitWindow>,
+    pub seven_day: Option<LimitWindow>,
+    /// Spiegazione breve (italiano) quando lo stato non e' "ok".
+    pub message: Option<String>,
+}
+
+impl UsageLimitsReply {
+    /// Risposta senza finestre, con stato e (opzionale) messaggio.
+    pub fn status(state: &str, message: Option<&str>) -> Self {
+        Self {
+            state: state.to_string(),
+            five_hour: None,
+            seven_day: None,
+            message: message.map(str::to_string),
+        }
+    }
+}
+
+/// Token contati in una sessione.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct TokenTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
+/// Consumi di una sessione letti dal transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SessionUsage {
+    pub main: TokenTotals,
+    pub subagents: TokenTotals,
+    /// input + cache read + cache creation dell'ultimo messaggio della catena
+    /// principale: la dimensione attuale del contesto.
+    pub context_tokens: u64,
+    /// Modello dell'ultimo messaggio principale.
+    pub model: Option<String>,
+    /// Messaggi distinti della catena principale.
+    pub messages: u32,
+}
+
 /// Un coding agent supportato.
 pub trait AgentProvider: Sync {
     /// Id stabile (usato in `--notify`, nelle cartelle e nell'API).
@@ -354,6 +416,22 @@ pub trait AgentProvider: Sync {
     }
     /// Comando che avvia l'agente come orchestratore (`None` = non supportato).
     fn orchestrator_command(&self) -> Option<&'static str> {
+        None
+    }
+    /// Limiti dell'abbonamento nell'ambiente (`None` = non supportato).
+    /// Bloccante (rete): da chiamare fuori dal main thread.
+    fn usage_limits(&self, _env: &Env) -> Option<UsageLimitsReply> {
+        None
+    }
+    /// Consumi di token di una sessione dal suo transcript, come path visto
+    /// dall'agente nell'ambiente (`None` = non supportato). `cache` evita di
+    /// rileggere il file ad ogni chiamata.
+    fn session_usage(
+        &self,
+        _env: &Env,
+        _transcript_path: &str,
+        _cache: &TranscriptCache,
+    ) -> Option<Result<SessionUsage, String>> {
         None
     }
 }
@@ -533,6 +611,65 @@ fn collect_profiles() -> Vec<AgentProfile> {
 #[tauri::command]
 pub fn agent_profiles() -> Vec<AgentProfile> {
     collect_profiles()
+}
+
+/// Env dal frontend per le letture dei consumi. Il nome della distro finisce
+/// in un path UNC: niente separatori o caratteri insoliti.
+fn usage_env(env_key: &str) -> Result<Env, String> {
+    let env = Env::from_key(env_key)?;
+    if let Env::Wsl(d) = &env {
+        let ok = d.len() <= 64
+            && d != ".."
+            && d.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
+        if !ok {
+            return Err(format!("nome distro non valido: {d}"));
+        }
+    }
+    Ok(env)
+}
+
+/// Limiti dell'abbonamento dell'agente. Stato "disabled" se l'utente ha
+/// spento i consumi, "unsupported" se l'agente non li espone.
+#[tauri::command]
+pub async fn agent_usage_limits(
+    settings: State<'_, LaunchSettingsStore>,
+    agent_id: String,
+    env: String,
+) -> Result<UsageLimitsReply, String> {
+    let provider = find_provider(&agent_id)?;
+    let env = usage_env(&env)?;
+    if !settings.show_usage() {
+        return Ok(UsageLimitsReply::status("disabled", None));
+    }
+    crate::blocking(move || {
+        Ok(provider
+            .usage_limits(&env)
+            .unwrap_or_else(|| UsageLimitsReply::status("unsupported", None)))
+    })
+    .await
+}
+
+/// Token consumati da una sessione (dal transcript). `None` se l'agente non
+/// li espone o i consumi sono spenti.
+#[tauri::command]
+pub async fn agent_session_usage(
+    settings: State<'_, LaunchSettingsStore>,
+    cache: State<'_, TranscriptCache>,
+    agent_id: String,
+    env: String,
+    transcript_path: String,
+) -> Result<Option<SessionUsage>, String> {
+    let provider = find_provider(&agent_id)?;
+    let env = usage_env(&env)?;
+    if !settings.show_usage() {
+        return Ok(None);
+    }
+    let cache = cache.inner().clone();
+    crate::blocking(move || match provider.session_usage(&env, &transcript_path, &cache) {
+        Some(r) => r.map(Some),
+        None => Ok(None),
+    })
+    .await
 }
 
 /// Risolve agente + ambiente (la distro deve esistere) e rileva l'agente.
@@ -744,6 +881,21 @@ mod tests {
         let n = Fake { id: "n", interactive: Some("n-cli"), orchestrator: None };
         assert_eq!(collect_builtin_launches(&[&n], "n").len(), 1);
         assert!(collect_builtin_launches(&[&c], "c").is_empty());
+    }
+
+    #[test]
+    fn usage_is_unsupported_by_default_and_env_is_validated() {
+        let f = Fake { id: "f", interactive: None, orchestrator: None };
+        assert!(f.usage_limits(&Env::Windows).is_none());
+        assert!(f.session_usage(&Env::Windows, "x", &TranscriptCache::default()).is_none());
+        assert_eq!(usage_env("windows"), Ok(Env::Windows));
+        assert_eq!(usage_env("Ubuntu-24.04"), Ok(Env::Wsl("Ubuntu-24.04".into())));
+        for bad in ["", "a\\b", "a/b", "..", "x:y", "a\nb"] {
+            assert!(usage_env(bad).is_err(), "{bad:?}");
+        }
+        let v = serde_json::to_value(UsageLimitsReply::status("disabled", None)).unwrap();
+        assert_eq!(v["state"], "disabled");
+        assert!(v["five_hour"].is_null() && v["message"].is_null());
     }
 
     #[test]

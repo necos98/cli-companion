@@ -1,5 +1,7 @@
 //! Impostazioni globali degli avvii: l'avvio predefinito dei nuovi terminali
-//! quando il workspace non ne ha uno suo. Persistenza in `launch_settings.json`.
+//! quando il workspace non ne ha uno suo, e il flag globale che abilita la
+//! lettura dei consumi dell'agente (`show_usage`). Persistenza in
+//! `launch_settings.json`.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -7,11 +9,25 @@ use tauri::{AppHandle, Manager, State};
 
 const SETTINGS_FILE: &str = "launch_settings.json";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchSettings {
     /// Id di un avvio integrato (`builtin:...`); `None` = shell semplice.
     #[serde(default)]
     pub default_launch: Option<String>,
+    /// Mostra i consumi dell'agente (limiti e token). I file vecchi senza il
+    /// campo valgono `true`.
+    #[serde(default = "default_show_usage")]
+    pub show_usage: bool,
+}
+
+fn default_show_usage() -> bool {
+    true
+}
+
+impl Default for LaunchSettings {
+    fn default() -> Self {
+        Self { default_launch: None, show_usage: true }
+    }
 }
 
 #[derive(Default)]
@@ -64,10 +80,30 @@ pub fn set_global_default_launch(
 ) -> Result<LaunchSettings, String> {
     validate(&launch_id, &crate::agents::builtin_launch_list())?;
     let mut s = state.inner.lock().unwrap();
-    let next = LaunchSettings { default_launch: launch_id };
+    let next = LaunchSettings { default_launch: launch_id, ..s.clone() };
     save_to_disk(&app, &next)?;
     *s = next.clone();
     Ok(next)
+}
+
+#[tauri::command]
+pub fn set_show_usage(
+    app: AppHandle,
+    state: State<LaunchSettingsStore>,
+    enabled: bool,
+) -> Result<LaunchSettings, String> {
+    let mut s = state.inner.lock().unwrap();
+    let next = LaunchSettings { show_usage: enabled, ..s.clone() };
+    save_to_disk(&app, &next)?;
+    *s = next.clone();
+    Ok(next)
+}
+
+impl LaunchSettingsStore {
+    /// Flag `show_usage` corrente.
+    pub fn show_usage(&self) -> bool {
+        self.inner.lock().unwrap().show_usage
+    }
 }
 
 #[cfg(test)]
@@ -79,9 +115,20 @@ mod tests {
         assert_eq!(LaunchSettings::default().default_launch, None);
         let s: LaunchSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s, LaunchSettings::default());
-        let s = LaunchSettings { default_launch: Some("builtin:claude-code".into()) };
+        let s = LaunchSettings { default_launch: Some("builtin:claude-code".into()), show_usage: false };
         let back: LaunchSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn show_usage_defaults_to_true_on_old_files() {
+        assert!(LaunchSettings::default().show_usage);
+        let old: LaunchSettings = serde_json::from_str(r#"{"default_launch":"builtin:claude-code"}"#).unwrap();
+        assert!(old.show_usage);
+        assert_eq!(old.default_launch.as_deref(), Some("builtin:claude-code"));
+        let off: LaunchSettings = serde_json::from_str(r#"{"show_usage":false}"#).unwrap();
+        assert!(!off.show_usage);
+        assert!(LaunchSettingsStore::default().show_usage());
     }
 
     #[test]

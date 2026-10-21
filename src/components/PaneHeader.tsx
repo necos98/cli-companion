@@ -13,6 +13,8 @@ interface Props {
   automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
   /** Avvio da cui e' nato il tab (l'orchestratore manuale ha il badge ORCH). */
   launchId?: string;
+  /** Utilizzo di token della sessione dell'agente (testo compatto e tooltip). */
+  usage?: { text: string; title: string };
   /** Il pannello riceve la tastiera. */
   focused?: boolean;
   maximized: boolean;
@@ -42,6 +44,7 @@ export default function PaneHeader({
   status,
   automation,
   launchId,
+  usage,
   focused = false,
   maximized,
   pinned,
@@ -103,6 +106,14 @@ export default function PaneHeader({
         </span>
       )}
       <span className="flex-1" />
+      {usage && (
+        <span
+          title={usage.title}
+          className="min-w-0 flex-shrink truncate whitespace-nowrap font-mono text-[10px] text-muted-foreground"
+        >
+          {usage.text}
+        </span>
+      )}
       <button
         onClick={onTogglePin}
         onDoubleClick={(e) => e.stopPropagation()}

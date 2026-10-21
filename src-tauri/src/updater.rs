@@ -246,7 +246,7 @@ pub struct UpdateStatus {
     pub asset: Option<AssetInfo>,
 }
 
-fn curl_bin() -> String {
+pub(crate) fn curl_bin() -> String {
     if let Some(custom) = env_override("CLI_COMPANION_UPDATER_CURL") {
         return custom;
     }
@@ -272,7 +272,7 @@ fn latest_release_url(cfg: &UpdateConfig) -> String {
 
 /// Niente finestra console per i processi figli: la build release e' una app
 /// GUI (windows_subsystem) e curl/cmd aprirebbero un terminale lampeggiante.
-fn quiet(cmd: &mut Command) -> &mut Command {
+pub(crate) fn quiet(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -282,11 +282,32 @@ fn quiet(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
-fn run_curl(args: &[String]) -> Result<Vec<u8>, String> {
+pub(crate) fn run_curl(args: &[String]) -> Result<Vec<u8>, String> {
+    run_curl_with(args, None)
+}
+
+/// Come `run_curl` ma scrive `stdin` sullo stdin di curl: serve per passare
+/// header segreti con `-H @-` senza metterli nella riga di comando.
+pub(crate) fn run_curl_stdin(args: &[String], stdin: &[u8]) -> Result<Vec<u8>, String> {
+    run_curl_with(args, Some(stdin))
+}
+
+fn run_curl_with(args: &[String], stdin: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::Stdio;
     let bin = curl_bin();
-    let out = quiet(&mut Command::new(&bin)).args(args).output().map_err(|e| {
+    let spawn_err = |e: std::io::Error| {
         format!("Impossibile eseguire '{bin}' (curl non trovato nel PATH?): {e}. Su Windows 10+ curl.exe è preinstallato.")
-    })?;
+    };
+    let mut cmd = Command::new(&bin);
+    quiet(&mut cmd).args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
+    let mut child = cmd.spawn().map_err(spawn_err)?;
+    if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        // Errore ignorato: se curl chiude prima, l'esito si vede dall'exit code.
+        let _ = pipe.write_all(data);
+    }
+    let out = child.wait_with_output().map_err(spawn_err)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!(

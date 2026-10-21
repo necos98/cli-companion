@@ -62,6 +62,8 @@ interface Props {
   updateAvailable?: boolean;
   /** Elenco aggiornato degli ambienti dei coding agent (per la barra di stato). */
   onAgentEnvs?: (envs: AgentEnvStatus[]) => void;
+  /** Interruttore "Mostra utilizzo" cambiato nelle Impostazioni. */
+  onShowUsage?: (enabled: boolean) => void;
   /** Agenti noti (per la scelta dell'orchestratore automatico). */
   agentProfiles?: AgentProfile[];
   /** Ambienti dei coding agent già noti (per il wizard del workflow). */
@@ -85,6 +87,7 @@ export default function SettingsDialog({
   onUpdateAvailable,
   updateAvailable = false,
   onAgentEnvs,
+  onShowUsage,
   agentProfiles = [],
   agentEnvs = [],
   builtinLaunches = [],
@@ -164,7 +167,7 @@ export default function SettingsDialog({
             title="Coding agent"
             description="Il plugin che avvisa l’app quando un agente ha finito o ha bisogno di te."
           >
-            <AgentSettingsTab onEnvs={onAgentEnvs} />
+            <AgentSettingsTab onEnvs={onAgentEnvs} onShowUsage={onShowUsage} />
           </SettingsPage>
         );
       case "updates":

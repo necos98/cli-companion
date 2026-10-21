@@ -106,6 +106,31 @@ pub fn windows_to_wsl_path(win: &str) -> Option<String> {
     None
 }
 
+/// Inverso di `windows_to_wsl_path`: path Linux di `distro` -> path Windows
+/// leggibile dall'host.
+/// - `/mnt/c/Users/me` -> `C:\Users\me`
+/// - `/home/me/x` -> `\\wsl.localhost\Ubuntu\home\me\x`
+///
+/// `None` se il path non e' assoluto.
+pub fn wsl_to_windows_path(distro: &str, linux: &str) -> Option<String> {
+    let t = linux.trim();
+    if !t.starts_with('/') {
+        return None;
+    }
+    let comps: Vec<&str> = t.split('/').filter(|c| !c.is_empty()).collect();
+    if let [mnt, drive, rest @ ..] = comps.as_slice() {
+        if *mnt == "mnt" && drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic() {
+            let d = drive.to_ascii_uppercase();
+            return Some(if rest.is_empty() {
+                format!("{d}:\\")
+            } else {
+                format!("{d}:\\{}", rest.join("\\"))
+            });
+        }
+    }
+    Some(format!("\\\\wsl.localhost\\{distro}\\{}", comps.join("\\")))
+}
+
 #[tauri::command]
 pub async fn list_wsl_distros() -> Result<Vec<String>, String> {
     crate::blocking(installed_distros).await
@@ -130,6 +155,24 @@ pub async fn check_wsl_path(distro: String, path: String) -> Result<bool, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_to_windows_converts_mnt_and_distro_paths() {
+        let w = |p: &str| wsl_to_windows_path("Ubuntu", p);
+        assert_eq!(w("/mnt/c/Users/me/x.jsonl").as_deref(), Some(r"C:\Users\me\x.jsonl"));
+        assert_eq!(w("/mnt/d").as_deref(), Some(r"D:\"));
+        assert_eq!(
+            w("/home/u/.claude/projects/p/s.jsonl").as_deref(),
+            Some(r"\\wsl.localhost\Ubuntu\home\u\.claude\projects\p\s.jsonl")
+        );
+        // `/mnt/cd` non e' un drive.
+        assert_eq!(w("/mnt/cd/x").as_deref(), Some(r"\\wsl.localhost\Ubuntu\mnt\cd\x"));
+        assert_eq!(w("relativo/x"), None);
+        assert_eq!(w(r"C:\x"), None);
+        // Inverso di windows_to_wsl_path per i drive.
+        let back = windows_to_wsl_path(&w("/mnt/c/a/b").unwrap()).unwrap();
+        assert_eq!(back, "/mnt/c/a/b");
+    }
 
     #[test]
     fn run_and_git_use_exec_so_argv_skips_the_distro_shell() {

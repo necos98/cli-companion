@@ -14,8 +14,8 @@
 //! disco finche' il plugin e' installato.
 
 use super::{
-    parse_version, resolve_wsl_command, AgentProvider, AutomationRequest, Detection, Env, InputEvent, InputProfile,
-    InputRule, InstallCtx, PermissionMode,
+    claude_usage, parse_version, resolve_wsl_command, AgentProvider, AutomationRequest, Detection, Env, InputEvent,
+    InputProfile, InputRule, InstallCtx, PermissionMode, SessionUsage, TranscriptCache, UsageLimitsReply,
 };
 
 pub struct ClaudeCode;
@@ -249,6 +249,19 @@ impl AgentProvider for ClaudeCode {
 
     fn orchestrator_command(&self) -> Option<&'static str> {
         Some("claude --dangerously-skip-permissions \"/cli-companion-notify:orchestrate\"")
+    }
+
+    fn usage_limits(&self, env: &Env) -> Option<UsageLimitsReply> {
+        Some(claude_usage::limits(env))
+    }
+
+    fn session_usage(
+        &self,
+        env: &Env,
+        transcript_path: &str,
+        cache: &TranscriptCache,
+    ) -> Option<Result<SessionUsage, String>> {
+        Some(claude_usage::session_usage(env, transcript_path, cache))
     }
 
     fn detect(&self, env: &Env) -> Detection {

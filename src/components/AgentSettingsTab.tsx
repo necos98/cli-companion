@@ -18,9 +18,31 @@ import { cn } from "../lib/utils";
 interface Props {
   /** Notifica l'elenco aggiornato degli ambienti (barra di stato). */
   onEnvs?: (envs: AgentEnvStatus[]) => void;
+  /** Notifica il nuovo valore dell'interruttore "Mostra utilizzo". */
+  onShowUsage?: (enabled: boolean) => void;
 }
 
-export default function AgentSettingsTab({ onEnvs }: Props) {
+export default function AgentSettingsTab({ onEnvs, onShowUsage }: Props) {
+  const [showUsage, setShowUsage] = useState(true);
+
+  useEffect(() => {
+    api
+      .getLaunchSettings()
+      .then((s) => setShowUsage(s.show_usage !== false))
+      .catch(() => undefined);
+  }, []);
+
+  const toggleUsage = async (enabled: boolean) => {
+    setShowUsage(enabled);
+    try {
+      const s = await api.setShowUsage(enabled);
+      setShowUsage(s.show_usage !== false);
+      onShowUsage?.(s.show_usage !== false);
+    } catch {
+      setShowUsage(!enabled);
+    }
+  };
+
   const [envs, setEnvs] = useState<AgentEnvStatus[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -148,6 +170,22 @@ export default function AgentSettingsTab({ onEnvs }: Props) {
           })}
         </section>
       ))}
+
+      <div>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input
+            type="checkbox"
+            checked={showUsage}
+            onChange={(e) => void toggleUsage(e.target.checked)}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+          Mostra utilizzo (limiti 5h/settimanali e token per sessione)
+        </label>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          I limiti arrivano da un endpoint non documentato di Claude e potrebbero smettere di
+          funzionare.
+        </p>
+      </div>
 
       <div>
         <Button

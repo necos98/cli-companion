@@ -85,6 +85,8 @@ interface Props {
   automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
   /** Avvio del tab (per il badge dell'orchestratore manuale). */
   launchId?: string;
+  /** Utilizzo di token della sessione dell'agente (intestazione). */
+  usage?: { text: string; title: string };
 }
 
 export default function TerminalView({
@@ -118,6 +120,7 @@ export default function TerminalView({
   imagePasteSeq = null,
   cwd = null,
   automation,
+  usage,
   launchId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -499,6 +502,7 @@ export default function TerminalView({
           status={paneStatus}
           automation={automation}
           launchId={launchId}
+          usage={usage}
           maximized={maximized}
           pinned={pinned}
           onTogglePin={onTogglePin}

@@ -82,6 +82,7 @@ pub fn run() {
         .manage(PtyState::default())
         .manage(launch_settings::LaunchSettingsStore::default())
         .manage(AutomationState::default())
+        .manage(agents::TranscriptCache::default())
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
@@ -106,6 +107,7 @@ pub fn run() {
             workspaces::set_default_launch,
             launch_settings::get_launch_settings,
             launch_settings::set_global_default_launch,
+            launch_settings::set_show_usage,
             agents::builtin_launches,
             workspaces::open_workspace_folder,
             wsl::list_wsl_distros,
@@ -133,6 +135,8 @@ pub fn run() {
             toast::show_agent_notification,
             agents::agent_env_status,
             agents::agent_profiles,
+            agents::agent_usage_limits,
+            agents::agent_session_usage,
             agents::install_agent_plugin,
             agents::remove_agent_plugin,
             session::load_session,

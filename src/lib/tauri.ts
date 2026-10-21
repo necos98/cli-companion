@@ -32,6 +32,8 @@ export interface BuiltinLaunch {
 /** Impostazioni globali degli avvii (null = shell vuota). */
 export interface LaunchSettings {
   default_launch: string | null;
+  /** Mostra limiti e token di utilizzo (default true). */
+  show_usage: boolean;
 }
 
 export interface Workspace {
@@ -65,8 +67,40 @@ export interface AgentEvent {
   /** Id del tab (`CLI_COMPANION_SESSION`); assente per `test`. */
   tab_id?: string | null;
   agent_session_id?: string | null;
+  /** Percorso assoluto del transcript della sessione, come lo vede l'agente. */
+  transcript_path?: string | null;
   notification_type?: string | null;
   message?: string | null;
+}
+
+/** Finestra di un limite di utilizzo. */
+export interface LimitWindow {
+  /** 0-100. */
+  used_percentage: number;
+  /** RFC3339. */
+  resets_at: string | null;
+}
+
+export interface UsageLimitsReply {
+  state: "ok" | "expired" | "unavailable" | "disabled" | "unsupported";
+  five_hour: LimitWindow | null;
+  seven_day: LimitWindow | null;
+  message: string | null;
+}
+
+export interface TokenTotals {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
+export interface SessionUsage {
+  main: TokenTotals;
+  subagents: TokenTotals;
+  context_tokens: number;
+  model: string | null;
+  messages: number;
 }
 
 /** Stato di un agente in un ambiente (vedi `AgentEnvStatus` in agents/mod.rs). */
@@ -210,6 +244,14 @@ export const api = {
   /** Toast cliccabile (solo Windows): al click focus + `notification-activated`. */
   showAgentNotification: (tabId: string, title: string, body: string) =>
     invoke<void>("show_agent_notification", { tabId, title, body }),
+
+  setShowUsage: (enabled: boolean) => invoke<LaunchSettings>("set_show_usage", { enabled }),
+
+  agentUsageLimits: (agentId: string, env: string) =>
+    invoke<UsageLimitsReply>("agent_usage_limits", { agentId, env }),
+
+  agentSessionUsage: (agentId: string, env: string, transcriptPath: string) =>
+    invoke<SessionUsage | null>("agent_session_usage", { agentId, env, transcriptPath }),
 
   agentProfiles: () => invoke<AgentProfile[]>("agent_profiles"),
 

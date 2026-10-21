@@ -36,6 +36,7 @@ import { allLaunches, launchCommands, resolveDefaultLaunch } from "./lib/launch"
 import { WORKFLOW_WIZARD_COMMAND, WORKFLOW_WIZARD_TITLE, isAutoWorkspace } from "./lib/workflow";
 import { automationBadgeText } from "./lib/schedule";
 import {
+  agentEnvBadge,
   applyAgentEvent,
   GROUP_STATUS,
   applyUserInput,
@@ -49,6 +50,8 @@ import {
   tabStatus,
 } from "./lib/agents";
 import type { AgentTabState, TabStatus } from "./lib/agents";
+import { limitGroups, usageText, usageTooltip } from "./lib/usage";
+import { useUsage } from "./lib/useUsage";
 import {
   applyAutomationUpdate,
   automationTooltip,
@@ -79,6 +82,7 @@ import {
 import type { LayoutState } from "./lib/layout";
 import {
   CLOSE_FLUSH_TIMEOUT_MS,
+  CLAUDE_AGENT_ID,
   SESSION_SAVE_MAX_MS,
   SESSION_SAVE_MS,
   debounceDelay,
@@ -183,6 +187,8 @@ export default function App() {
   // Plugin degli agenti installati per ambiente (barra di stato): caricati una
   // volta, in background, dopo l'avvio; aggiornati dalle Impostazioni.
   const [agentEnvs, setAgentEnvs] = useState<AgentEnvStatus[]>([]);
+  // Utilizzo (limiti e token): interruttore globale delle Impostazioni.
+  const [showUsage, setShowUsage] = useState(true);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   // Board dei task per workspace (riepilogo per la sidebar e vista a grafo).
   const [boards, setBoards] = useState<Record<string, BoardData>>({});
@@ -526,6 +532,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+  // Polling dell'utilizzo: limiti per ambiente e token per sessione.
+  const usage = useUsage(showUsage, agentEnvs, tabs);
+  const usageEventRef = useRef(usage.onAgentEvent);
+  usageEventRef.current = usage.onAgentEvent;
+
   // Eventi dei coding agent: stato del tab, suono e notifica di sistema.
   // `test` e' il self-test delle Impostazioni: solo il suono. Gli eventi il
   // cui tab non esiste (piu') sono ignorati.
@@ -544,6 +555,7 @@ export default function App() {
           t.key === tab.key ? { ...t, agent: applyAgentEvent(t.agent, ev) } : t,
         ),
       );
+      usageEventRef.current(tab.key, ev.event, ev.transcript_path, ev.agent);
       const sound = soundForEvent(ev.event);
       if (sound === "attention") playAttention();
       else if (sound === "ding") playDing();
@@ -657,7 +669,10 @@ export default function App() {
     api.builtinLaunches().then(setBuiltinLaunches).catch(() => undefined);
     api
       .getLaunchSettings()
-      .then((s) => setGlobalLaunch(s.default_launch))
+      .then((s) => {
+        setGlobalLaunch(s.default_launch);
+        setShowUsage(s.show_usage !== false);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -963,6 +978,17 @@ export default function App() {
 
   const attentionCount = countNeedingInput(statuses);
   const agentsSummary = installedAgentsSummary(agentEnvs);
+  const limitEntries = showUsage
+    ? limitGroups(
+        agentEnvs
+          .filter((e) => e.agent_id === CLAUDE_AGENT_ID && e.found && e.installed)
+          .map((e) => ({
+            envKey: e.env_key,
+            label: agentEnvBadge(e),
+            reply: usage.limits[e.env_key],
+          })),
+      )
+    : [];
   const anyPaneVisible = Object.values(paneLayouts).some((p) => p.visible);
 
   return (
@@ -1107,6 +1133,14 @@ export default function App() {
                     status={statusOf(t)}
                     cwd={t.automation?.cwd}
                     launchId={t.launchId}
+                    usage={
+                      showUsage && usage.sessions[t.key] && !t.agent?.ended
+                        ? {
+                            text: usageText(usage.sessions[t.key]),
+                            title: usageTooltip(usage.sessions[t.key]),
+                          }
+                        : undefined
+                    }
                     automation={
                       t.automation
                         ? {
@@ -1166,6 +1200,7 @@ export default function App() {
         terminalCount={tabs.length}
         attentionCount={attentionCount}
         agentsSummary={agentsSummary}
+        limits={limitEntries}
       />
 
       <AddWorkspaceDialog
@@ -1183,6 +1218,7 @@ export default function App() {
         onUpdateAvailable={setUpdateAvailable}
         updateAvailable={updateAvailable}
         onAgentEnvs={setAgentEnvs}
+        onShowUsage={setShowUsage}
         agentProfiles={agentProfiles}
         agentEnvs={agentEnvs}
         builtinLaunches={builtinLaunches}

@@ -90,6 +90,17 @@ describe("agenti: macchina a stati del tab", () => {
     assert.deepEqual(s, { phase: "needs-input", agentSessionId: "xyz" });
   });
 
+  it("transcript_path: aggiornato se presente, conservato altrimenti (anche dopo session-end)", () => {
+    let s = applyAgentEvent(undefined, { event: "session-start", transcript_path: "/a.jsonl" });
+    assert.equal(s.transcriptPath, "/a.jsonl");
+    s = applyAgentEvent(s, { event: "finished" });
+    assert.equal(s.transcriptPath, "/a.jsonl");
+    s = applyAgentEvent(s, { event: "needs-input", transcript_path: "/b.jsonl" });
+    assert.equal(s.transcriptPath, "/b.jsonl");
+    s = applyAgentEvent(s, { event: "session-end" });
+    assert.equal(s.transcriptPath, "/b.jsonl");
+  });
+
   it("finished senza session-start precedente rende comunque il tab un agente", () => {
     assert.deepEqual(applyAgentEvent(undefined, { event: "finished" }), { phase: "finished" });
   });

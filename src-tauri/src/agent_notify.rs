@@ -68,6 +68,7 @@ const STDIN_MAX_BYTES: u64 = 1024 * 1024;
 const WIRE_MAX_BYTES: u64 = 64 * 1024;
 const MESSAGE_MAX_CHARS: usize = 300;
 const FIELD_MAX_CHARS: usize = 128;
+const TRANSCRIPT_PATH_MAX_CHARS: usize = 1024;
 const TAB_ID_MAX: usize = 64;
 /// Attesa massima della riga di risposta a `finished` (l'hook ha 10 s).
 const REPLY_TIMEOUT: Duration = Duration::from_secs(4);
@@ -93,6 +94,10 @@ pub struct NotifyPayload {
     /// background non finiti + cron di sessione). `None` = dato assente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_work: Option<u32>,
+    /// Path del transcript della sessione, come lo vede l'agente (Windows o
+    /// Linux/WSL): serve al frontend per leggere i consumi di token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
 }
 
 /// Risposta del listener a una notifica: `{}` oppure `{"block":"<motivo>"}`.
@@ -177,6 +182,7 @@ pub struct HookInput {
     pub message: Option<String>,
     pub stop_hook_active: Option<bool>,
     pub background_work: Option<u32>,
+    pub transcript_path: Option<String>,
 }
 
 pub fn is_known_event(event: &str) -> bool {
@@ -254,6 +260,7 @@ pub fn parse_hook_stdin(raw: &str) -> HookInput {
         message: field("message", MESSAGE_MAX_CHARS),
         stop_hook_active: v.get("stop_hook_active").and_then(Value::as_bool),
         background_work: background_work(&v),
+        transcript_path: field("transcript_path", TRANSCRIPT_PATH_MAX_CHARS),
     }
 }
 
@@ -275,6 +282,7 @@ pub fn build_payload(
         token: None,
         stop_hook_active: input.stop_hook_active,
         background_work: input.background_work,
+        transcript_path: input.transcript_path,
     }
 }
 
@@ -901,6 +909,26 @@ mod tests {
         let mut n = sample("needs-input");
         n.background_work = Some(2);
         assert!(!is_paused_stop(&n, true));
+    }
+
+    #[test]
+    fn transcript_path_is_extracted_clipped_and_optional() {
+        let raw = r#"{"session_id":"s","transcript_path":"  C:\\Users\\me\\.claude\\projects\\p\\s.jsonl "}"#;
+        let p = build_payload("finished", "claude-code", Some("t1"), Some(raw));
+        assert_eq!(p.transcript_path.as_deref(), Some(r"C:\Users\me\.claude\projects\p\s.jsonl"));
+        let wire: NotifyPayload = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(wire, p);
+        // Assente, vuoto o di tipo sbagliato: None e non serializzato.
+        for raw in [r#"{"session_id":"s"}"#, r#"{"transcript_path":"  "}"#, r#"{"transcript_path":5}"#] {
+            let p = build_payload("finished", "claude-code", Some("t1"), Some(raw));
+            assert_eq!(p.transcript_path, None, "{raw}");
+            assert!(!serde_json::to_string(&p).unwrap().contains("transcript_path"));
+        }
+        let long = format!(r#"{{"transcript_path":"{}"}}"#, "a".repeat(2000));
+        assert_eq!(parse_hook_stdin(&long).transcript_path.unwrap().chars().count(), 1024);
+        // Payload vecchio senza il campo: valido.
+        let old = parse_line(r#"{"event":"finished","agent":"x"}"#).unwrap();
+        assert_eq!(old.transcript_path, None);
     }
 
     #[test]
