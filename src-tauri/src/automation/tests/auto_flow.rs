@@ -1044,3 +1044,69 @@ fn an_automatic_workspace_outside_the_window_still_starts_and_spawns_nothing() {
     assert_eq!(tabs[0].title, "Orchestratore automatico");
     assert!(tabs[0].command.contains(ORCHESTRATOR_BOOTSTRAP_PROMPT));
 }
+
+// ---------------------------------------------------------------------------
+// Workspace archiviato
+// ---------------------------------------------------------------------------
+
+fn set_archived(st: &AutomationState, h: &FakeHost, archived: bool) {
+    *h.archived.lock().unwrap() = archived;
+    st.set_archived(h, "ws-1", archived);
+}
+
+#[test]
+fn an_archived_workspace_opens_no_orchestrator_and_starts_nothing() {
+    // Automatico dentro la finestra.
+    let (st, h) = setup("20:00");
+    *h.archived.lock().unwrap() = true;
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    assert!(h.spawns().is_empty());
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    // Su richiesta (workspace non automatico, fuori dalla finestra).
+    let (st, h) = setup("15:00");
+    h.auto.lock().unwrap().insert("ws-1".into(), auto_cfg(false));
+    *h.archived.lock().unwrap() = true;
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    assert!(h.spawns().is_empty());
+    let view = st.run(&h, |r| r.board_view("ws-1"));
+    assert!(view.orchestrator.is_none() && view.automation.is_none());
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    // Riattivato: l'orchestratore su richiesta si apre e il task parte.
+    set_archived(&st, &h, false);
+    assert_eq!(orch_tabs(&h).len(), 1);
+}
+
+#[test]
+fn archiving_drops_the_orchestrator_tab_without_closing_it_and_requeues_running_tasks() {
+    let (st, h) = setup("20:00");
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    let orch = orch_tabs(&h).remove(0);
+    pty_up(&h, &orch);
+    tick(&st, &h);
+    let worker = spawns_of(&h, Role::Worker).remove(0).tab_id;
+    assert_eq!(board_task(&st, &h, "a"), "running");
+
+    set_archived(&st, &h, true);
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    let note = st.run(&h, |r| r.board_view("ws-1")).tasks[0].task.note.clone();
+    assert_eq!(note.as_deref(), Some("interrupted: the workspace was archived"));
+    // Nessun `Close` d'ufficio: i tab li chiude il frontend.
+    assert!(!is_closed(&h, &orch));
+    // Chiusure del frontend: nessun evento, nessun nuovo tab, nessun fallimento.
+    pty_down(&h, &orch);
+    st.run(&h, |r| r.tab_closed(&orch, NOW));
+    st.run(&h, |r| r.tab_closed(&worker, NOW));
+    tick(&st, &h);
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    assert_eq!(h.spawns().len(), 2);
+
+    // Riattivato: orchestratore nuovo e task di nuovo in corso.
+    set_archived(&st, &h, false);
+    tick(&st, &h);
+    assert_eq!(orch_tabs(&h).len(), 2);
+    assert_eq!(spawns_of(&h, Role::Worker).len(), 2);
+    assert_eq!(board_task(&st, &h, "a"), "running");
+}

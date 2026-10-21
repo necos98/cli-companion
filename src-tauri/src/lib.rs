@@ -132,6 +132,8 @@ pub fn run() {
             workspaces::set_repo_config,
             workspaces::set_worktree_setup,
             workspaces::set_auto_orchestrate,
+            workspaces::reorder_workspaces,
+            workspaces::set_workspace_archived,
             workspaces::remove_workspace,
             workspaces::add_launch,
             workspaces::update_launch,

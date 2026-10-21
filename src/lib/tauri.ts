@@ -56,6 +56,8 @@ export interface Workspace {
   auto_orchestrate?: AutoOrchestrate | null;
   /** Configurazione per repository (chiave = cartella relativa alla root, "." = la root). */
   repos?: Record<string, RepoConfig>;
+  /** Archiviato: nascosto dalla sidebar, board ferma (assente = attivo). */
+  archived?: boolean;
 }
 
 /** Preparazione e pulizia dei worktree di un repository (vedi `RepoConfig` in workspaces.rs). */
@@ -232,6 +234,12 @@ export const api = {
     invoke<Workspace>("set_auto_orchestrate", { id, config }),
 
   removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
+
+  /** Nuovo ordine dei workspace visibili; il backend accoda gli altri. Restituisce l'elenco completo. */
+  reorderWorkspaces: (ids: string[]) => invoke<Workspace[]>("reorder_workspaces", { ids }),
+
+  setWorkspaceArchived: (workspaceId: string, archived: boolean) =>
+    invoke<Workspace>("set_workspace_archived", { workspaceId, archived }),
 
   addLaunch: (workspaceId: string, name: string, command: string, isDefault: boolean) =>
     invoke<Workspace>("add_launch", { workspaceId, name, command, isDefault }),

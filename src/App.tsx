@@ -231,6 +231,9 @@ export default function App() {
   const workspacesRef = useRef<Workspace[]>([]);
   workspacesRef.current = workspaces;
 
+  // Gli archiviati non compaiono in nessun elenco (restano solo nelle impostazioni).
+  const visibleWorkspaces = useMemo(() => workspaces.filter((w) => !w.archived), [workspaces]);
+
   const paneLayouts = useMemo(() => computePaneLayouts(layout), [layout]);
   const paneLayoutsRef = useRef(paneLayouts);
   paneLayoutsRef.current = paneLayouts;
@@ -303,7 +306,7 @@ export default function App() {
       }
       const data = parseSession(
         raw,
-        workspaces.map((w) => w.id),
+        workspaces.filter((w) => !w.archived).map((w) => w.id),
       );
       if (data) {
         const byId = new Map(workspaces.map((w) => [w.id, w]));
@@ -977,6 +980,29 @@ export default function App() {
     setLayout((l) => selectGroup(l, id));
   }, []);
 
+  const handleReorder = useCallback(async (ids: string[]) => {
+    setWorkspaces(await api.reorderWorkspaces(ids));
+  }, []);
+
+  const handleArchive = useCallback(
+    async (id: string) => {
+      // Prima il backend (la board si ferma), poi la chiusura dei terminali.
+      handleWorkspaceUpdated(await api.setWorkspaceArchived(id, true));
+      for (const t of tabsRef.current) {
+        if (t.workspace.id === id) closeTab(t.key);
+      }
+      if (viewWorkspaceIdRef.current === id || layoutRef.current.activeWorkspaceId === id) {
+        const others = workspacesRef.current.filter((w) => !w.archived && w.id !== id);
+        const next =
+          others.find((w) => layoutRef.current.groups.some((g) => g.workspaceId === w.id)) ??
+          others[0];
+        setBoardFocus(null);
+        if (next) handleSelectWorkspace(next.id);
+      }
+    },
+    [closeTab, handleWorkspaceUpdated, handleSelectWorkspace],
+  );
+
   const globalActive = layout.activeView === "global";
   const globalCount = layout.global.order.length;
 
@@ -1069,7 +1095,7 @@ export default function App() {
             </div>
           ) : (
             <Sidebar
-              workspaces={workspaces}
+              workspaces={visibleWorkspaces}
               activeWorkspaceId={viewWorkspaceId}
               terminals={sidebarTerminals}
               boardActive={Object.fromEntries(
@@ -1103,6 +1129,8 @@ export default function App() {
               onManageLaunches={openLaunchSettings}
               onRename={handleRename}
               onRemove={handleRemove}
+              onArchive={handleArchive}
+              onReorder={handleReorder}
               onAdd={() => setDialogOpen(true)}
             />
           )}
@@ -1272,6 +1300,7 @@ export default function App() {
         workspaces={workspaces}
         onClose={() => setSettingsOpen(false)}
         onWorkspaceUpdated={handleWorkspaceUpdated}
+        onRemoveWorkspace={handleRemove}
         onUpdateAvailable={setUpdateAvailable}
         updateAvailable={updateAvailable}
         onAgentEnvs={setAgentEnvs}

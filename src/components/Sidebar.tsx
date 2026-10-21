@@ -27,6 +27,8 @@ import { resolveDefaultLaunch } from "../lib/launch";
 import { GROUP_STATUS } from "../lib/agents";
 import type { TabStatus } from "../lib/agents";
 import { groupIndicator } from "../lib/layout";
+import { dropOrder, dropPositionAt } from "../lib/workspaceOrder";
+import type { DropPosition } from "../lib/workspaceOrder";
 
 /** Terminale aperto di un workspace, come mostrato nella sua card. */
 export interface SidebarTerminal {
@@ -66,6 +68,10 @@ interface Props {
   onManageLaunches: (ws: Workspace) => void;
   onRename: (id: string, name: string) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
+  /** Archivia il workspace (chiude i suoi terminali e lo nasconde). */
+  onArchive: (id: string) => Promise<void>;
+  /** Nuovo ordine dei workspace (trascinamento). */
+  onReorder: (ids: string[]) => Promise<void>;
   onAdd: () => void;
   /** Avviso dell'app (es. avvio rifiutato), mostrato come gli errori della lista. */
   notice?: string | null;
@@ -161,12 +167,18 @@ export default function Sidebar({
   onManageLaunches,
   onRename,
   onRemove,
+  onArchive,
+  onReorder,
   onAdd,
   notice = null,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
+  // Trascinamento per l'ordine: riga trascinata e posizione di rilascio.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; pos: DropPosition } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Workspace espanso a card: segue il gruppo attivo, ma si può selezionare
@@ -180,6 +192,7 @@ export default function Sidebar({
   const startEdit = (ws: Workspace) => {
     setError(null);
     setConfirmingId(null);
+    setArchivingId(null);
     setEditingId(ws.id);
     setEditingName(ws.name);
   };
@@ -213,6 +226,36 @@ export default function Sidebar({
     } finally {
       setBusyId(null);
     }
+  };
+
+  const confirmArchive = async (id: string) => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await onArchive(id);
+      setArchivingId(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const endDrag = () => {
+    setDragId(null);
+    setDropTarget(null);
+  };
+
+  const handleDrop = () => {
+    if (dragId && dropTarget) {
+      const ids = workspaces.map((w) => w.id);
+      const next = dropOrder(ids, dragId, dropTarget.id, dropTarget.pos);
+      if (next !== ids) {
+        setError(null);
+        onReorder(next).catch((e) => setError(String(e)));
+      }
+    }
+    endDrag();
   };
 
   // Il dialog delle impostazioni si apre solo a menu chiuso, così i due layer
@@ -249,9 +292,20 @@ export default function Sidebar({
           Rinomina
         </DropdownMenuItem>
         <DropdownMenuItem
+          onSelect={() => {
+            setError(null);
+            setConfirmingId(null);
+            setArchivingId(ws.id);
+          }}
+          className={MENU_ITEM}
+        >
+          Archivia
+        </DropdownMenuItem>
+        <DropdownMenuItem
           className={cn(MENU_ITEM, "text-destructive focus:text-destructive")}
           onSelect={() => {
             setError(null);
+            setArchivingId(null);
             setConfirmingId(ws.id);
           }}
         >
@@ -296,6 +350,28 @@ export default function Sidebar({
         key={ws.id}
         role="group"
         aria-label={ws.name}
+        draggable
+        onDragStart={(e) => {
+          // Niente trascinamento partendo da campi di testo.
+          if ((e.target as HTMLElement).closest("input")) return e.preventDefault();
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", ws.id);
+          setDragId(ws.id);
+        }}
+        onDragEnd={endDrag}
+        onDragOver={(e) => {
+          if (!dragId) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          const r = e.currentTarget.getBoundingClientRect();
+          const pos = dropPositionAt(e.clientY, r.top, r.height);
+          setDropTarget((d) => (d && d.id === ws.id && d.pos === pos ? d : { id: ws.id, pos }));
+        }}
+        onDrop={(e) => {
+          if (!dragId) return;
+          e.preventDefault();
+          handleDrop();
+        }}
         onClick={(e) => {
           // I click su pulsanti, campi e menu (anche quelli nel portale, che
           // risalgono lungo l'albero React) non selezionano il gruppo.
@@ -304,12 +380,22 @@ export default function Sidebar({
           onSelect(ws.id);
         }}
         className={cn(
-          "group cursor-pointer rounded-[10px] border transition-colors",
+          "group relative cursor-pointer rounded-[10px] border transition-colors",
+          dragId === ws.id && "opacity-50",
           expanded
             ? "border-border bg-surface pb-1.5 pt-1"
             : "border-transparent hover:border-border hover:bg-surface/60",
         )}
       >
+        {dragId && dragId !== ws.id && dropTarget?.id === ws.id && (
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute left-1 right-1 h-0.5 rounded bg-primary",
+              dropTarget.pos === "before" ? "-top-[2px]" : "-bottom-[2px]",
+            )}
+          />
+        )}
         <div
           className={cn("flex flex-col gap-0.5 px-2.5", expanded ? "pb-1 pt-1.5" : "py-2")}
         >
@@ -353,12 +439,16 @@ export default function Sidebar({
                   </span>
                 )}
                 {list.length > 0 && (
-                  <span className="font-mono text-[11px] text-faint group-focus-within:hidden group-hover:hidden">
+                  <span className="font-mono text-[11px] text-faint group-focus-within:hidden group-hover:hidden group-has-[[data-state=open]]:hidden">
                     {list.length}
                   </span>
                 )}
-                {/* Azioni visibili solo con il mouse sopra (o il focus dentro). */}
-                <span className="hidden items-center gap-0.5 group-focus-within:flex group-hover:flex">
+                {/* Azioni visibili solo con il mouse sopra (o il focus dentro). Con un
+                    menu aperto restano visibili: il menu è non modale, il focus passa
+                    al portale e il mouse esce dalla riga, ma se il trigger sparisse
+                    (display: none) l'ancora avrebbe un rettangolo nullo e Radix
+                    riposizionerebbe il menu in cima alla finestra. */}
+                <span className="hidden items-center gap-0.5 group-focus-within:flex group-hover:flex has-[[data-state=open]]:flex">
                   <button
                     type="button"
                     className={ICON_BTN}
@@ -404,6 +494,29 @@ export default function Sidebar({
             <Button size="sm" variant="secondary" onClick={() => setConfirmingId(null)}>
               No
             </Button>
+          </div>
+        )}
+
+        {archivingId === ws.id && (
+          <div className="flex flex-col gap-1.5 px-2.5 pb-1.5 pt-1">
+            <span className="text-xs">
+              Archiviare {ws.name}?
+              {list.length > 0 &&
+                ` Verranno chiusi i suoi ${list.length} terminali aperti e`}
+              {list.length > 0 ? " la" : " La"} board resterà ferma finché non lo ripristini.
+            </span>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                disabled={busyId === ws.id}
+                onClick={() => void confirmArchive(ws.id)}
+              >
+                Sì
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => setArchivingId(null)}>
+                No
+              </Button>
+            </div>
           </div>
         )}
 

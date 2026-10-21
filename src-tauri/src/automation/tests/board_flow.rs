@@ -2022,3 +2022,58 @@ fn close_integration_cleanup_requires_close_integration() {
     assert!(e.contains("boolean"), "{e}");
     assert!(st.inner.lock().unwrap().boards["ws-1"].integrations.contains_key("r1"));
 }
+
+/// Archivia / riattiva "ws-1" come fa il comando (flag salvato, poi registro).
+fn set_archived(st: &AutomationState, h: &FakeHost, archived: bool) {
+    *h.archived.lock().unwrap() = archived;
+    st.set_archived(h, "ws-1", archived);
+}
+
+#[test]
+fn archiving_requeues_running_tasks_silently_and_freezes_the_board() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![t("a", &[]), t("b", &["a"])]);
+    let worker = session_of(&st, &h, "a");
+    call(&st, &h, &worker, "get_task", json!({})).unwrap();
+    st.run(&h, |r| r.drain(ORCH));
+    let wakes = wake_count(&h, ORCH);
+
+    set_archived(&st, &h, true);
+    let view = st.run(&h, |r| r.board_view("ws-1"));
+    let a = &view.tasks[0].task;
+    assert_eq!(a.status, board::TaskStatus::Queued);
+    assert_eq!(a.note.as_deref(), Some("interrupted: the workspace was archived"));
+    assert!(a.session.is_none() && a.worker_status.is_none() && a.preparing.is_none());
+
+    // Il frontend chiude i tab: niente fallimento, niente `exited`, nessun risveglio.
+    st.run(&h, |r| r.tab_closed(&worker, 9));
+    let view = st.run(&h, |r| r.board_view("ws-1"));
+    assert_eq!(view.tasks[0].task.status, board::TaskStatus::Queued);
+    assert!(st.run(&h, |r| r.drain(ORCH)).is_empty());
+    assert_eq!(wake_count(&h, ORCH), wakes);
+
+    // Congelato: nessun avvio (anche dopo un giro) e gli strumenti MCP falliscono.
+    let spawned = h.spawns().len();
+    st.tick(&h, 1_700_000_000_000);
+    assert_eq!(h.spawns().len(), spawned);
+    assert_eq!(call(&st, &h, ORCH, "get_board", json!({})).unwrap_err(), "workspace is archived");
+    assert_eq!(call(&st, &h, ORCH, "list_agents", json!({})).unwrap_err(), "workspace is archived");
+    assert!(st.run(&h, |r| r.drain(ORCH)).is_empty());
+}
+
+#[test]
+fn unarchiving_resumes_the_scheduler() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![t("a", &[])]);
+    let worker = session_of(&st, &h, "a");
+    set_archived(&st, &h, true);
+    st.run(&h, |r| r.tab_closed(&worker, 9));
+    let spawned = h.spawns().len();
+
+    set_archived(&st, &h, false);
+    assert_eq!(h.spawns().len(), spawned + 1, "il task riparte");
+    let task = task_of(&board_json(&st, &h), "a");
+    assert_eq!(task["status"], "running");
+    assert_eq!(task["attempts"], 2);
+    assert_ne!(task["session"].as_str().unwrap(), worker);
+}

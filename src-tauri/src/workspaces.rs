@@ -80,6 +80,10 @@ pub struct Workspace {
     /// setup / pulizia dei worktree, eseguiti dall'app.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, RepoConfig>,
+    /// Archiviato: congelato (nessun task, nessun orchestratore, nessun tab);
+    /// i dati restano e si puo' riattivare.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 /// Preparazione e pulizia dei worktree di un repository (vedi docs/BOARD.MD).
@@ -391,6 +395,7 @@ fn add_workspace_blocking(
         default_launch: None,
         worker_rules: String::new(),
         repos: BTreeMap::new(),
+        archived: false,
     };
     data.workspaces.push(ws.clone());
     Ok(ws)
@@ -615,6 +620,59 @@ pub async fn set_auto_orchestrate(
         // Fuori dal lock dei workspace: il riallineamento li rilegge.
         let automation = app.state::<crate::automation::AutomationState>();
         automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        Ok(out)
+    })
+    .await
+}
+
+/// Nuovo ordine dei workspace: `ids` elenca tutti gli id o solo un
+/// sottoinsieme (i non elencati seguono, nel loro ordine relativo).
+fn apply_order(list: &mut Vec<Workspace>, ids: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if !list.iter().any(|w| &w.id == id) {
+            return Err("workspace non trovato".to_string());
+        }
+        if !seen.insert(id.as_str()) {
+            return Err("id duplicato".to_string());
+        }
+    }
+    let mut rest = std::mem::take(list);
+    for id in ids {
+        if let Some(i) = rest.iter().position(|w| &w.id == id) {
+            list.push(rest.remove(i));
+        }
+    }
+    list.extend(rest);
+    Ok(())
+}
+
+/// Riordina i workspace e salva; ritorna l'elenco completo.
+#[tauri::command]
+pub async fn reorder_workspaces(app: AppHandle, ids: Vec<String>) -> Result<Vec<Workspace>, String> {
+    crate::blocking(move || {
+        persist(&app, |data| {
+            apply_order(&mut data.workspaces, &ids)?;
+            Ok(data.workspaces.clone())
+        })
+    })
+    .await
+}
+
+/// Archivia / riattiva un workspace. Archiviato = congelato: la board non
+/// avvia task, nessun orchestratore si apre; i task in corso tornano in coda
+/// (i tab li chiude il frontend).
+#[tauri::command]
+pub async fn set_workspace_archived(app: AppHandle, workspace_id: String, archived: bool) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let out = persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            ws.archived = archived;
+            Ok(ws.clone())
+        })?;
+        // Fuori dal lock dei workspace: il registro li rilegge.
+        let automation = app.state::<crate::automation::AutomationState>();
+        automation.set_archived(&crate::automation::TauriHost(app.clone()), &workspace_id, archived);
         Ok(out)
     })
     .await
@@ -1073,6 +1131,51 @@ mod tests {
             .contains(r#""auto_orchestrate":{"enabled":true,"agent":"claude-code","model":null}"#));
         let c: AutoOrchestrate = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
         assert_eq!((c.enabled, c.agent.as_str(), c.model), (false, "claude-code", None));
+    }
+
+    fn ws_id(id: &str) -> Workspace {
+        let mut w = ws_with(Vec::new());
+        w.id = id.to_string();
+        w
+    }
+
+    fn order(list: &[Workspace]) -> Vec<&str> {
+        list.iter().map(|w| w.id.as_str()).collect()
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reorder_applies_a_permutation_or_a_visible_subset() {
+        let mut list = vec![ws_id("a"), ws_id("b"), ws_id("c"), ws_id("d")];
+        apply_order(&mut list, &ids(&["d", "c", "b", "a"])).unwrap();
+        assert_eq!(order(&list), ["d", "c", "b", "a"]);
+        // Sottoinsieme: i non elencati seguono nel loro ordine relativo.
+        apply_order(&mut list, &ids(&["a", "c"])).unwrap();
+        assert_eq!(order(&list), ["a", "c", "d", "b"]);
+        apply_order(&mut list, &[]).unwrap();
+        assert_eq!(order(&list), ["a", "c", "d", "b"]);
+    }
+
+    #[test]
+    fn reorder_rejects_unknown_and_duplicate_ids_without_changes() {
+        let mut list = vec![ws_id("a"), ws_id("b")];
+        assert!(apply_order(&mut list, &ids(&["b", "x"])).is_err());
+        assert!(apply_order(&mut list, &ids(&["b", "b"])).is_err());
+        assert_eq!(order(&list), ["a", "b"]);
+    }
+
+    #[test]
+    fn archived_defaults_to_false_and_is_written_only_when_set() {
+        let mut ws = ws_with(Vec::new());
+        assert!(!ws.archived);
+        assert!(!serde_json::to_string(&ws).unwrap().contains("archived"));
+        ws.archived = true;
+        let raw = serde_json::to_string(&ws).unwrap();
+        assert!(raw.contains("\"archived\":true"));
+        assert!(serde_json::from_str::<Workspace>(&raw).unwrap().archived);
     }
 
     #[test]

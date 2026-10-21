@@ -1457,6 +1457,10 @@ pub fn dispatch<H: Host>(
     if WORKER_METHODS.contains(&method) && role != Role::Worker {
         return Err(format!("{method} is reserved for automated sessions"));
     }
+    // Workspace archiviato: congelato, anche per un tab sopravvissuto.
+    if host.tab_workspace(session).is_some_and(|w| w.archived) {
+        return Err("workspace is archived".to_string());
+    }
     let now = now_millis();
     match method {
         "whoami" => {
@@ -2690,6 +2694,7 @@ mod tests {
             default_launch: None,
             worker_rules: String::new(),
             repos: Default::default(),
+            archived: false,
         }
     }
 
@@ -2780,6 +2785,8 @@ mod tests {
         worker_model: Arc<Mutex<Option<String>>>,
         /// Regole per i worker del workspace "ws-1".
         worker_rules: Arc<Mutex<String>>,
+        /// Il workspace "ws-1" e' archiviato.
+        archived: Arc<Mutex<bool>>,
         /// Errore forzato di `append_exclude`.
         exclude_err: Arc<Mutex<Option<String>>>,
         /// `true` = i `git worktree add` restano bloccati (prova della serializzazione).
@@ -2820,6 +2827,7 @@ mod tests {
                     w.worktree_setup = self.setup.lock().unwrap().clone();
                     w.worker_model = self.worker_model.lock().unwrap().clone();
                     w.worker_rules = self.worker_rules.lock().unwrap().clone();
+                    w.archived = *self.archived.lock().unwrap();
                     w.repos = self.repo_cfg.lock().unwrap().clone();
                     w.auto_orchestrate = self.auto.lock().unwrap().get(id).cloned();
                     Some(w)

@@ -16,6 +16,7 @@ import WorkerPage from "./settings/WorkerPage";
 import RepoPage from "./settings/RepoPage";
 import OrchestratorPage from "./settings/OrchestratorPage";
 import WorkflowPage from "./settings/WorkflowPage";
+import ArchivedPage from "./settings/ArchivedPage";
 import { SettingsPage, selectClass } from "./settings/shared";
 import type { AgentEnvStatus, AgentProfile, BuiltinLaunch, Workspace } from "../lib/tauri";
 import { cn } from "../lib/utils";
@@ -29,7 +30,8 @@ export type SettingsTab =
   | "worker"
   | "repos"
   | "orchestrator"
-  | "workflow";
+  | "workflow"
+  | "archived";
 
 /** Pagine della sezione Generale. */
 const GENERAL_TABS: { id: SettingsTab; label: string }[] = [
@@ -37,6 +39,7 @@ const GENERAL_TABS: { id: SettingsTab; label: string }[] = [
   { id: "schedule", label: "Fasce orarie" },
   { id: "agents", label: "Coding agent" },
   { id: "updates", label: "Aggiornamenti" },
+  { id: "archived", label: "Workspace archiviati" },
 ];
 
 /** Pagine della sezione Workspace (riferite al workspace scelto). */
@@ -59,6 +62,8 @@ interface Props {
   workspaces: Workspace[];
   onClose: () => void;
   onWorkspaceUpdated: (ws: Workspace) => void;
+  /** Elimina un workspace (stesso flusso della sidebar). */
+  onRemoveWorkspace?: (id: string) => Promise<void>;
   /** Esito del controllo aggiornamenti fatto nella pagina "Aggiornamenti". */
   onUpdateAvailable?: (available: boolean) => void;
   /** C'è un aggiornamento disponibile (pallino sulla voce del menu). */
@@ -84,9 +89,10 @@ export default function SettingsDialog({
   isOpen,
   initialTab = "general-launches",
   initialWorkspaceId,
-  workspaces,
+  workspaces: allWorkspaces,
   onClose,
   onWorkspaceUpdated,
+  onRemoveWorkspace,
   onUpdateAvailable,
   updateAvailable = false,
   onAgentEnvs,
@@ -98,6 +104,9 @@ export default function SettingsDialog({
   onGlobalLaunchChange,
   onCreateWorkflow,
 }: Props) {
+  // Gli archiviati si gestiscono solo nella loro pagina.
+  const workspaces = allWorkspaces.filter((w) => !w.archived);
+  const archivedWorkspaces = allWorkspaces.filter((w) => w.archived);
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [workspaceId, setWorkspaceId] = useState<string>("");
   const [prevOpen, setPrevOpen] = useState(isOpen);
@@ -192,6 +201,14 @@ export default function SettingsDialog({
           >
             <UpdateCheck onAvailable={onUpdateAvailable} />
           </SettingsPage>
+        );
+      case "archived":
+        return (
+          <ArchivedPage
+            workspaces={archivedWorkspaces}
+            onWorkspaceUpdated={onWorkspaceUpdated}
+            onRemove={(id) => onRemoveWorkspace?.(id) ?? Promise.resolve()}
+          />
         );
     }
     if (!selected) return noWorkspace;

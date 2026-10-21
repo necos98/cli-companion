@@ -457,7 +457,7 @@ impl Registry {
             .workspaces
             .iter()
             .filter_map(|w| {
-                let a = w.auto_orchestrate.as_ref().filter(|a| a.enabled)?;
+                let a = w.auto_orchestrate.as_ref().filter(|a| a.enabled && !w.archived)?;
                 Some((w.id.as_str(), (w, a)))
             })
             .collect();
@@ -493,6 +493,19 @@ impl Registry {
         env: &TickEnv,
         now: i64,
     ) {
+        // Workspace archiviato: congelato. Nessun orchestratore; il tab
+        // tracciato si dimentica senza `Close` (lo chiude il frontend).
+        if env.workspaces.iter().any(|w| w.id == id && w.archived) {
+            if let Some(e) = self.auto.ws.remove(id) {
+                if let Some(t) = e.tab {
+                    self.last_hook.remove(&t.id);
+                }
+            }
+            self.auto.manual.retain(|_, m| m.ws != id);
+            self.set_orch_avail(id, false);
+            self.set_orch_view(id, None);
+            return;
+        }
         let active = open && cfg.is_some();
         // Finestre in vigore per questo workspace (automatico con schedule attivo).
         let auto_mode = cfg.is_some() && self.auto.sched.enabled;
@@ -671,11 +684,28 @@ impl AutomationState {
         self.run(host, |r| r.auto_tick(&env, now, force_emit));
     }
 
+    /// Il workspace (gia' salvato con il nuovo flag) e' stato archiviato o
+    /// riattivato: l'archiviazione rimette in coda i task in corso, la
+    /// riattivazione fa ripartire scheduler e orchestratore; poi un giro.
+    pub fn set_archived<H: Host>(&self, host: &H, ws: &str, archived: bool) {
+        let now = now_millis();
+        self.run(host, |r| {
+            if archived {
+                r.archive_workspace(ws, now);
+            } else {
+                r.orch_reset(ws);
+            }
+        });
+        self.reconcile_at(host, now, true);
+    }
+
     /// Un tab dell'avvio "Orchestratore" sta per aprirsi: registrato se il
     /// workspace non ha gia' un orchestratore vivo (automatico o manuale).
     pub fn orchestrator_open<H: Host>(&self, host: &H, ws: &str, tab: &str, now: i64) -> Result<(), String> {
-        if host.workspace(ws).is_none() {
-            return Err("workspace non trovato".to_string());
+        match host.workspace(ws) {
+            None => return Err("workspace non trovato".to_string()),
+            Some(w) if w.archived => return Err("workspace archiviato".to_string()),
+            Some(_) => {}
         }
         let live = |t: &str| host.tab_workspace(t).is_some();
         let command = |_: &Workspace, _: &AutoOrchestrate, _: &'static str| Err(String::new());
@@ -687,8 +717,10 @@ impl AutomationState {
     /// board (dopo averlo chiuso o troppi fallimenti): azzera lo stato e fa
     /// un giro subito, che lo apre se serve. Ritorna la vista della board.
     pub fn start_board_orchestrator<H: Host>(&self, host: &H, ws: &str, now: i64) -> Result<BoardView, String> {
-        if host.workspace(ws).is_none() {
-            return Err("workspace non trovato".to_string());
+        match host.workspace(ws) {
+            None => return Err("workspace non trovato".to_string()),
+            Some(w) if w.archived => return Err("workspace archiviato".to_string()),
+            Some(_) => {}
         }
         self.run(host, |r| r.orch_reset(ws));
         self.reconcile_at(host, now, false);

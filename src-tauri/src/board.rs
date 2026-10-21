@@ -37,6 +37,8 @@ pub const SUMMARY_LIMIT: usize = 50_000;
 
 /// Nota dei task `running` al riavvio dell'app (la leggono anche i modelli).
 pub const INTERRUPTED_NOTE: &str = "interrupted: the app was restarted";
+/// Nota dei task fermati dall'archiviazione del workspace.
+pub const ARCHIVED_NOTE: &str = "interrupted: the workspace was archived";
 
 // ---------------------------------------------------------------------------
 // Tipi
@@ -1248,6 +1250,28 @@ impl Board {
         }
         b.plan_completed_sent = b.is_complete();
         Ok(b)
+    }
+
+    /// Archiviazione del workspace: i task `running` (in avvio o col worker
+    /// vivo) tornano in coda, staccati da sessione e preparazione. Ritorna
+    /// quanti.
+    pub fn requeue_running(&mut self, note: &str, now: i64) -> usize {
+        let mut n = 0;
+        for t in self.tasks.iter_mut().filter(|t| t.status == TaskStatus::Running) {
+            t.status = TaskStatus::Queued;
+            t.session = None;
+            t.worker_status = None;
+            t.preparing = None;
+            t.preparing_since = None;
+            t.started_at = None;
+            t.note = Some(note.to_string());
+            t.updated_at = now;
+            n += 1;
+        }
+        if n > 0 {
+            self.updated_at = now;
+        }
+        n
     }
 
     /// Aggiunge i task di un piano in modo atomico: se qualcosa non va la

@@ -446,7 +446,8 @@ impl Registry {
             // Gate della finestra: separato dalla pausa, che non si tocca.
             // Gate dell'orchestratore: senza nessuno vivo i worker resterebbero
             // senza risposte. I task in corso non si toccano.
-            let blocked = self.window_blocks(&ws, open) || !self.auto.orch_avail.contains(ws_id);
+            // Gate del workspace archiviato: congelato.
+            let blocked = ws.archived || self.window_blocks(&ws, open) || !self.auto.orch_avail.contains(ws_id);
             let chosen = if blocked { Vec::new() } else { board::schedule(b, &ctx) };
             let b = self.boards.get_mut(ws_id).expect("board presente");
             for id in chosen {
@@ -668,6 +669,24 @@ impl Registry {
         }
         self.mark_dirty(ws);
         Some(ev)
+    }
+
+    /// Workspace archiviato: i task in corso tornano in coda e i worker di
+    /// board si staccano (la chiusura dei loro tab non genera `exited` ne'
+    /// fallimenti); i worker ad-hoc seguono la gestione normale.
+    pub fn archive_workspace(&mut self, ws: &str, now: i64) {
+        let Some(b) = self.boards.get_mut(ws) else {
+            return;
+        };
+        b.requeue_running(crate::board::ARCHIVED_NOTE, now);
+        for w in self.workers.values_mut().filter(|w| w.board_task.as_ref().is_some_and(|(k, _)| k == ws)) {
+            w.tab_open = false;
+            w.board_task = None;
+            if !w.status.is_terminal() {
+                w.status = WorkerStatus::Closed;
+            }
+        }
+        self.mark_dirty(ws);
     }
 
     /// Guardiano (giro periodico): un task `running` senza sessione da troppo

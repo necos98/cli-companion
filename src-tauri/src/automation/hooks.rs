@@ -313,6 +313,7 @@ mod tests {
             default_launch: None,
             worker_rules: String::new(),
             repos: Default::default(),
+            archived: false,
         };
         let env = vec![("TASK_ID".to_string(), "t 1".to_string())];
         let o = run_hook_real(&ws, &dir.to_string_lossy(), "echo id=%TASK_ID% && cd", &env, Duration::from_secs(20)).unwrap();
