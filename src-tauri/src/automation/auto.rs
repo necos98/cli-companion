@@ -622,7 +622,41 @@ pub(super) fn rpc_workflow<H: Host>(host: &H, orch: &str, method: &str, params: 
     match method {
         "get_workflow" => {
             let w = host.workflow_read(&ws.id).map_err(|_| "the workflow could not be read".to_string())?;
-            Ok(json!({ "workflow": w }))
+            let mut out = json!({ "workflow": w });
+            // Regole e hook del workspace: sola lettura, li modifica solo l'utente nelle impostazioni.
+            let rules = ws.worker_rules.trim();
+            if !rules.is_empty() {
+                out["workspace_rules"] = json!(rules);
+            }
+            let mut settings = serde_json::Map::new();
+            for (key, c) in &ws.repos {
+                let mut o = serde_json::Map::new();
+                if let Some(b) = c.base_branch.as_deref().filter(|b| !b.is_empty()) {
+                    o.insert("base_branch".into(), json!(b));
+                }
+                if let Some(r) = c.container_root.as_deref().filter(|r| !r.is_empty()) {
+                    o.insert("container_root".into(), json!(r));
+                }
+                for (name, list) in [("copy_ignored", &c.copy_ignored), ("setup", &c.setup), ("cleanup", &c.cleanup)] {
+                    if !list.is_empty() {
+                        o.insert(name.into(), json!(list));
+                    }
+                }
+                if c.remove_force {
+                    o.insert("remove_force".into(), json!(true));
+                }
+                if !o.is_empty() {
+                    settings.insert(key.clone(), Value::Object(o));
+                }
+            }
+            let has_settings = !settings.is_empty();
+            if has_settings {
+                out["repo_settings"] = Value::Object(settings);
+            }
+            if has_settings || out.get("workspace_rules").is_some() {
+                out["note"] = json!("workspace_rules and repo_settings are read-only: only the user edits them, in the workspace settings");
+            }
+            Ok(out)
         }
         "save_workflow" => {
             let content = req_text("content", req_str(params, "content")?, schedule::WORKFLOW_MAX)?;

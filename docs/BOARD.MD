@@ -269,6 +269,9 @@ RepoConfig { base_branch?, container_root?, copy_ignored: [], setup: [], cleanup
 - `base_branch`: nell'ordine della base, subito dopo `board.base_branches[repo]` e prima
   del default di `origin` (per la root, prima di `board.base_branch`). Si legge dal
   workspace al momento dell'avvio del task.
+- L'orchestratore non può preparare un worktree in anticipo: il worker parte appena il
+  worktree è creato e il setup del repo (`copy_ignored` + `setup`) è finito, quindi la
+  preparazione per repo (es. `composer install`) va nell'hook di setup configurato dall'utente.
 - Quando: subito dopo la creazione (non al riuso) del worktree del task e di quello di
   integrazione. Sotto il lock dei repository per l'integrazione (un'integrazione per
   volta), nel thread di avvio del task per i task; mai sul main thread ne' sotto il
@@ -347,12 +350,15 @@ Nuovi (descrizioni in inglese, come gli altri):
   task, risparmia token):
   `{ workspace_id, rev, max_parallel, paused, base_branch, owner, updated_at,
   automation, counts, tasks }` (più, se presenti, `base_branches`,
-  `integration_branch`, `integrations`, `repos`; le righe dei task hanno `repo`). `counts` = numero di task per colonna (solo le
+  `integration_branch`, `integrations`, `repos`; ogni integrazione è `{ branch, path, base, setup }` con
+  `setup` = `done` | `none` (nessun setup configurato per il repo, niente è stato preparato) |
+  `pending` (setup non completato), più `missing: true` se la cartella del worktree non esiste
+  più; compare solo dopo l'avvio del primo task con worktree del repo; le righe dei task hanno `repo`). `counts` = numero di task per colonna (solo le
   colonne non vuote); `tasks` = una riga per ogni task non `done`/`cancelled`, nell'ordine
   della board. Con `columns` (nomi tra `backlog`, `ready`, `running`, `review`, `done`,
   `failed`, `blocked`, `cancelled`; un nome sconosciuto o un non-array è un errore che
   elenca i nomi validi) le righe sono solo quelle delle colonne indicate, anche `done`.
-  Riga: `id`, `title`, `column`, `attempts` e, solo se significativi, `held`,
+  Riga: `id`, `title`, `column`, `attempts` e, solo se significativi, `held` (solo sui `queued`),
   `worker_status`, `external`, `waiting_on` (solo in `backlog`: dipendenze non ancora `done`),
   `priority` (se diversa da 0), `model`, `note` e `orchestrator_note` (max 200 caratteri) e `summary` (il
   riassunto del report, max 300 caratteri); il taglio aggiunge "…".
@@ -365,13 +371,29 @@ Nuovi (descrizioni in inglese, come gli altri):
   ancora un worktree. Rivalida dipendenze e cicli. Ritorna `{ task }` senza il testo.
 - `set_task_status { id, status: "done" | "cancelled" | "queued", note?, cleanup? }`
   - `done`: da `review`, `failed`, `blocked` (non da `running`); sblocca i
-    dipendenti; pulizia worktree se `cleanup != false`. Anche da `queued` (anche
-    trattenuto) per lavoro fatto fuori dalla board: `note` non vuota obbligatoria, il task
-    diventa `external`; nessuna pulizia (non ha worktree). La UI non offre questa azione.
+    dipendenti; pulizia worktree se `cleanup != false` (il branch del task si cancella con
+    `-D` se è già mergiato nel branch di integrazione del repo o nella base del worktree,
+    altrimenti `-d` e un avviso se non è mergiato). Azzera `held`. Anche da `queued` (anche
+    trattenuto) o `cancelled` per lavoro fatto fuori dalla board: `note` non vuota
+    obbligatoria, il task diventa `external`; nessuna pulizia (non ha worktree). La UI non
+    offre questa azione.
   - `cancelled`: da qualunque stato non `done`; se `running` chiude il tab.
-  - `queued` (retry): da `failed`, `blocked`, `cancelled`, `review`.
-  Ritorna `{ task, warnings? }` senza il testo del task.
-- `set_board { max_parallel?, paused?, base_branches?, integration_branch? }` — ritorna la board compatta.
+  - `queued` (retry): da `failed`, `blocked`, `cancelled`, `review`; senza `note` la nota
+    esistente resta, una nuova la sostituisce.
+  Ritorna `{ task, warnings? }` senza il testo del task. Con la board in pausa `update_task`,
+  `set_task_status` e `submit_plan` aggiungono `warnings: ["the board is paused: ..."]`.
+  `update_task` restituisce anche il testo (`task`) se la modifica cambia `task`.
+- `set_board { max_parallel?, paused?, base_branches?, integration_branch?, close_integration? }` — ritorna la board compatta.
+  `close_integration` (chiave repo, `"."` = root, o array di chiavi) dimentica l'integrazione
+  registrata del repo senza toccare worktree e branch (li rimuove l'orchestratore): il task
+  successivo del repo crea una nuova integrazione (primo suffisso libero, es. `-3`) dalla
+  base aggiornata. Se la cartella del worktree di integrazione è stata rimossa e il suo
+  branch è già mergiato nella base del repo, l'app ne avvia una nuova da sola; se non è
+  mergiato ricrea il worktree sullo stesso branch.
+- `get_workflow` — oltre a `workflow`, restituisce in sola lettura `workspace_rules` (le
+  "Workspace rules" dell'utente, solo se non vuote) e `repo_settings` (per chiave repo:
+  `base_branch`, `container_root`, `copy_ignored`, `setup`, `cleanup`, `remove_force`, solo i
+  non vuoti). Le modifica solo l'utente dalle impostazioni del workspace.
 
 Esistenti, estesi:
 

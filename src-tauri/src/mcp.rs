@@ -191,7 +191,7 @@ fn repo_settings_properties() -> Value {
         },
         "integration_branch": {
             "type": ["string", "null"],
-            "description": "Template of the integration branch, e.g. 'integration/{date}' ({date} = local date YYYY-MM-DD). When set, before the first task of a repository starts cli-companion creates that branch (from the repo base, after a fetch) with its own worktree <repo>/.worktrees/integration, and every worktree task of the repo without an explicit base_branch starts from it, so dependents see what you merged there. get_board returns `integrations` (repo -> branch, path): merge and test in that worktree. If the branch name already exists and is not ours, -2, -3... is appended. The app never pushes and never switches branches in the main checkout. Empty string or null turns it off."
+            "description": "Template of the integration branch, e.g. 'integration/{date}' ({date} = local date YYYY-MM-DD). When set, before the first task of a repository starts cli-companion creates that branch (from the repo base, after a fetch) with its own worktree <repo>/.worktrees/integration, and every worktree task of the repo without an explicit base_branch starts from it, so dependents see what you merged there. get_board returns `integrations` (repo -> {branch, path, base, setup}): merge and test in that worktree. If the branch name already exists and is not ours, -2, -3... is appended. The app never pushes and never switches branches in the main checkout. Empty string or null turns it off."
         }
     })
 }
@@ -366,13 +366,13 @@ fn orchestrator_tools() -> Vec<Value> {
             "get_board",
             "Return a compact summary of the task board of your workspace (and make you its owner): settings \
              (max_parallel, paused, base_branch, plus base_branches, integration_branch and `integrations` \
-             (repo -> branch and worktree path to merge and test in) when set, and `repos`: the git repositories \
+             (repo -> {branch, path, base, setup}: where to merge and test; setup is done, none = no setup configured for the repo so nothing was prepared, or pending = setup not completed; missing: true when the worktree folder no longer exists; an entry appears after the first worktree task of the repo starts) when set, and `repos`: the git repositories \
              found in the workspace, \".\" being the workspace root itself), `automation`, `counts` (tasks per derived column: backlog, \
              ready, running, review, done, failed, blocked, cancelled; empty columns left out) and `tasks`, one \
              short row per open task (id, title, column, attempts, plus held, external, worker_status, waiting_on for a \
              backlog task, priority, model, note, orchestrator_note and the report summary when they apply; note, \
              orchestrator_note and summary are truncated). A held task is in the ready column but does not start: \
-             it has `held: true`, and the top-level `held` is the number of held tasks (left out when 0). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
+             it has `held: true` (only on queued tasks), and the top-level `held` is the number of held tasks (left out when 0). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
              [\"done\"]. Use get_task_details for the full text, report (commit, files_changed, tests, \
              follow_ups, diffstat), worktree and note of one task. `automation` is null for a normal workspace; \
              for an automatic one it tells whether execution windows are enabled, whether the window is open \
@@ -409,7 +409,7 @@ fn orchestrator_tools() -> Vec<Value> {
              cannot change once the task has a worktree. Dependencies are validated again (existing tasks, no \
              cycles). Use it to release a held task (held: false), fix the instructions before a retry, or \
              re-point the dependencies of a task whose dependency was cancelled. Fields you leave out stay as \
-             they are; null clears base_branch, model and permission_mode. Returns the updated task (without its text).",
+             they are; null clears base_branch, model and permission_mode. Returns the updated task (without its text, unless the patch changes `task`); `warnings` when the board is paused.",
             update_task_properties(),
             &["id"],
         ),
@@ -417,15 +417,15 @@ fn orchestrator_tools() -> Vec<Value> {
             "set_task_status",
             "Move a task to a new status. done: from review, failed or blocked, after you integrated the work \
              (merged the branch task/<id>, ran the tests); it unblocks the dependents and, unless cleanup is \
-             false, removes the task worktree and branch (git worktree remove and git branch -d, without \
+             false, removes the task worktree and branch (git worktree remove and git branch -D when the branch is already merged into the integration branch of the repo (or the worktree base), else -d with a warning, without \
              force: problems come back as warnings and in the task note, they never block the change). Not \
-             allowed for a running task. done also works from queued (including held) for work completed \
+             allowed for a running task. done also works from queued (including held) or cancelled for work completed \
              outside the board (e.g. you or the user did it by hand): a non-empty `note` saying how is then \
              required, the task is marked as completed outside the board (`external`) and the dependents are \
-             unblocked. cancelled: from any status except done; a running task has its tab \
+             unblocked. Moving to done clears `held`. cancelled: from any status except done; a running task has its tab \
              closed and its work is lost; tasks depending on it stay in backlog until you update their \
              dependencies. queued: retry a failed, blocked, cancelled or review task; the scheduler starts it \
-             again when possible (the existing worktree is reused). Returns the task (without its text).",
+             again when possible (the existing worktree is reused); the existing note is kept unless you pass a new `note`. Returns the task (without its text); `warnings` when the board is paused.",
             json!({
                 "id": { "type": "string", "description": "Id of the task." },
                 "status": {
@@ -436,7 +436,7 @@ fn orchestrator_tools() -> Vec<Value> {
                 "note": {
                     "type": "string",
                     "maxLength": 2000,
-                    "description": "Note stored on the task (e.g. why it was cancelled). Required (non-empty) for done from queued."
+                    "description": "Note stored on the task (e.g. why it was cancelled). Required (non-empty) for done from queued or cancelled. For queued a new note replaces the existing one."
                 },
                 "cleanup": {
                     "type": "boolean",
@@ -449,10 +449,17 @@ fn orchestrator_tools() -> Vec<Value> {
             "set_board",
             "Change the settings of the board: max_parallel (how many board workers run at once, 1..16) and/or \
              paused (true = the scheduler starts nothing new; running workers go on), and for multi-repository \
-             workspaces base_branches and integration_branch. Returns the compact board (as get_board).",
+             workspaces base_branches, integration_branch and close_integration. Returns the compact board (as get_board).",
             with_repo_settings(json!({
                 "max_parallel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Board workers running at the same time." },
-                "paused": { "type": "boolean", "description": "Pause or resume the scheduler." }
+                "paused": { "type": "boolean", "description": "Pause or resume the scheduler." },
+                "close_integration": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ],
+                    "description": "Repo key ('.' = root) or array of keys: forget the registered integration of that repo. The worktree and the branch are not touched (you remove them); the next task of the repo creates a fresh integration branch (next free suffix, e.g. -3) from the updated base."
+                }
             })),
             &[],
         ),
@@ -463,7 +470,7 @@ fn orchestrator_tools() -> Vec<Value> {
              policy, verification commands, task design, parallelism and models, boundaries, when to escalate, what 
              to do unattended, reporting. Call it BEFORE planning anything. `workflow` is null when the workspace 
              has none: then follow the generic method of the orchestrate skill. When it exists it takes precedence 
-             over that generic method (but never over safety: do not push or merge what the workflow forbids).",
+             over that generic method (but never over safety: do not push or merge what the workflow forbids). It also returns, read-only, `workspace_rules` (the \"Workspace rules\" text the user set; only when non-empty) and `repo_settings` (per repo key: base_branch, container_root, copy_ignored, setup, cleanup, remove_force; only non-empty ones). Only the user edits them, in the workspace settings.",
             json!({}),
             &[],
         ),
@@ -623,7 +630,7 @@ fn instructions(
                 open; when cli-companion types that the execution window is closed, finish integrating the tasks \
                 that complete, do not plan new work, and end your turn. Every worker (board or spawn_session) \
                 already receives the workspace rules the user set in the workspace settings (as \"Workspace rules\" \
-                in its instructions): do not repeat them in task texts."
+                in its instructions): do not repeat them in task texts; you can read them, and the per-repo settings, with get_workflow."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));
@@ -997,7 +1004,7 @@ mod tests {
         assert_eq!(by("set_task_status")["inputSchema"]["properties"]["status"]["enum"], json!(["done", "cancelled", "queued"]));
         assert_eq!(
             keys(&by("set_board")["inputSchema"]["properties"]),
-            ["base_branches", "integration_branch", "max_parallel", "paused"]
+            ["base_branches", "close_integration", "integration_branch", "max_parallel", "paused"]
         );
         assert!(item["properties"]["repo"]["description"].as_str().unwrap().contains("Multi-repository"));
         assert_eq!(keys(&by("get_board")["inputSchema"]["properties"]), ["columns"]);

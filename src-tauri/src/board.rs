@@ -122,6 +122,11 @@ pub struct Integration {
     /// Come `WorktreeInfo::setup_done`, per il worktree di integrazione.
     #[serde(default = "yes")]
     pub setup_done: bool,
+    /// Vero quando la fase di setup e' girata ma il repository non ha nulla da
+    /// preparare (niente copy_ignored, niente comandi): `setup_done` resta vero
+    /// per lo scheduling, ma l'orchestratore deve sapere che nulla e' stato preparato.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub setup_skipped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,7 +367,25 @@ impl BoardView {
             out["integration_branch"] = serde_json::json!(self.integration_branch);
         }
         if !self.integrations.is_empty() {
-            out["integrations"] = serde_json::json!(self.integrations);
+            // Solo cio' che serve all'orchestratore; `setup` riassume setup_done/setup_skipped.
+            let ints: Map<String, Value> = self
+                .integrations
+                .iter()
+                .map(|(k, i)| {
+                    let setup = if !i.setup_done {
+                        "pending"
+                    } else if i.setup_skipped {
+                        "none"
+                    } else {
+                        "done"
+                    };
+                    (
+                        k.clone(),
+                        serde_json::json!({"branch": i.branch, "path": i.path, "base": i.base, "setup": setup}),
+                    )
+                })
+                .collect();
+            out["integrations"] = Value::Object(ints);
         }
         if let Some(r) = &self.repos {
             out["repos"] = serde_json::json!(r);
@@ -380,7 +403,7 @@ impl BoardView {
         if let Some(r) = &t.repo {
             o.insert("repo".into(), Value::from(r.clone()));
         }
-        if t.held {
+        if t.held && t.status == TaskStatus::Queued {
             o.insert("held".into(), Value::Bool(true));
         }
         if let Some(w) = &t.worker_status {
@@ -1206,6 +1229,9 @@ impl Board {
             }
             t.session = None;
             t.worker_status = None;
+            if t.status == TaskStatus::Done {
+                t.held = false;
+            }
         }
         b.plan_completed_sent = b.is_complete();
         Ok(b)
@@ -1299,7 +1325,7 @@ impl Board {
         let ok = match to {
             TaskStatus::Done => matches!(
                 from,
-                TaskStatus::Queued | TaskStatus::Review | TaskStatus::Failed | TaskStatus::Blocked
+                TaskStatus::Queued | TaskStatus::Review | TaskStatus::Failed | TaskStatus::Blocked | TaskStatus::Cancelled
             ),
             TaskStatus::Cancelled => !matches!(from, TaskStatus::Done | TaskStatus::Cancelled),
             TaskStatus::Queued => matches!(
@@ -1316,7 +1342,7 @@ impl Board {
                 format!("task '{id}' is running: wait for it to finish (or cancel it) before marking it done")
             }
             (TaskStatus::Done, _) => format!(
-                "task '{id}' is {}: only queued, review, failed or blocked tasks can be marked done",
+                "task '{id}' is {}: only queued, review, failed, blocked or cancelled tasks can be marked done",
                 from.as_str()
             ),
             (TaskStatus::Cancelled, _) => format!("task '{id}' is already {}", from.as_str()),
@@ -1333,10 +1359,11 @@ impl Board {
         let note = note.map(|n| clip_chars(n.trim(), NOTE_MAX)).filter(|n| !n.is_empty());
         let t = self.task_mut(id).ok_or_else(|| format!("task not found: {id}"))?;
         // Completato fuori dalla board: serve una nota che dica come.
-        let external = to == TaskStatus::Done && t.status == TaskStatus::Queued;
+        let external = to == TaskStatus::Done && matches!(t.status, TaskStatus::Queued | TaskStatus::Cancelled);
         if external && note.is_none() {
             return Err(format!(
-                "task '{id}' is queued: to mark it done pass a note saying how it was completed outside the board"
+                "task '{id}' is {}: to mark it done pass a note saying how it was completed outside the board",
+                t.status.as_str()
             ));
         }
         t.external = external;
@@ -1349,12 +1376,19 @@ impl Board {
         match to {
             TaskStatus::Queued => {
                 t.report = None;
-                t.note = note;
+                // La nota precedente resta finche' non ne arriva una nuova.
+                if note.is_some() {
+                    t.note = note;
+                }
                 t.finished_at = None;
                 t.last_report = None;
             }
             _ => {
                 t.finished_at = Some(now);
+                // Un task concluso non e' piu' trattenuto (un annullato si': il retry lo ritrova).
+                if to == TaskStatus::Done {
+                    t.held = false;
+                }
                 if note.is_some() {
                     t.note = note;
                 }
@@ -2055,10 +2089,10 @@ mod tests {
             b.check_transition("a", to).is_ok()
         };
         use TaskStatus::*;
-        for from in [Queued, Review, Failed, Blocked] {
+        for from in [Queued, Review, Failed, Blocked, Cancelled] {
             assert!(t(&mut b, Done, from), "done from {from:?}");
         }
-        for from in [Running, Done, Cancelled] {
+        for from in [Running, Done] {
             assert!(!t(&mut b, Done, from), "done from {from:?}");
         }
         for from in [Queued, Running, Review, Failed, Blocked] {
@@ -2080,6 +2114,65 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_to_done_is_external_and_needs_note() {
+        let mut b = board_with(vec![spec("a")]);
+        set_status(&mut b, "a", TaskStatus::Cancelled);
+        let err = b.apply_status("a", TaskStatus::Done, None, 5).unwrap_err();
+        assert!(err.contains("cancelled") && err.contains("note"), "{err}");
+        assert_eq!(b.task("a").unwrap().status, TaskStatus::Cancelled);
+        b.apply_status("a", TaskStatus::Done, Some("fatto a mano".into()), 6).unwrap();
+        let t = b.task("a").unwrap();
+        assert!(t.external && t.status == TaskStatus::Done);
+        assert_eq!(t.note.as_deref(), Some("fatto a mano"));
+    }
+
+    #[test]
+    fn held_is_cleared_on_done_only() {
+        let mut b = board_with(vec![spec("a"), spec("c")]);
+        for id in ["a", "c"] {
+            b.task_mut(id).unwrap().held = true;
+        }
+        b.apply_status("a", TaskStatus::Done, Some("fatto".into()), 5).unwrap();
+        assert!(!b.task("a").unwrap().held);
+        // Annullato: resta trattenuto, anche dopo il retry.
+        b.apply_status("c", TaskStatus::Cancelled, None, 5).unwrap();
+        assert!(b.task("c").unwrap().held);
+        b.apply_status("c", TaskStatus::Queued, None, 6).unwrap();
+        assert!(b.task("c").unwrap().held);
+        // La riga compatta mostra held solo per i task in coda.
+        b.task_mut("a").unwrap().held = true;
+        b.apply_status("c", TaskStatus::Cancelled, None, 7).unwrap();
+        let j = b.view().to_compact_json(Some(&[Column::Done, Column::Cancelled, Column::Ready]));
+        for r in j["tasks"].as_array().unwrap() {
+            assert!(r.get("held").is_none(), "{r}");
+        }
+        // Caricando da disco, un done torna non trattenuto.
+        let raw = serde_json::to_string(&b).unwrap();
+        assert!(b.task("a").unwrap().held);
+        let loaded = Board::from_json(&raw, 10).unwrap();
+        assert!(!loaded.task("a").unwrap().held);
+        assert!(loaded.task("c").unwrap().held);
+    }
+
+    #[test]
+    fn compact_json_summarizes_integrations() {
+        let mut b = Board::new("ws");
+        let int = |done, skipped| Integration { branch: "i".into(), path: "p".into(), base: "main".into(), setup_done: done, setup_skipped: skipped };
+        b.integrations.insert("a".into(), int(true, false));
+        b.integrations.insert("b".into(), int(true, true));
+        b.integrations.insert("c".into(), int(false, false));
+        let j = b.view().to_compact_json(None);
+        assert_eq!(j["integrations"]["a"], json!({"branch": "i", "path": "p", "base": "main", "setup": "done"}));
+        assert_eq!(j["integrations"]["b"]["setup"], "none");
+        assert_eq!(j["integrations"]["c"]["setup"], "pending");
+        assert!(j["integrations"]["a"].get("setup_done").is_none());
+        // La serializzazione completa resta invariata (usata dal frontend).
+        let full = serde_json::to_value(&b.integrations["b"]).unwrap();
+        assert_eq!(full["setup_skipped"], true);
+        assert!(serde_json::to_value(&b.integrations["a"]).unwrap().get("setup_skipped").is_none());
+    }
+
+    #[test]
     fn apply_status_resets_on_retry() {
         let mut b = board_with(vec![spec("a")]);
         b.start_task("a", 20);
@@ -2092,8 +2185,12 @@ mod tests {
         b.apply_status("a", TaskStatus::Queued, None, 30).unwrap();
         let t = b.task("a").unwrap();
         assert_eq!((t.status, t.attempts), (TaskStatus::Queued, 1));
-        assert!(t.report.is_none() && t.note.is_none() && t.finished_at.is_none());
+        assert!(t.report.is_none() && t.finished_at.is_none());
+        assert_eq!(t.note.as_deref(), Some("boom"), "la nota precedente resta");
         assert!(t.worktree.is_some(), "il worktree si riusa");
+        b.apply_status("a", TaskStatus::Cancelled, None, 31).unwrap();
+        b.apply_status("a", TaskStatus::Queued, Some("riprova".into()), 32).unwrap();
+        assert_eq!(b.task("a").unwrap().note.as_deref(), Some("riprova"));
         b.apply_status("a", TaskStatus::Cancelled, Some("  non serve piu'  ".into()), 40).unwrap();
         let t = b.task("a").unwrap();
         assert_eq!(t.note.as_deref(), Some("non serve piu'"));
@@ -2471,7 +2568,7 @@ mod tests {
         assert_eq!(b.base_branches.get("DDB").map(String::as_str), Some("main"));
         assert_eq!(b.base_branches.get(".").map(String::as_str), Some("dev"));
         assert_eq!(b.integration_branch.as_deref(), Some("integration/{date}"));
-        b.integrations.insert(".".into(), Integration { branch: "x".into(), path: "p".into(), base: "main".into(), setup_done: true });
+        b.integrations.insert(".".into(), Integration { branch: "x".into(), path: "p".into(), base: "main".into(), setup_done: true, setup_skipped: false });
         b.repos = Some(vec![".".into()]);
         // Stringa vuota o null tolgono una voce; le altre restano.
         let ops = parse_base_branches(&json!({"DDB": "", "freud-manager": null})).unwrap();

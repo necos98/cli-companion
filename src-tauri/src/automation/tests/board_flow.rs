@@ -140,7 +140,7 @@ fn submit_plan_runs_dependencies_through_review_and_done() {
     assert_eq!(r["task"]["status"], "done");
     assert!(r.get("warnings").is_none());
     let git = h.git_log();
-    assert!(git.contains(&"C:\\p|branch -d task/a".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p|branch -D task/a".to_string()), "{git:?}");
     let b = board_json(&st, &h);
     assert_eq!(task_of(&b, "b")["column"], "running");
     assert_eq!(task_of(&b, "a")["column"], "done");
@@ -361,6 +361,7 @@ fn done_cleanup_warnings_do_not_block() {
     submit(&st, &h, vec![t("a", &[])]);
     let w = session_of(&st, &h, "a");
     finish(&st, &h, &w, "completed");
+    h.git_rule("merge-base", false, "", "");
     h.git_rule("branch -d", false, "", "error: the branch 'task/a' is not fully merged");
     let r = call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
     assert!(r["warnings"][0].as_str().unwrap().contains("not fully merged"));
@@ -637,7 +638,7 @@ fn user_done_cleans_up_and_completes_the_plan_once() {
     events(&st, &h, ORCH);
     let v = boards::board_action(&st, &h, "ws-1", "a", "done").unwrap();
     assert_eq!(v.tasks[0].column, board::Column::Done);
-    assert!(h.git_log().iter().any(|l| l.ends_with("branch -d task/a")));
+    assert!(h.git_log().iter().any(|l| l.ends_with("branch -D task/a")));
     let ev = events(&st, &h, ORCH);
     assert_eq!(kinds_of(&ev), vec!["user_action", "plan_completed"]);
     assert!(ev[1]["task"].is_null() || ev[1].get("task").is_none());
@@ -1065,7 +1066,7 @@ fn done_from_queued_over_rpc_needs_a_note_and_unblocks_dependents() {
     assert_eq!(r["task"]["column"], "done");
     assert_eq!(r["task"]["external"], true);
     assert!(r.get("warnings").is_none());
-    assert!(h.git_log().iter().all(|l| !l.contains("worktree remove") && !l.contains("branch -d")));
+    assert!(h.git_log().iter().all(|l| !l.contains("worktree remove") && !l.contains("branch -")));
     // Il dipendente parte.
     let b = board_json(&st, &h);
     assert_eq!(task_of(&b, "b")["column"], "running");
@@ -1192,7 +1193,7 @@ fn non_git_root_with_two_repos_runs_worktree_tasks_per_repo() {
     // done: pulizia nel repository del task.
     finish(&st, &h, &w, "completed");
     call(&st, &h, ORCH, "set_task_status", json!({"id": "a1", "status": "done"})).unwrap();
-    assert!(h.git_log().contains(&"C:\\p\\r1|branch -d task/a1".to_string()), "{:?}", h.git_log());
+    assert!(h.git_log().contains(&"C:\\p\\r1|branch -D task/a1".to_string()), "{:?}", h.git_log());
     // diffstat nel worktree del repo.
     assert!(h.git_log().iter().any(|l| l == "C:\\p\\r1\\.worktrees\\a1|diff --stat master...HEAD"), "{:?}", h.git_log());
 }
@@ -1618,7 +1619,7 @@ fn cleanup_commands_run_before_worktree_remove_and_never_block_done() {
     let remove = at("C:\\p\\r1|worktree remove --force C:\\p\\r1\\.worktrees\\a");
     assert!(at("hook|docker exec svc rm -rf cache") < at("hook|echo second"));
     assert!(at("hook|echo second") < remove);
-    assert!(remove < at("C:\\p\\r1|branch -d task/a"));
+    assert!(remove < at("C:\\p\\r1|branch -D task/a"));
     // Cwd e variabili dei comandi di pulizia.
     let line = hooks_of(&h).into_iter().find(|l| l.contains("|echo second|")).unwrap();
     assert!(line.starts_with("C:\\p\\r1\\.worktrees\\a|") && line.contains("TASK_ID=a") && line.contains("BRANCH=task/a"), "{line}");
@@ -1697,4 +1698,174 @@ fn watchdog_waits_for_a_step_in_progress_but_not_forever() {
     assert_eq!(task_of(&board_json(&st, &h), "a")["status"], "running");
     st.run(&h, |r| r.watchdog(20 * 60_000 + boards::START_TIMEOUT_MS + 1));
     assert_eq!(task_of(&board_json(&st, &h), "a")["status"], "failed");
+}
+
+// --- integrazione: stato del setup, cartella sparita, chiusura ---
+
+const INT_DIR: &str = "C:\\p\\r1\\.worktrees\\integration";
+
+fn int_plan(st: &AutomationState, h: &FakeHost) -> Value {
+    call(
+        st,
+        h,
+        ORCH,
+        "submit_plan",
+        json!({"base_branches": {"r1": "master"}, "integration_branch": "int", "tasks": [repo_t("a", "r1")]}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn integration_setup_state_is_none_without_hooks_and_done_with_them() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(g["integrations"]["r1"]["setup"], "none");
+    assert!(st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].setup_skipped);
+    let (st, h) = multi_repo();
+    cfg_of(&h, "r1", setup_cfg());
+    int_plan(&st, &h);
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(g["integrations"]["r1"]["setup"], "done");
+    assert!(!st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].setup_skipped);
+}
+
+#[test]
+fn get_board_flags_an_integration_whose_folder_is_gone() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(g["integrations"]["r1"]["missing"], true);
+    h.dirs.lock().unwrap().push(INT_DIR.to_string());
+    let g = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert!(g["integrations"]["r1"].get("missing").is_none());
+}
+
+#[test]
+fn close_integration_forgets_the_registration_only() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    let n = h.git_log().len();
+    // Chiave sconosciuta: errore, nulla cambia.
+    let e = call(&st, &h, ORCH, "set_board", json!({"close_integration": "r2"})).unwrap_err();
+    assert!(e.contains("r2") && e.contains("no integration"), "{e}");
+    let e = call(&st, &h, ORCH, "set_board", json!({"close_integration": ["r1", "nope"]})).unwrap_err();
+    assert!(e.contains("nope"), "{e}");
+    assert!(call(&st, &h, ORCH, "set_board", json!({"close_integration": 3})).is_err());
+    assert!(st.inner.lock().unwrap().boards["ws-1"].integrations.contains_key("r1"));
+    let g = call(&st, &h, ORCH, "set_board", json!({"close_integration": ["r1/"]})).unwrap();
+    assert!(g.get("integrations").is_none(), "{g}");
+    // Ne' worktree ne' branch vengono toccati.
+    assert_eq!(h.git_log().len(), n, "{:?}", h.git_log());
+    let e = call(&st, &h, ORCH, "set_board", json!({})).unwrap_err();
+    assert!(e.contains("close_integration"), "{e}");
+}
+
+fn second_task_after_int(h: &FakeHost, st: &AutomationState) -> Value {
+    // Il branch `int` esiste (e `int-2` no); la cartella dell'integrazione non c'e'.
+    h.git_rule("refs/heads/int-2", false, "", "");
+    h.git_rule("refs/heads/int", true, "", "");
+    call(st, h, ORCH, "submit_plan", json!({"tasks": [repo_t("b", "r1")]})).unwrap();
+    board_json(st, h)
+}
+
+#[test]
+fn a_merged_integration_with_a_missing_folder_is_replaced_by_a_fresh_one() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    let b = second_task_after_int(&h, &st);
+    let git = h.git_log();
+    assert!(git.contains(&"C:\\p\\r1|merge-base --is-ancestor int master".to_string()), "{git:?}");
+    assert!(git.contains(&format!("C:\\p\\r1|worktree add {INT_DIR} -b int-2 master")), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|worktree add C:\\p\\r1\\.worktrees\\b -b task/b int-2".to_string()), "{git:?}");
+    assert_eq!(st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].branch, "int-2");
+    assert!(task_of(&b, "b")["note"].as_str().unwrap().contains("already merged"), "{b}");
+}
+
+#[test]
+fn an_unmerged_integration_with_a_missing_folder_is_recreated_on_its_branch() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    h.git_rule("merge-base --is-ancestor int", false, "", "");
+    let b = second_task_after_int(&h, &st);
+    let git = h.git_log();
+    assert!(git.contains(&format!("C:\\p\\r1|worktree add {INT_DIR} int")), "{git:?}");
+    assert_eq!(st.inner.lock().unwrap().boards["ws-1"].integrations["r1"].branch, "int");
+    assert!(task_of(&b, "b")["note"].as_str().unwrap().contains("worktree recreated"), "{b}");
+}
+
+// --- avvisi, branch del task, testo del task ---
+
+#[test]
+fn paused_board_adds_a_warning_to_update_submit_and_status_responses() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![json!({"id": "a", "task": "x", "isolation": "none", "held": true})]);
+    let r = call(&st, &h, ORCH, "update_task", json!({"id": "a", "title": "T"})).unwrap();
+    assert!(r.get("warnings").is_none());
+    call(&st, &h, ORCH, "set_board", json!({"paused": true})).unwrap();
+    let has = |v: &Value| v["warnings"].as_array().is_some_and(|w| w.iter().any(|x| x.as_str().unwrap().contains("board is paused")));
+    assert!(has(&call(&st, &h, ORCH, "update_task", json!({"id": "a", "title": "U"})).unwrap()));
+    assert!(has(&call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "cancelled"})).unwrap()));
+    let b = call(&st, &h, ORCH, "submit_plan", json!({"tasks": [{"id": "z", "task": "x", "isolation": "none"}]})).unwrap();
+    assert!(has(&b), "{b}");
+}
+
+#[test]
+fn task_branch_merged_into_the_integration_is_deleted_with_capital_d() {
+    let (st, h) = multi_repo();
+    int_plan(&st, &h);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "completed");
+    h.dirs.lock().unwrap().push("C:\\p\\r1\\.worktrees\\a".to_string());
+    // Il branch e' nell'integrazione, non nella base del worktree.
+    h.git_rule("merge-base --is-ancestor task/a int", true, "", "");
+    h.git_rule("merge-base --is-ancestor task/a", false, "", "");
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    let git = h.git_log();
+    assert!(git.contains(&"C:\\p\\r1|merge-base --is-ancestor task/a int".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p\\r1|branch -D task/a".to_string()), "{git:?}");
+}
+
+#[test]
+fn unmerged_task_branch_keeps_the_safe_delete() {
+    let (st, h) = multi_repo();
+    submit(&st, &h, vec![repo_t("a", "r1")]);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "completed");
+    h.git_rule("merge-base", false, "", "");
+    call(&st, &h, ORCH, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    assert!(h.git_log().contains(&"C:\\p\\r1|branch -d task/a".to_string()), "{:?}", h.git_log());
+}
+
+#[test]
+fn update_task_returns_the_text_only_when_the_patch_changes_it() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![json!({"id": "a", "task": "old", "isolation": "none", "held": true})]);
+    let r = call(&st, &h, ORCH, "update_task", json!({"id": "a", "title": "T"})).unwrap();
+    assert!(r["task"].get("task").is_none());
+    let r = call(&st, &h, ORCH, "update_task", json!({"id": "a", "task": "new text"})).unwrap();
+    assert_eq!(r["task"]["task"], "new text");
+}
+
+#[test]
+fn get_workflow_exposes_workspace_rules_and_repo_settings_read_only() {
+    let (st, h) = multi_repo();
+    assert_eq!(call(&st, &h, ORCH, "get_workflow", json!({})).unwrap(), json!({"workflow": null}));
+    *h.worker_rules.lock().unwrap() = "  never touch prod  ".to_string();
+    let mut cfg = setup_cfg();
+    cfg.base_branch = Some("develop".into());
+    cfg.remove_force = true;
+    cfg_of(&h, "r1", cfg);
+    cfg_of(&h, "r2", crate::workspaces::RepoConfig::default());
+    let r = call(&st, &h, ORCH, "get_workflow", json!({})).unwrap();
+    assert_eq!(r["workspace_rules"], "never touch prod");
+    let s = &r["repo_settings"];
+    assert!(s.get("r2").is_none(), "{s}");
+    assert_eq!(s["r1"]["base_branch"], "develop");
+    assert_eq!(s["r1"]["container_root"], "/var/www/html");
+    assert_eq!(s["r1"]["copy_ignored"], json!(["configuration.php"]));
+    assert_eq!(s["r1"]["setup"][1], "composer dump-autoload");
+    assert_eq!(s["r1"]["cleanup"], json!(["docker exec svc rm -rf cache"]));
+    assert_eq!(s["r1"]["remove_force"], true);
+    assert!(r["note"].as_str().unwrap().contains("read-only"));
 }

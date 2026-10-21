@@ -61,6 +61,14 @@ carry on with this method and suggest the user create one with
   The user may configure per-repo hooks in the workspace settings: the app itself copies
   git-ignored config files and runs the setup commands in every new task and integration
   worktree, and runs the cleanup commands (then removes the worktree) when a task is done.
+  A worker starts as soon as its worktree is created and the setup has run; you cannot
+  prepare a worktree beforehand, so per-repo preparation (e.g. composer install) belongs in
+  the setup hook the user configures (read the hooks with get_workflow, `repo_settings`;
+  only the user edits them). `integrations` entries are `{branch, path, base, setup}`:
+  setup `none` = nothing was prepared, `pending` = not completed; `missing: true` = the
+  worktree folder is gone. To start over on a repo, remove its integration worktree and
+  branch yourself, then call set_board `close_integration` (repo key or array): the next
+  task creates a fresh integration branch from the updated base.
   Do not redo that in task texts or by hand; a failed setup fails the start (start_failed)
   with the failing step in the task note, and a retry runs it again.
 - Set `priority` (higher first) and `max_parallel` (start with 2 to 5; the hard limit is
@@ -136,9 +144,11 @@ Each event carries the `task` id when the worker belongs to the board.
      task's own tests). If something breaks, fix it, or revert the merge and send the
      task back (update_task with the problem, then set_task_status `queued`).
   4. When the base branch is green, call set_task_status `done`. This unblocks the
-     dependents and removes the worktree and branch; read any `warnings` it returns and
-     clean up by hand if needed.
-  If a queued (even held) task was done outside the board, call set_task_status `done` on
+     dependents and removes the worktree and branch (the branch is deleted with -D when
+     already merged into the integration branch); read any `warnings` it returns and
+     clean up by hand if needed. update_task, set_task_status and submit_plan also return
+     `warnings` when the board is paused.
+  If a queued (even held) or cancelled task was done outside the board, call set_task_status `done` on
   it with a `note` saying how (required); it is shown as completed outside the board and
   unblocks its dependents.
   Keep the repository tidy: no leftover branches, worktrees or stray files.
@@ -158,7 +168,7 @@ Each event carries the `task` id when the worker belongs to the board.
   that are stuck or no longer needed: their unfinished work is lost.
 
 Workers (board and spawn_session) already receive the workspace rules set by the user, so do
-not repeat them in task texts. Use `orchestrator_note` on a task for private reminders to
+not repeat them in task texts (you can read them with get_workflow). Use `orchestrator_note` on a task for private reminders to
 yourself (merge order, what to check): it is never sent to the worker. A held task shows
 `held: true` in get_board. list_sessions shows `starting_secs` for workers that have not
 read their task yet: a few seconds is normal, minutes means stuck.

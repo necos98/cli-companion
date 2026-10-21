@@ -43,11 +43,18 @@ pub struct RepoSettings {
     pub base_branches: board::BaseBranchOps,
     /// `None` = non toccare; `Some(None)` = spegni.
     pub integration_branch: Option<Option<String>>,
+    /// Chiavi dei repository di cui chiudere l'integrazione registrata.
+    pub close_integration: Vec<String>,
+}
+
+/// Chiave del repository di `close_integration` ("." = root).
+fn close_key(s: &str) -> Result<String, String> {
+    Ok(board::repo_key(board::normalize_repo(s)?.as_deref()))
 }
 
 impl RepoSettings {
     fn is_empty(&self) -> bool {
-        self.base_branches.is_empty() && self.integration_branch.is_none()
+        self.base_branches.is_empty() && self.integration_branch.is_none() && self.close_integration.is_empty()
     }
 
     fn parse(params: &Value) -> Result<RepoSettings, String> {
@@ -59,7 +66,17 @@ impl RepoSettings {
             None => None,
             Some(v) => Some(board::parse_integration_template(v)?),
         };
-        Ok(RepoSettings { base_branches, integration_branch })
+        const BAD: &str = "close_integration must be a repo key or an array of repo keys";
+        let close_integration = match params.get("close_integration") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(s)) => vec![close_key(s)?],
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|v| v.as_str().ok_or_else(|| BAD.to_string()).and_then(close_key))
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(BAD.to_string()),
+        };
+        Ok(RepoSettings { base_branches, integration_branch, close_integration })
     }
 }
 
@@ -260,12 +277,19 @@ impl Registry {
         now: i64,
     ) -> Result<(), String> {
         if max_parallel.is_none() && paused.is_none() && repo.is_empty() {
-            return Err("nothing to change: pass max_parallel, paused, base_branches and/or integration_branch".to_string());
+            return Err("nothing to change: pass max_parallel, paused, base_branches, integration_branch and/or close_integration".to_string());
         }
         if let Some(m) = max_parallel {
             board::parse_max_parallel(&json!(m))?;
         }
         let b = self.boards.entry(ws.to_string()).or_insert_with(|| Board::new(ws));
+        // Prima di toccare qualcosa: una chiave sconosciuta annulla l'intera richiesta.
+        if let Some(k) = repo.close_integration.iter().find(|k| !b.integrations.contains_key(*k)) {
+            return Err(format!("no integration registered for repo '{k}' (see integrations in get_board)"));
+        }
+        for k in &repo.close_integration {
+            b.integrations.remove(k);
+        }
         if !repo.is_empty() {
             b.apply_repo_settings(repo.base_branches, repo.integration_branch);
         }
@@ -1020,25 +1044,55 @@ fn ensure_integration<H: Host>(
     // Lock del registro senza `run`: niente flush (un avvio inline sotto il
     // lock dei repository andrebbe in stallo).
     let current = st.inner.lock().unwrap().integration_of(&ws.id, &key);
+    // Riferimento di base del repository (dopo il fetch): serve a creare e a
+    // capire se un'integrazione sparita e' gia' stata unita.
+    let mut base_ref_of = |warnings: &mut Vec<String>| -> Result<String, String> {
+        let declared = declared_base(None, repo, &job.board_bases, settings_base(job), job.board_base.as_deref());
+        let base = resolve_base(host, ws, dir, repo, declared)?;
+        Ok(if repo.is_some() { remote_or_local(host, ws, dir, &base, cache, warnings) } else { base })
+    };
+    let mut base_ref = None;
     if let Some(mut i) = current.filter(|i| board::integration_matches(&name, &i.branch)) {
-        if !host.dir_exists(ws, &i.path) {
-            // Cartella sparita: si ricrea dal branch, che e' nostro (e va riprepararla).
-            add_worktrees_exclude(host, ws, dir, warnings);
-            let _ = git(host, ws, dir, &["worktree", "prune"]);
-            if ref_exists(host, ws, dir, &format!("refs/heads/{}", i.branch)) {
-                git(host, ws, dir, &["worktree", "add", &i.path, &i.branch])?;
-            } else {
-                git(host, ws, dir, &["worktree", "add", &i.path, "-b", &i.branch, &i.base])?;
+        let gone = !host.dir_exists(ws, &i.path);
+        let exists = ref_exists(host, ws, dir, &format!("refs/heads/{}", i.branch));
+        // Cartella e branch spariti: niente da riprendere, si riparte dalla base attuale.
+        let mut merged = gone && !exists;
+        if gone && exists {
+            if let Ok(b) = base_ref_of(warnings) {
+                merged = host
+                    .git(ws, dir, &["merge-base", "--is-ancestor", &i.branch, &b])
+                    .map(|o| o.ok)
+                    .unwrap_or(false);
+                base_ref = Some(b);
             }
-            i.setup_done = false;
-            st.inner.lock().unwrap().set_integration(&ws.id, &key, i.clone(), now);
         }
-        setup_integration(st, host, job, dir, &mut i, warnings)?;
-        return Ok(i);
+        if merged {
+            // Cartella sparita e branch cancellato o gia' nella base: integrazione finita, se ne crea una nuova.
+            warnings.push(format!(
+                "integration {} is gone or already merged into the base: starting a new integration",
+                i.branch
+            ));
+        } else {
+            if gone {
+                // Cartella sparita: si ricrea dal branch, che e' nostro (e va riprepararla).
+                warnings.push(format!(
+                    "integration folder {} was missing: worktree recreated on branch {}",
+                    i.path, i.branch
+                ));
+                add_worktrees_exclude(host, ws, dir, warnings);
+                let _ = git(host, ws, dir, &["worktree", "prune"]);
+                git(host, ws, dir, &["worktree", "add", &i.path, &i.branch])?;
+                i.setup_done = false;
+                st.inner.lock().unwrap().set_integration(&ws.id, &key, i.clone(), now);
+            }
+            setup_integration(st, host, job, dir, &mut i, warnings)?;
+            return Ok(i);
+        }
     }
-    let declared = declared_base(None, repo, &job.board_bases, settings_base(job), job.board_base.as_deref());
-    let base = resolve_base(host, ws, dir, repo, declared)?;
-    let base_ref = if repo.is_some() { remote_or_local(host, ws, dir, &base, cache, warnings) } else { base };
+    let base_ref = match base_ref {
+        Some(b) => b,
+        None => base_ref_of(warnings)?,
+    };
     // Un branch con questo nome che non e' nostro (non registrato) non si riusa.
     let branch = board::first_free_branch(&name, |c| ref_exists(host, ws, dir, &format!("refs/heads/{c}")))
         .ok_or_else(|| format!("no free name for the integration branch {name}"))?;
@@ -1050,7 +1104,7 @@ fn ensure_integration<H: Host>(
     add_worktrees_exclude(host, ws, dir, warnings);
     let _ = git(host, ws, dir, &["worktree", "prune"]);
     git(host, ws, dir, &["worktree", "add", &path, "-b", &branch, &base_ref])?;
-    let mut integ = board::Integration { branch, path, base: base_ref, setup_done: false };
+    let mut integ = board::Integration { branch, path, base: base_ref, setup_done: false, setup_skipped: false };
     st.inner.lock().unwrap().set_integration(&ws.id, &key, integ.clone(), now);
     setup_integration(st, host, job, dir, &mut integ, warnings)?;
     Ok(integ)
@@ -1071,6 +1125,7 @@ fn setup_integration<H: Host>(
         return Ok(());
     }
     let (path, branch, base) = (integ.path.clone(), integ.branch.clone(), integ.base.clone());
+    integ.setup_skipped = !repo_cfg(&job.ws, job.task.repo.as_deref()).is_some_and(|c| c.has_setup());
     // Sotto il lock dei repository: niente pubblicazione dei passi.
     warnings.extend(setup_worktree(st, host, job, dir, &path, "integration", &branch, &base, "integration worktree", false)?);
     integ.setup_done = true;
@@ -1177,7 +1232,16 @@ pub(super) fn compute_diffstat<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeI
 /// worktree (con `--force` se l'impostazione lo chiede) e il branch del task
 /// (senza forzare), nel repository del task. Ritorna gli avvisi: non
 /// bloccano mai il passaggio a `done`.
-pub(super) fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeInfo) -> Vec<String> {
+///
+/// `integration`: branch di integrazione registrato per il repository; se il
+/// branch del task e' gia' dentro (o nella base del worktree) si cancella
+/// con `-D`, perche' `-d` confronta solo con l'HEAD della cartella principale.
+pub(super) fn cleanup_worktree<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    wt: &WorktreeInfo,
+    integration: Option<&str>,
+) -> Vec<String> {
     let mut warnings = Vec::new();
     let root = repo_dir(ws, wt.repo.as_deref());
     let root = root.as_str();
@@ -1200,7 +1264,11 @@ pub(super) fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, wt: &WorktreeI
     } else {
         let _ = git(host, ws, root, &["worktree", "prune"]);
     }
-    if let Err(e) = git(host, ws, root, &["branch", "-d", &wt.branch]) {
+    let merged = integration.into_iter().chain([wt.base.as_str()]).any(|r| {
+        host.git(ws, root, &["merge-base", "--is-ancestor", &wt.branch, r]).map(|o| o.ok).unwrap_or(false)
+    });
+    let flag = if merged { "-D" } else { "-d" };
+    if let Err(e) = git(host, ws, root, &["branch", flag, &wt.branch]) {
         warnings.push(format!("branch not deleted: {e}"));
     }
     warnings
@@ -1408,6 +1476,8 @@ fn board_op<H: Host, T>(
     })
 }
 
+const PAUSED_WARNING: &str = "the board is paused: the scheduler starts no task until set_board paused: false";
+
 fn opt_bool(p: &Value, key: &str) -> Result<Option<bool>, String> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1476,6 +1546,9 @@ pub(super) fn rpc_board<H: Host>(
             let view = st.run(host, |r| r.board_view(&ws.id));
             let mut out = view.to_compact_json(None);
             out["added"] = json!(ids);
+            if view.paused {
+                out["warnings"] = json!([PAUSED_WARNING]);
+            }
             Ok(out)
         }
         "get_board" => {
@@ -1486,7 +1559,17 @@ pub(super) fn rpc_board<H: Host>(
                     st.run(host, |r| r.set_repos(&ws.id, repos));
                 }
             }
-            Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(columns.as_deref()))
+            let mut out = st.run(host, |r| r.board_view(&ws.id)).to_compact_json(columns.as_deref());
+            // Integrazione registrata con la cartella sparita: l'orchestratore decide.
+            if let Some(ints) = out.get_mut("integrations").and_then(Value::as_object_mut) {
+                for i in ints.values_mut() {
+                    let gone = i.get("path").and_then(Value::as_str).is_some_and(|p| !host.dir_exists(&ws, p));
+                    if gone {
+                        i["missing"] = json!(true);
+                    }
+                }
+            }
+            Ok(out)
         }
         "get_task_details" => {
             let id = req_str(params, "id")?.trim().to_string();
@@ -1513,7 +1596,14 @@ pub(super) fn rpc_board<H: Host>(
             }
             board_op(st, host, now, |r| r.update_task(&ws.id, &id, params, ceiling, now))?;
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
-            Ok(json!({ "task": view.map(|v| v.to_json(false)) }))
+            // Con `task` nel patch si rilegge il testo salvato.
+            let with_text = params.get("task").is_some();
+            let paused = st.run(host, |r| r.board_view(&ws.id)).paused;
+            let mut out = json!({ "task": view.map(|v| v.to_json(with_text)) });
+            if paused {
+                out["warnings"] = json!([PAUSED_WARNING]);
+            }
+            Ok(out)
         }
         "set_task_status" => {
             let id = req_str(params, "id")?.trim().to_string();
@@ -1524,6 +1614,10 @@ pub(super) fn rpc_board<H: Host>(
             let warnings = cleanup_after_done(st, host, &ws, &id, wt.filter(|_| cleanup));
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
             let mut out = json!({ "task": view.map(|v| v.to_json(false)) });
+            let mut warnings = warnings;
+            if st.run(host, |r| r.board_view(&ws.id)).paused {
+                warnings.push(PAUSED_WARNING.to_string());
+            }
             if !warnings.is_empty() {
                 out["warnings"] = json!(warnings);
             }
@@ -1555,7 +1649,9 @@ fn cleanup_after_done<H: Host>(
     let Some(wt) = wt else {
         return Vec::new();
     };
-    let warnings = cleanup_worktree(host, ws, &wt);
+    let key = board::repo_key(wt.repo.as_deref());
+    let integ = st.run(host, |r| r.integration_of(&ws.id, &key)).map(|i| i.branch);
+    let warnings = cleanup_worktree(host, ws, &wt, integ.as_deref());
     if !warnings.is_empty() {
         let note = format!("cleanup warnings: {}", warnings.join("; "));
         st.run(host, |r| r.add_task_note(&ws.id, id, &note, now_millis()));
@@ -1581,7 +1677,7 @@ pub(super) fn board_set_cmd<H: Host>(
     board_op(st, host, now, |r| r.set_board(ws_id, max_parallel, paused, now))
         .map_err(|e| {
             e.replace(
-                "nothing to change: pass max_parallel, paused, base_branches and/or integration_branch",
+                "nothing to change: pass max_parallel, paused, base_branches, integration_branch and/or close_integration",
                 "nessuna modifica richiesta",
             )
         })?;
