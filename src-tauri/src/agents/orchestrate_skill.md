@@ -21,7 +21,7 @@ there, and a task is not done until you have integrated and verified it.
 
 The cli-companion MCP tools (submit_plan, get_board, get_task_details, update_task, set_task_status,
 set_board, get_events, send_message, spawn_session, list_sessions, close_session,
-list_agents, get_workflow) must be available. If they are not, tell the user that
+list_agents, get_workflow, ask_user, propose_settings) must be available. If they are not, tell the user that
 orchestration only works in a cli-companion terminal, with the app running and the
 cli-companion plugin installed (reinstall it after an app update), and stop.
 
@@ -68,8 +68,8 @@ carry on with this method and suggest the user create one with
     a fresh integration branch from the updated base. With `close_integration_cleanup: true`
     the app also runs the cleanup hooks, removes the worktree and deletes the local branch
     only if contained in its upstream; otherwise remove them yourself first.
-- Setup and cleanup hooks (per repo, edited only by the user in the workspace settings; read
-  them in get_workflow `repo_settings`): the app copies git-ignored config files and runs the
+- Setup and cleanup hooks (per repo; read them in get_workflow `repo_settings`; change them
+  only through propose_settings, see section 4): the app copies git-ignored config files and runs the
   setup commands in every new task and integration worktree, and runs the cleanup commands
   (then removes the worktree) when a task is done. A worker starts as soon as its worktree
   and setup are done, so you cannot prepare a worktree beforehand: put preparation (e.g.
@@ -158,7 +158,7 @@ Each event carries the `task` id when the worker belongs to the board.
 - `fact`: progress or a plan. Read it; correct the worker with send_message only if it
   is heading the wrong way.
 - `help_request`: answer promptly with send_message, completely and unambiguously. If
-  only the user can decide, ask the user and relay the answer.
+  only the user can decide, use ask_user and relay the answer.
 - `needs_input`: the worker is stuck on a permission dialog in its tab. Tell the user
   which tab needs attention.
 - `completed` with status completed: the task is now in `review`. It is yours to
@@ -198,6 +198,10 @@ Each event carries the `task` id when the worker belongs to the board.
 - `user_action`: the user acted from the Board view (hold, retry, cancel, done, model
   change). Not
   actionable by itself: take it into account.
+- `user_answer`: the answer to your ask_user (`request`, `task`; text is the answer or
+  "(dismissed by the user)"). Act on it; if the task was held for it, it is already released.
+- `settings_decision`: result of propose_settings (text "approved" or "rejected[: comment]").
+  If rejected, respect the comment and do not re-propose the same change.
 - `plan_completed`: every task is `done` or `cancelled` (the text gives the counts; it is not
   sent if you cancelled everything before any task started). Verify the base branch one last
   time (full build and tests) and give the final report.
@@ -227,8 +231,38 @@ folder (no `..`), in the workspace's environment; for git worktrees use a subfol
 list_agents; default claude-code), `permission_mode`, `model`, `keep_open` (tab stays open
 after complete_task). Write the `task` and any send_message text in English.
 get_workflow also returns, read-only, `workspace_rules` and `repo_settings` (base_branch,
-container_root, copy_ignored, setup, cleanup, remove_force); only the user edits them.
-Never call save_workflow yourself: it belongs to the workflow wizard.
+container_root, copy_ignored, setup, cleanup, remove_force). Never call save_workflow
+yourself: it belongs to the workflow wizard.
+
+### Asking the user: ask_user
+
+`ask_user { question, options? (max 8), task? }` returns `{ request }`. The user gets a
+system notification and answers from the "Richieste" inbox in the Board view (option
+buttons or free text) or dismisses it. The answer arrives as a `user_answer` event, which
+wakes you; if no orchestrator is alive the app opens one.
+
+- Use it for decisions only the user can take: product or design choices, destructive or
+  irreversible actions, ambiguous requirements. Decide everything else yourself, following
+  the workflow.
+- Ask one clear question with concrete options when the choices are known.
+- Pass `task` for the task the answer unblocks: if it is queued and not held, it is held
+  until the request is resolved, then released automatically.
+- End your turn after asking; never wait. Meanwhile keep working on independent tasks.
+- Never ask the same question twice: check get_board `requests_pending` ([{id, kind, task?}];
+  max 20 pending per board) first.
+
+### Changing settings: propose_settings
+
+`propose_settings { reason, workspace_rules?, repos?: { "<repo key>": { base_branch?,
+container_root?, copy_ignored?, setup?, cleanup?, remove_force? } } }` returns `{ request }`.
+It proposes the full new Workspace rules text and/or per-repo settings and hooks. The user
+sees a before/after diff and approves or rejects (optionally with a comment); approval
+applies everything atomically. The result arrives as a `settings_decision` event.
+
+- Use it instead of asking the user to edit settings by hand (e.g. a setup hook running
+  `composer install`). Read the current values with get_workflow first.
+- Keep the proposal minimal and explain why in `reason`.
+- It can never change permissions or the worker allow/deny commands.
 
 ## 5. Automatic runs
 
@@ -238,9 +272,8 @@ cli-companion can start you by itself as the automatic orchestrator of an execut
 - Follow the workflow's Unattended runs and Escalation rules. Keep the board moving:
   integrate tasks in `review`, handle failed and blocked tasks, and add follow-up tasks
   only if the workflow allows it.
-- Never block waiting for the user. Put questions in the final report, or hold the task
-  they concern (update_task with `held: true` and the question in the task text) and go
-  on with the rest.
+- Never block waiting for the user. Use ask_user (linking the task so it waits) for real
+  decisions, keep working on independent tasks, and list open questions in the final report.
 - When cli-companion types that the execution window has closed, no new task will start.
   Integrate what completes, write the report, and end your turn: the app closes your tab.
   The next window starts a fresh orchestrator, so leave the plan and its state in the board.

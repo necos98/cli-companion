@@ -22,6 +22,8 @@ import {
   onAutomationSpawn,
   onAutomationUpdate,
   onBoardUpdate,
+  onUserRequest,
+  onWorkspaceUpdated,
   onNotificationActivated,
 } from "./lib/tauri";
 import { activeCount, mergeBoard } from "./lib/board";
@@ -95,7 +97,8 @@ import {
 } from "./lib/session";
 import type { SessionTab } from "./lib/session";
 import { playAttention, playDing } from "./lib/notifySound";
-import { notifyIfUnfocused } from "./lib/systemNotify";
+import { notifyIfUnfocused, notifyPlainIfUnfocused } from "./lib/systemNotify";
+import { pendingCount } from "./lib/requests";
 
 interface Tab {
   key: string;
@@ -287,6 +290,46 @@ export default function App() {
       unlisten?.();
     };
   }, [storeBoard]);
+
+  const loadBoardRef = useRef(loadBoard);
+  loadBoardRef.current = loadBoard;
+
+  // Nuova richiesta dell'orchestratore: ricarica la board (badge) e notifica.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    onUserRequest((e) => {
+      loadBoardRef.current(e.workspace_id);
+      const name = workspacesRef.current.find((w) => w.id === e.workspace_id)?.name ?? "Workspace";
+      const what = e.kind === "question" ? "domanda dell'orchestratore" : "proposta di impostazioni";
+      void notifyPlainIfUnfocused(`${name}: ${what}`, e.body);
+    })
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Workspace cambiato dal backend (proposta di impostazioni approvata).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    onWorkspaceUpdated((ws) => handleWorkspaceUpdatedRef.current(ws))
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Ripristino della sessione precedente, una volta sola dopo il caricamento
   // dei workspace. Stessi tabId di prima: così combaciano lo scrollback
@@ -952,6 +995,9 @@ export default function App() {
     );
   }, []);
 
+  const handleWorkspaceUpdatedRef = useRef(handleWorkspaceUpdated);
+  handleWorkspaceUpdatedRef.current = handleWorkspaceUpdated;
+
   const handleRename = useCallback(
     async (id: string, name: string) => {
       handleWorkspaceUpdated(await api.renameWorkspace(id, name));
@@ -1100,6 +1146,9 @@ export default function App() {
               terminals={sidebarTerminals}
               boardActive={Object.fromEntries(
                 Object.entries(boards).map(([id, b]) => [id, activeCount(b)]),
+              )}
+              pendingRequests={Object.fromEntries(
+                Object.entries(boards).map(([id, b]) => [id, pendingCount(b)]),
               )}
               autoStatus={Object.fromEntries(
                 workspaces.flatMap((w) =>

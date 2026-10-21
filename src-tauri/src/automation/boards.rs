@@ -283,6 +283,62 @@ impl Registry {
         Ok(())
     }
 
+    /// Nuova richiesta dell'orchestratore all'utente (domanda o proposta).
+    pub fn add_user_request(&mut self, ws: &str, new: board::NewRequest, now: i64) -> Result<String, String> {
+        let b = self.boards.entry(ws.to_string()).or_insert_with(|| Board::new(ws));
+        let id = b.add_request(new, now)?;
+        self.mark_dirty(ws);
+        Ok(id)
+    }
+
+    /// Copia della richiesta pendente (errori in italiano).
+    pub fn pending_user_request(
+        &self,
+        ws: &str,
+        id: &str,
+        kind: Option<board::RequestKind>,
+    ) -> Result<board::UserRequest, String> {
+        let b = self.boards.get(ws).ok_or_else(|| "richiesta non trovata".to_string())?;
+        b.pending_request(id, kind).cloned()
+    }
+
+    /// Risolve una richiesta e avvisa l'orchestratore (`user_answer` /
+    /// `settings_decision`): va al proprietario o aspetta nella coda della board.
+    pub fn resolve_user_request(
+        &mut self,
+        ws: &str,
+        id: &str,
+        outcome: board::RequestOutcome,
+        now: i64,
+    ) -> Result<(), String> {
+        let b = self.boards.get_mut(ws).ok_or_else(|| "richiesta non trovata".to_string())?;
+        let r = b.resolve_request(id, outcome, now)?;
+        let with_comment = |head: &str| match r.comment.as_deref() {
+            Some(c) => format!("{head}: {c}"),
+            None => head.to_string(),
+        };
+        let (kind, text) = match (r.status, r.kind) {
+            (board::RequestStatus::Answered, _) => (EventKind::UserAnswer, r.answer.clone().unwrap_or_default()),
+            (board::RequestStatus::Dismissed, board::RequestKind::Question) => {
+                (EventKind::UserAnswer, "(dismissed by the user)".to_string())
+            }
+            (board::RequestStatus::Dismissed, _) => {
+                (EventKind::SettingsDecision, "rejected: dismissed by the user".to_string())
+            }
+            (board::RequestStatus::Approved, _) => (EventKind::SettingsDecision, with_comment("approved")),
+            _ => (EventKind::SettingsDecision, with_comment("rejected")),
+        };
+        let status = r
+            .task
+            .as_deref()
+            .and_then(|t| b.task(t))
+            .and_then(|t| t.worker_status)
+            .unwrap_or(WorkerStatus::Closed);
+        self.push_board_event_req(ws, r.task.as_deref(), Some(&r.id), kind, text, status, now);
+        self.mark_dirty(ws);
+        Ok(())
+    }
+
     pub fn set_board(&mut self, ws: &str, max_parallel: Option<u8>, paused: Option<bool>, now: i64) -> Result<(), String> {
         self.set_board_ext(ws, max_parallel, paused, RepoSettings::default(), now).map(|_| ())
     }
@@ -380,6 +436,21 @@ impl Registry {
         status: WorkerStatus,
         now: i64,
     ) {
+        self.push_board_event_req(ws, task, None, kind, text, status, now);
+    }
+
+    /// Come `push_board_event`, con l'id della richiesta all'utente.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_board_event_req(
+        &mut self,
+        ws: &str,
+        task: Option<&str>,
+        request: Option<&str>,
+        kind: EventKind,
+        text: String,
+        status: WorkerStatus,
+        now: i64,
+    ) {
         let Some(b) = self.boards.get(ws) else {
             return;
         };
@@ -398,6 +469,7 @@ impl Registry {
             status,
             at: now,
             task: task.map(str::to_string),
+            request: request.map(str::to_string),
             board: Some(ws.to_string()),
         };
         self.enqueue(owner, ev);
@@ -1554,6 +1626,52 @@ fn parse_columns(params: &Value) -> Result<Option<Vec<board::Column>>, String> {
     Ok(Some(out))
 }
 
+/// Lunghezza massima di domanda e motivo di una richiesta all'utente.
+const REQUEST_TEXT_MAX: usize = 2000;
+const MAX_OPTIONS: usize = 8;
+const OPTION_MAX: usize = 100;
+/// Lunghezza del testo nella notifica di sistema.
+const NOTICE_BODY_MAX: usize = 200;
+
+/// `options` di `ask_user`: fino a 8 voci non vuote di al massimo 100 caratteri.
+fn parse_options(params: &Value) -> Result<Option<Vec<String>>, String> {
+    let list = match params.get("options") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err("options must be an array of strings".to_string()),
+    };
+    if list.len() > MAX_OPTIONS {
+        return Err(format!("too many options (max {MAX_OPTIONS})"));
+    }
+    let mut out = Vec::new();
+    for v in list {
+        let s = v.as_str().ok_or_else(|| "options must be an array of strings".to_string())?;
+        out.push(req_text("option", s, OPTION_MAX)?);
+    }
+    Ok(if out.is_empty() { None } else { Some(out) })
+}
+
+/// Crea la richiesta, pubblica la board e avvisa l'utente (`user-request`).
+fn create_request<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws: &Workspace,
+    new: board::NewRequest,
+    body: &str,
+    now: i64,
+) -> Result<Value, String> {
+    let kind = new.kind;
+    let id = board_op(st, host, now, |r| r.add_user_request(&ws.id, new, now))?;
+    host.emit_user_request(&json!({
+        "workspace_id": ws.id,
+        "request_id": id,
+        "kind": kind,
+        "title": ws.name,
+        "body": clip_chars(body, NOTICE_BODY_MAX),
+    }));
+    Ok(json!({ "request": id }))
+}
+
 pub(super) fn rpc_board<H: Host>(
     st: &AutomationState,
     host: &H,
@@ -1690,6 +1808,44 @@ pub(super) fn rpc_board<H: Host>(
                 out["warnings"] = json!(warnings);
             }
             Ok(out)
+        }
+        "ask_user" => {
+            let question = req_text("question", req_str(params, "question")?, REQUEST_TEXT_MAX)?;
+            let options = parse_options(params)?;
+            let task = opt_str(params, "task")?.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+            let new = board::NewRequest {
+                kind: board::RequestKind::Question,
+                task,
+                question: Some(question.clone()),
+                options,
+                reason: None,
+                proposal: None,
+                current: None,
+            };
+            create_request(st, host, &ws, new, &question, now)
+        }
+        "propose_settings" => {
+            let reason = req_text("reason", req_str(params, "reason")?, REQUEST_TEXT_MAX)?;
+            let mut fields = params.clone();
+            if let Some(o) = fields.as_object_mut() {
+                o.remove("reason");
+            }
+            let patch: crate::workspaces::SettingsPatch =
+                serde_json::from_value(fields).map_err(|e| format!("invalid proposal: {e}"))?;
+            if patch.is_empty() {
+                return Err("nothing proposed: pass workspace_rules and/or repos".to_string());
+            }
+            let norm = patch.normalized(&ws).map_err(|e| crate::workspaces::validation_error_en(&e))?;
+            let new = board::NewRequest {
+                kind: board::RequestKind::Settings,
+                task: None,
+                question: None,
+                options: None,
+                reason: Some(reason.clone()),
+                current: Some(norm.current(&ws)),
+                proposal: Some(norm),
+            };
+            create_request(st, host, &ws, new, &reason, now)
         }
         _ => Err(format!("unknown method: {method}")),
     }
@@ -1864,6 +2020,79 @@ pub(super) fn board_set_model<H: Host>(
         r.push_user_action(ws_id, task_id, text, now);
         Ok(())
     })?;
+    Ok(st.run(host, |r| r.board_view(ws_id)))
+}
+
+/// Risposta dell'utente a una domanda dell'orchestratore (dalla vista Board).
+pub(super) fn request_answer<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    request_id: &str,
+    answer: &str,
+) -> Result<BoardView, String> {
+    if host.workspace(ws_id).is_none() {
+        return Err("workspace non trovato".to_string());
+    }
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Err("la risposta e' vuota".to_string());
+    }
+    if answer.chars().count() > REQUEST_TEXT_MAX {
+        return Err(format!("risposta troppo lunga (max {REQUEST_TEXT_MAX} caratteri)"));
+    }
+    let now = now_millis();
+    board_op(st, host, now, |r| {
+        r.resolve_user_request(ws_id, request_id, board::RequestOutcome::Answered(answer.to_string()), now)
+    })?;
+    Ok(st.run(host, |r| r.board_view(ws_id)))
+}
+
+/// Approva o rifiuta una proposta di impostazioni. L'approvazione applica la
+/// patch (tutto o niente) prima di chiudere la richiesta: se fallisce la
+/// richiesta resta pendente.
+pub(super) fn request_decide<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    request_id: &str,
+    approve: bool,
+    comment: Option<&str>,
+) -> Result<BoardView, String> {
+    if host.workspace(ws_id).is_none() {
+        return Err("workspace non trovato".to_string());
+    }
+    let comment = comment.map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
+    if comment.as_ref().is_some_and(|c| c.chars().count() > REQUEST_TEXT_MAX) {
+        return Err(format!("commento troppo lungo (max {REQUEST_TEXT_MAX} caratteri)"));
+    }
+    let req = st.run(host, |r| r.pending_user_request(ws_id, request_id, Some(board::RequestKind::Settings)))?;
+    if approve {
+        let patch = req.proposal.ok_or_else(|| "proposta mancante".to_string())?;
+        host.apply_settings(ws_id, &patch)?;
+    }
+    let outcome = if approve {
+        board::RequestOutcome::Approved(comment)
+    } else {
+        board::RequestOutcome::Rejected(comment)
+    };
+    let now = now_millis();
+    board_op(st, host, now, |r| r.resolve_user_request(ws_id, request_id, outcome, now))?;
+    Ok(st.run(host, |r| r.board_view(ws_id)))
+}
+
+/// Scarta una richiesta pendente (domanda o proposta).
+pub(super) fn request_dismiss<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    request_id: &str,
+) -> Result<BoardView, String> {
+    if host.workspace(ws_id).is_none() {
+        return Err("workspace non trovato".to_string());
+    }
+    let now = now_millis();
+    board_op(st, host, now, |r| r.resolve_user_request(ws_id, request_id, board::RequestOutcome::Dismissed, now))?;
     Ok(st.run(host, |r| r.board_view(ws_id)))
 }
 

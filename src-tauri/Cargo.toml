@@ -1,6 +1,6 @@
 [package]
 name = "cli-companion"
-version = "0.10.4"
+version = "0.11.0"
 description = "CLI companion con terminali integrati Windows + WSL"
 authors = ["you"]
 edition = "2021"

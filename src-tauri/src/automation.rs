@@ -42,6 +42,10 @@ const SPAWN_EVENT: &str = "automation-spawn";
 const CLOSE_EVENT: &str = "automation-close";
 const UPDATE_EVENT: &str = "automation-update";
 const BOARD_EVENT: &str = "board-update";
+/// Nuova domanda o proposta dell'orchestratore all'utente.
+const USER_REQUEST_EVENT: &str = "user-request";
+/// Impostazioni del workspace cambiate dal backend (payload = `Workspace`).
+const WORKSPACE_EVENT: &str = "workspace-updated";
 
 mod boards;
 mod hooks;
@@ -215,12 +219,17 @@ pub enum EventKind {
     PlanCompleted,
     /// Board: l'utente ha agito dalla vista Board.
     UserAction,
+    /// Board: l'utente ha risposto a una domanda (o l'ha scartata).
+    UserAnswer,
+    /// Board: l'utente ha approvato o rifiutato una proposta di impostazioni.
+    SettingsDecision,
 }
 
 impl EventKind {
     /// Eventi che richiedono l'attenzione dell'orchestratore e possono
     /// svegliarlo; `started`, `fact` e `user_action` restano in coda fino al
-    /// prossimo `get_events`.
+    /// prossimo `get_events`. `user_answer` e
+    /// `settings_decision` svegliano come gli altri.
     fn is_actionable(self) -> bool {
         !matches!(self, EventKind::Started | EventKind::Fact | EventKind::UserAction)
     }
@@ -242,6 +251,9 @@ pub struct Event {
     /// Id del task, se il worker (o l'evento) e' di una board.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Id della richiesta all'utente (`user_answer`, `settings_decision`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
     /// Workspace della board (non esposto): serve a spostare gli eventi al
     /// cambio di proprietario.
     #[serde(skip)]
@@ -586,6 +598,7 @@ impl Registry {
             status: w.status,
             at: now,
             task,
+            request: None,
             board,
         };
         self.enqueue(target, ev);
@@ -1177,6 +1190,11 @@ pub trait Host: Clone + Send + 'static {
     fn save_board(&self, board: &Board) -> Result<(), String>;
     fn delete_board(&self, ws_id: &str);
     fn emit_board(&self, view: &BoardView);
+    /// Notifica all'utente di una nuova richiesta (evento `user-request`).
+    fn emit_user_request(&self, payload: &Value);
+    /// Applica una patch di impostazioni al workspace (salvataggio incluso) e
+    /// avvisa il frontend. Tutto o niente.
+    fn apply_settings(&self, ws_id: &str, patch: &crate::workspaces::SettingsPatch) -> Result<(), String>;
     /// Tutti i workspace.
     fn workspaces(&self) -> Vec<Workspace>;
     /// Minuti locali del giorno all'istante `now` (unix ms).
@@ -1412,7 +1430,7 @@ fn type_message<H: Host>(host: &H, tab: &str, text: &str) -> Result<(), String> 
 // Dispatch RPC
 // ---------------------------------------------------------------------------
 
-const ORCHESTRATOR_METHODS: [&str; 14] = [
+const ORCHESTRATOR_METHODS: [&str; 16] = [
     "list_agents",
     "spawn_session",
     "list_sessions",
@@ -1427,6 +1445,8 @@ const ORCHESTRATOR_METHODS: [&str; 14] = [
     "set_board",
     "get_workflow",
     "save_workflow",
+    "ask_user",
+    "propose_settings",
 ];
 const WORKER_METHODS: [&str; 4] = ["get_task", "report_fact", "request_help", "complete_task"];
 
@@ -1505,7 +1525,8 @@ pub fn dispatch<H: Host>(
             let events = st.run(host, |r| r.drain(session));
             Ok(json!({ "events": events }))
         }
-        "submit_plan" | "get_board" | "get_task_details" | "update_task" | "set_task_status" | "set_board" => {
+        "submit_plan" | "get_board" | "get_task_details" | "update_task" | "set_task_status" | "set_board" | "ask_user"
+        | "propose_settings" => {
             boards::rpc_board(st, host, session, method, params, now)
         }
         "get_workflow" | "save_workflow" => auto::rpc_workflow(host, session, method, params),
@@ -1799,6 +1820,17 @@ impl Host for TauriHost {
         let _ = self.0.emit(BOARD_EVENT, view);
     }
 
+    fn emit_user_request(&self, payload: &Value) {
+        let _ = self.0.emit(USER_REQUEST_EVENT, payload);
+    }
+
+    fn apply_settings(&self, ws_id: &str, patch: &crate::workspaces::SettingsPatch) -> Result<(), String> {
+        let ws = crate::workspaces::apply_settings_patch(&self.0, ws_id, patch)?;
+        // Il frontend ricarica le impostazioni del workspace.
+        let _ = self.0.emit(WORKSPACE_EVENT, &ws);
+        Ok(())
+    }
+
     fn workspaces(&self) -> Vec<Workspace> {
         self.0.state::<WorkspaceStore>().all()
     }
@@ -1998,6 +2030,51 @@ pub async fn board_task_action(
     crate::blocking(move || {
         let st = app.state::<AutomationState>();
         boards::board_action(&st, &TauriHost(app.clone()), &workspace_id, &task_id, &action)
+    })
+    .await
+}
+
+/// Risposta dell'utente a una domanda dell'orchestratore.
+#[tauri::command]
+pub async fn answer_user_request(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+    answer: String,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::request_answer(&st, &TauriHost(app.clone()), &workspace_id, &request_id, &answer)
+    })
+    .await
+}
+
+/// Approva o rifiuta una proposta di impostazioni (con commento opzionale).
+#[tauri::command]
+pub async fn decide_user_request(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+    approve: bool,
+    comment: Option<String>,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::request_decide(&st, &TauriHost(app.clone()), &workspace_id, &request_id, approve, comment.as_deref())
+    })
+    .await
+}
+
+/// Scarta una richiesta pendente.
+#[tauri::command]
+pub async fn dismiss_user_request(
+    app: AppHandle,
+    workspace_id: String,
+    request_id: String,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        boards::request_dismiss(&st, &TauriHost(app.clone()), &workspace_id, &request_id)
     })
     .await
 }
@@ -2543,6 +2620,9 @@ mod tests {
             (EventKind::NeedsInput, true),
             (EventKind::StoppedWithoutReport, true),
             (EventKind::Exited, true),
+            (EventKind::UserAction, false),
+            (EventKind::UserAnswer, true),
+            (EventKind::SettingsDecision, true),
         ]
         .into_iter()
         .enumerate()
@@ -2785,6 +2865,8 @@ mod tests {
         worker_model: Arc<Mutex<Option<String>>>,
         /// Regole per i worker del workspace "ws-1".
         worker_rules: Arc<Mutex<String>>,
+        /// Payload degli eventi `user-request` emessi.
+        user_requests: Arc<Mutex<Vec<Value>>>,
         /// Il workspace "ws-1" e' archiviato.
         archived: Arc<Mutex<bool>>,
         /// Errore forzato di `append_exclude`.
@@ -2955,6 +3037,16 @@ mod tests {
         }
         fn emit_board(&self, view: &BoardView) {
             self.board_events.lock().unwrap().push(view.clone());
+        }
+        fn emit_user_request(&self, payload: &Value) {
+            self.user_requests.lock().unwrap().push(payload.clone());
+        }
+        fn apply_settings(&self, ws_id: &str, patch: &crate::workspaces::SettingsPatch) -> Result<(), String> {
+            let mut ws = self.ws_for(ws_id).ok_or_else(|| "workspace non trovato".to_string())?;
+            patch.apply(&mut ws)?;
+            *self.worker_rules.lock().unwrap() = ws.worker_rules;
+            *self.repo_cfg.lock().unwrap() = ws.repos;
+            Ok(())
         }
         fn workspaces(&self) -> Vec<Workspace> {
             ["ws-1", "ws-2"].iter().filter_map(|id| self.ws_for(id)).collect()

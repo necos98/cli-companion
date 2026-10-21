@@ -159,6 +159,187 @@ impl RepoConfig {
     }
 }
 
+/// Un campo `Option<Option<T>>` distingue "assente" (nessuna modifica) da
+/// `null` (azzera il valore).
+fn de_double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Massimo di repository in una proposta di impostazioni.
+const MAX_PATCH_REPOS: usize = 20;
+
+/// Modifica parziale della configurazione di un repository: solo i campi
+/// presenti cambiano (`null` su `base_branch` / `container_root` li azzera).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoPatch {
+    #[serde(default, deserialize_with = "de_double_option", skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<Option<String>>,
+    #[serde(default, deserialize_with = "de_double_option", skip_serializing_if = "Option::is_none")]
+    pub container_root: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_ignored: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_force: Option<bool>,
+}
+
+impl RepoPatch {
+    pub fn is_empty(&self) -> bool {
+        *self == RepoPatch::default()
+    }
+
+    /// `base` con i campi della patch sovrapposti, poi normalizzato.
+    fn merge(&self, base: &RepoConfig) -> Result<RepoConfig, String> {
+        let mut c = base.clone();
+        if let Some(v) = &self.base_branch {
+            c.base_branch = v.clone();
+        }
+        if let Some(v) = &self.container_root {
+            c.container_root = v.clone();
+        }
+        if let Some(v) = &self.copy_ignored {
+            c.copy_ignored = v.clone();
+        }
+        if let Some(v) = &self.setup {
+            c.setup = v.clone();
+        }
+        if let Some(v) = &self.cleanup {
+            c.cleanup = v.clone();
+        }
+        if let Some(v) = self.remove_force {
+            c.remove_force = v;
+        }
+        c.normalized()
+    }
+
+    /// Gli stessi campi della patch, con i valori di `cfg`.
+    fn project(&self, cfg: &RepoConfig) -> RepoPatch {
+        RepoPatch {
+            base_branch: self.base_branch.as_ref().map(|_| cfg.base_branch.clone()),
+            container_root: self.container_root.as_ref().map(|_| cfg.container_root.clone()),
+            copy_ignored: self.copy_ignored.as_ref().map(|_| cfg.copy_ignored.clone()),
+            setup: self.setup.as_ref().map(|_| cfg.setup.clone()),
+            cleanup: self.cleanup.as_ref().map(|_| cfg.cleanup.clone()),
+            remove_force: self.remove_force.map(|_| cfg.remove_force),
+        }
+    }
+}
+
+/// Modifica proposta alle impostazioni del workspace: SOLO regole dei worker
+/// e configurazione per repository (mai permessi ne' comandi consentiti).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SettingsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_rules: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repos: Option<BTreeMap<String, RepoPatch>>,
+}
+
+impl SettingsPatch {
+    pub fn is_empty(&self) -> bool {
+        self.workspace_rules.is_none() && self.repos.is_none()
+    }
+
+    /// Valida come le impostazioni dell'interfaccia e ritorna la patch con
+    /// chiavi e valori normalizzati. Errori in italiano (come l'interfaccia).
+    pub fn normalized(&self, ws: &Workspace) -> Result<SettingsPatch, String> {
+        let workspace_rules = self.workspace_rules.as_deref().map(normalize_rules).transpose()?;
+        let repos = match &self.repos {
+            None => None,
+            Some(map) => {
+                if map.len() > MAX_PATCH_REPOS {
+                    return Err(format!("too many repos in the proposal (max {MAX_PATCH_REPOS})"));
+                }
+                let mut out = BTreeMap::new();
+                for (raw, p) in map {
+                    let key = repo_config_key(raw)?;
+                    if out.contains_key(&key) {
+                        return Err(format!("duplicate repo key: {key}"));
+                    }
+                    if p.is_empty() {
+                        return Err(format!("repos['{key}'] has no fields"));
+                    }
+                    let base = ws.repos.get(&key).cloned().unwrap_or_default();
+                    let merged = p.merge(&base)?;
+                    out.insert(key, p.project(&merged));
+                }
+                Some(out)
+            }
+        };
+        Ok(SettingsPatch { workspace_rules, repos })
+    }
+
+    /// Valori attuali dei soli campi toccati (per il confronto nell'interfaccia).
+    pub fn current(&self, ws: &Workspace) -> SettingsPatch {
+        SettingsPatch {
+            workspace_rules: self.workspace_rules.as_ref().map(|_| ws.worker_rules.clone()),
+            repos: self.repos.as_ref().map(|m| {
+                m.iter()
+                    .map(|(k, p)| (k.clone(), p.project(&ws.repos.get(k).cloned().unwrap_or_default())))
+                    .collect()
+            }),
+        }
+    }
+
+    /// Applica la patch tutto-o-niente: ogni valore si valida su una copia.
+    pub fn apply(&self, ws: &mut Workspace) -> Result<(), String> {
+        let norm = self.normalized(ws)?;
+        let mut next = ws.clone();
+        if let Some(r) = norm.workspace_rules {
+            next.worker_rules = r;
+        }
+        for (k, p) in norm.repos.unwrap_or_default() {
+            let base = next.repos.get(&k).cloned().unwrap_or_default();
+            next.repos.insert(k, p.merge(&base)?);
+        }
+        *ws = next;
+        Ok(())
+    }
+}
+
+/// Messaggio di validazione (italiano, dell'interfaccia) in inglese per il
+/// modello; i messaggi gia' inglesi passano invariati.
+pub fn validation_error_en(e: &str) -> String {
+    const MAP: [(&str, &str); 13] = [
+        ("regole troppo lunghe", "workspace_rules too long (max 4000 characters)"),
+        ("le regole non possono", "workspace_rules cannot contain control characters"),
+        ("branch base non valido", "invalid base_branch"),
+        ("percorso nel container non valido", "invalid container_root"),
+        ("il percorso da copiare deve essere relativo", "copy_ignored paths must be relative to the repository"),
+        ("percorso da copiare non valido", "invalid copy_ignored path (no '..', not the repository root, max 300 characters)"),
+        ("troppi percorsi da copiare", "too many copy_ignored paths (max 30)"),
+        ("il comando di setup", "setup commands must be single-line"),
+        ("il comando di pulizia", "cleanup commands must be single-line"),
+        ("comando di setup troppo lungo", "setup command too long (max 2000 characters)"),
+        ("comando di pulizia troppo lungo", "cleanup command too long (max 2000 characters)"),
+        ("troppi comandi di setup", "too many setup commands (max 30)"),
+        ("troppi comandi di pulizia", "too many cleanup commands (max 30)"),
+    ];
+    match MAP.iter().find(|(it, _)| e.starts_with(it)) {
+        Some((_, en)) => (*en).to_string(),
+        None => e.to_string(),
+    }
+}
+
+/// Applica una patch alle impostazioni di un workspace e salva su disco
+/// (stesso percorso delle impostazioni dell'interfaccia). Ritorna il workspace.
+pub fn apply_settings_patch(app: &AppHandle, workspace_id: &str, patch: &SettingsPatch) -> Result<Workspace, String> {
+    persist(app, |data| {
+        let ws = ws_mut(data, workspace_id)?;
+        patch.apply(ws)?;
+        Ok(ws.clone())
+    })
+}
+
 /// Elenco di comandi: trim, righe vuote scartate; ciascuno su una riga, al
 /// massimo `MAX_REPO_COMMAND_LEN` caratteri, al massimo `MAX_REPO_COMMANDS`.
 fn normalize_commands(list: &[String], what: &str) -> Result<Vec<String>, String> {
@@ -552,7 +733,7 @@ pub async fn set_repo_config(
 
 /// Trim; massimo `MAX_RULES_LEN` caratteri; niente caratteri di controllo
 /// a parte a capo e tabulazione.
-fn normalize_rules(rules: &str) -> Result<String, String> {
+pub(crate) fn normalize_rules(rules: &str) -> Result<String, String> {
     let r = rules.trim();
     if r.chars().count() > MAX_RULES_LEN {
         return Err(format!("regole troppo lunghe (max {MAX_RULES_LEN} caratteri)"));
@@ -1189,5 +1370,83 @@ mod tests {
             wsl_unc_path("Ubuntu-24.04", "/home/me/proj/"),
             "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\proj"
         );
+    }
+
+    fn patch(v: serde_json::Value) -> SettingsPatch {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn settings_patch_parsing_is_strict_and_tells_null_from_absent() {
+        let p = patch(serde_json::json!({"repos": {"a": {"base_branch": null, "setup": []}}}));
+        let r = &p.repos.as_ref().unwrap()["a"];
+        assert_eq!(r.base_branch, Some(None));
+        assert_eq!(r.container_root, None);
+        assert_eq!(r.setup, Some(vec![]));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({"repos": {"a": {"base_branch": null, "setup": []}}}));
+        for bad in [
+            serde_json::json!({"worker_allow": []}),
+            serde_json::json!({"repos": {"a": {"allow": []}}}),
+            serde_json::json!({"workspace_rules": 1}),
+        ] {
+            assert!(serde_json::from_value::<SettingsPatch>(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn settings_patch_applies_all_or_nothing_and_snapshots_current() {
+        let mut ws = ws_with(vec![]);
+        ws.worker_rules = "old".into();
+        ws.repos.insert("api".into(), RepoConfig { base_branch: Some("main".into()), setup: vec!["a".into()], ..Default::default() });
+        let p = patch(serde_json::json!({
+            "workspace_rules": " new ",
+            "repos": {"api/": {"setup": ["b"], "container_root": " /srv/ "}, ".": {"remove_force": true}}
+        }));
+        let norm = p.normalized(&ws).unwrap();
+        assert_eq!(norm.workspace_rules.as_deref(), Some("new"));
+        assert_eq!(norm.repos.as_ref().unwrap()["api"].container_root, Some(Some("/srv".to_string())));
+        let cur = norm.current(&ws);
+        assert_eq!(cur.workspace_rules.as_deref(), Some("old"));
+        assert_eq!(cur.repos.as_ref().unwrap()["api"].setup, Some(vec!["a".to_string()]));
+        assert_eq!(cur.repos.as_ref().unwrap()["."].remove_force, Some(false));
+        // Un valore non valido in un repository non applica nulla del resto.
+        let bad = patch(serde_json::json!({
+            "workspace_rules": "new",
+            "repos": {"api": {"setup": ["x"]}, "web": {"base_branch": "no good"}}
+        }));
+        let mut copy = ws.clone();
+        assert!(bad.apply(&mut copy).is_err());
+        assert_eq!(copy, ws);
+        p.apply(&mut ws).unwrap();
+        assert_eq!(ws.worker_rules, "new");
+        let api = &ws.repos["api"];
+        assert_eq!((api.base_branch.as_deref(), api.setup.as_slice()), (Some("main"), &["b".to_string()][..]));
+        assert_eq!(api.container_root.as_deref(), Some("/srv"));
+        assert!(ws.repos["."].remove_force);
+        // null azzera il branch base.
+        patch(serde_json::json!({"repos": {"api": {"base_branch": null}}})).apply(&mut ws).unwrap();
+        assert_eq!(ws.repos["api"].base_branch, None);
+        // Mai permessi o comandi consentiti: i campi non esistono nella patch.
+        assert_eq!(ws.worker_allow, Vec::<String>::new());
+    }
+
+    #[test]
+    fn settings_patch_errors_map_to_english() {
+        let ws = ws_with(vec![]);
+        let err = |v: serde_json::Value| validation_error_en(&patch(v).normalized(&ws).unwrap_err());
+        for (v, expect) in [
+            (serde_json::json!({"workspace_rules": "x".repeat(MAX_RULES_LEN + 1)}), "too long"),
+            (serde_json::json!({"workspace_rules": "a\u{1}b"}), "control characters"),
+            (serde_json::json!({"repos": {"a": {"base_branch": "no good"}}}), "invalid base_branch"),
+            (serde_json::json!({"repos": {"a": {"copy_ignored": ["/abs"]}}}), "relative"),
+            (serde_json::json!({"repos": {"a": {"copy_ignored": [".."]}}}), "copy_ignored"),
+            (serde_json::json!({"repos": {"a": {"setup": ["a\nb"]}}}), "single-line"),
+            (serde_json::json!({"repos": {"a": {"cleanup": ["a\nb"]}}}), "cleanup"),
+            (serde_json::json!({"repos": {"a": {"setup": vec!["x"; MAX_REPO_COMMANDS + 1]}}}), "too many setup"),
+            (serde_json::json!({"repos": {"a": {}}}), "no fields"),
+        ] {
+            let e = err(v);
+            assert!(e.contains(expect) && e.is_ascii(), "{e}");
+        }
     }
 }

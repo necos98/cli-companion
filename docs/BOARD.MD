@@ -423,7 +423,23 @@ Nuovi (descrizioni in inglese, come gli altri):
 - `get_workflow` — oltre a `workflow`, restituisce in sola lettura `workspace_rules` (le
   "Workspace rules" dell'utente, solo se non vuote) e `repo_settings` (per chiave repo:
   `base_branch`, `container_root`, `copy_ignored`, `setup`, `cleanup`, `remove_force`, solo i
-  non vuoti). Le modifica solo l'utente dalle impostazioni del workspace.
+  non vuoti). Si modificano solo con `propose_settings` (approvazione dell'utente) o dalle
+  impostazioni del workspace.
+- `ask_user { question, options? (max 8), task? }` — ritorna `{ request }`. L'utente riceve una
+  notifica di sistema e risponde dalla casella "Richieste" nella vista board (pulsanti per le
+  opzioni o testo libero) oppure scarta la richiesta. Se `task` è indicato e il task è `queued`
+  e non trattenuto, viene trattenuto finché la richiesta non è risolta, poi rilasciato
+  in automatico. La risposta arriva come evento `user_answer` (testo = risposta, oppure
+  "(dismissed by the user)"; con `request` e `task`), che sveglia l'orchestratore; se nessun
+  orchestratore è vivo l'app ne apre uno. `get_board` mostra `requests_pending`
+  (`[{ id, kind, task? }]`). Massimo 20 richieste pendenti per board.
+- `propose_settings { reason, workspace_rules?, repos? }` — ritorna `{ request }`. `repos` è
+  `{ "<chiave repo>": { base_branch?, container_root?, copy_ignored?, setup?, cleanup?,
+  remove_force? } }`. Propone le Workspace rules (testo completo nuovo) e/o le impostazioni
+  e gli hook per repo: l'utente vede un diff prima/dopo e approva o rifiuta (con commento
+  opzionale); l'approvazione applica tutto in modo atomico. Esito come evento
+  `settings_decision` (testo `approved` oppure `rejected[: commento]`). Mai permessi né
+  comandi consentiti/negati dei worker. Leggere prima i valori attuali con `get_workflow`.
 
 Esistenti, estesi:
 

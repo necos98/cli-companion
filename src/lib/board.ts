@@ -4,6 +4,7 @@
 
 import { statusWord, truncateReport } from "./automation.ts";
 import type { BoardAutomation } from "./schedule.ts";
+import type { UserRequest } from "./requests.ts";
 
 export type TaskStatus =
   | "queued"
@@ -119,6 +120,9 @@ export interface BoardView {
   automation?: BoardAutomation | null;
   /** Stato dell'orchestratore richiesto dallo scheduler; assente nei payload vecchi. */
   orchestrator?: OrchestratorState | null;
+  /** Richieste dell'orchestratore: in sospeso + ultime 20 risolte; assente nei payload vecchi. */
+  requests?: UserRequest[];
+  pending_requests?: number;
 }
 
 export type OrchestratorState = "live" | "starting" | "waiting" | "stopped" | "window";

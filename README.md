@@ -163,6 +163,9 @@ Tool dell'orchestratore:
   `get_task_details` (dettaglio completo di un task), `update_task`, `set_task_status`,
   `set_board` — la Board
   (vedi sopra e `docs/BOARD.MD`).
+- `ask_user` (domanda all'utente, con opzioni; risposta come evento `user_answer`) e
+  `propose_settings` (modifica di regole e impostazioni dei repo, da approvare; esito come
+  `settings_decision`).
 - `list_agents` — coding agent con supporto all'automazione.
 - `spawn_session` — avvia un worker ad-hoc, fuori dalla board (`task`, opz. `title`, `agent`, `cwd`,
   `permission_mode`, `model`, `keep_open`). L'orchestratore lavora solo nel proprio

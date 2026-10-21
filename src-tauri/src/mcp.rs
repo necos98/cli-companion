@@ -309,12 +309,12 @@ fn orchestrator_tools() -> Vec<Value> {
         tool(
             "get_events",
             "Drain and return the new events of your sessions. It never waits: `events` is empty if nothing happened. \
-             Event: seq, session, title, kind, text (optional), status, at (unix ms), task (board workers). \
+             Event: seq, session, title, kind, text (optional), status, at (unix ms), task (board workers), request. \
              kind: started, fact, help_request (answer with send_message), completed (outcome in text), needs_input \
              (waiting for a permission in its tab), stopped_without_report, exited, start_failed (board task could not \
              start; text = reason), plan_completed (every board task done or cancelled; text = counts), user_action \
-             (informational). Only help_request, completed, needs_input, stopped_without_report and exited wake you \
-             while idle; the others wait for the next call.",
+             (informational), user_answer (text = the answer), settings_decision (text = approved or rejected, plus \
+             ': comment'). Only started, fact and user_action do not wake you while idle; they wait for the next call.",
             json!({}),
             &[],
         ),
@@ -464,6 +464,54 @@ fn orchestrator_tools() -> Vec<Value> {
                 "content": { "type": "string", "minLength": 1, "maxLength": 50000, "description": "The complete workflow, in markdown." }
             }),
             &["content"],
+        ),
+        tool(
+            "ask_user",
+            "Ask the user a question; the answer comes later as a user_answer event, so end your turn after calling. For \
+             decisions only the user can make. With `task` (a board task), a queued task is held until the question is \
+             answered or dismissed. Returns {request}.",
+            json!({
+                "question": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "The question." },
+                "options": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+                    "description": "Suggested answers (the user may type another)."
+                },
+                "task": { "type": "string", "description": "Board task that waits for the answer." }
+            }),
+            &["question"],
+        ),
+        tool(
+            "propose_settings",
+            "Propose changes to the worker rules and repo settings of this workspace; the user approves or rejects them \
+             in the board view (settings_decision event), so end your turn after calling. Nothing changes until \
+             approved; only the fields you pass. Never permissions or allowed commands. Returns {request}.",
+            json!({
+                "reason": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "Why, shown to the user." },
+                "workspace_rules": {
+                    "type": "string",
+                    "maxLength": 4000,
+                    "description": "Full new text of the worker rules; empty clears."
+                },
+                "repos": {
+                    "type": "object",
+                    "description": "Per repo key ('.' = root), only the fields to change; a list replaces the whole list; null clears base_branch or container_root.",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "base_branch": { "type": ["string", "null"] },
+                            "container_root": { "type": ["string", "null"] },
+                            "copy_ignored": { "type": "array", "items": { "type": "string" } },
+                            "setup": { "type": "array", "items": { "type": "string" } },
+                            "cleanup": { "type": "array", "items": { "type": "string" } },
+                            "remove_force": { "type": "boolean" }
+                        }
+                    }
+                }
+            }),
+            &["reason"],
         ),
     ]
 }
@@ -808,7 +856,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    const ORCH_TOOLS_CEILING: usize = 16_900;
+    const ORCH_TOOLS_CEILING: usize = 18_900; // +2_000: ask_user and propose_settings (+1_983 chars incl. get_events kinds)
     const WORKER_TOOLS_CEILING: usize = 2_800;
     const ORCH_INSTRUCTIONS_CEILING: usize = 1_250;
 
@@ -935,7 +983,9 @@ mod tests {
                 "set_task_status",
                 "set_board",
                 "get_workflow",
-                "save_workflow"
+                "save_workflow",
+                "ask_user",
+                "propose_settings"
             ]
         );
         let mut s = Server::default();
@@ -1040,6 +1090,40 @@ mod tests {
         assert!(text.contains("submit_plan") && text.contains("spawn_session"));
     }
 
+
+    #[test]
+    fn request_tool_schemas() {
+        let tools = orchestrator_tools();
+        let by = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+        let keys = |v: &Value| -> Vec<String> {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        let ask = by("ask_user");
+        assert_eq!(keys(&ask["inputSchema"]["properties"]), ["options", "question", "task"]);
+        assert_eq!(ask["inputSchema"]["required"], json!(["question"]));
+        assert_eq!(ask["inputSchema"]["properties"]["options"]["maxItems"], 8);
+        assert_eq!(ask["inputSchema"]["properties"]["options"]["items"]["maxLength"], 100);
+        assert_eq!(ask["inputSchema"]["properties"]["question"]["maxLength"], 2000);
+        let prop = by("propose_settings");
+        assert_eq!(keys(&prop["inputSchema"]["properties"]), ["reason", "repos", "workspace_rules"]);
+        assert_eq!(prop["inputSchema"]["required"], json!(["reason"]));
+        // Same fields as the settings patch the app validates (never permissions or allowed commands).
+        let repo = &prop["inputSchema"]["properties"]["repos"]["additionalProperties"];
+        assert_eq!(
+            keys(&repo["properties"]),
+            ["base_branch", "cleanup", "container_root", "copy_ignored", "remove_force", "setup"]
+        );
+        assert_eq!(repo["additionalProperties"], false);
+        for t in [&ask, &prop] {
+            assert!(t["description"].as_str().unwrap().contains("end your turn"));
+        }
+        assert!(prop["description"].as_str().unwrap().contains("Never permissions"));
+        // get_events lists the new kinds and the request field.
+        let ev = by("get_events")["description"].as_str().unwrap().to_string();
+        assert!(ev.contains("user_answer") && ev.contains("settings_decision") && ev.contains("request"));
+    }
     #[test]
     fn role_is_cached_and_no_backend_gives_empty_list() {
         let b = Fake::new("worker");

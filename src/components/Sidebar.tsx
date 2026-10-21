@@ -48,6 +48,8 @@ interface Props {
   terminals: Record<string, SidebarTerminal[]>;
   /** Task attivi (in corso + da integrare) della board di ogni workspace. */
   boardActive: Record<string, number>;
+  /** Richieste dell'orchestratore in attesa di risposta, per workspace. */
+  pendingRequests?: Record<string, number>;
   /** Workspace con l'orchestratore automatico attivo: testo di stato per il tooltip. */
   autoStatus: Record<string, string>;
   /** Workspace di cui è mostrata la board al posto dei terminali (se c'è). */
@@ -156,6 +158,7 @@ export default function Sidebar({
   activeWorkspaceId,
   terminals,
   boardActive,
+  pendingRequests = {},
   autoStatus,
   boardShownId,
   onToggleBoard,
@@ -430,6 +433,14 @@ export default function Sidebar({
             ) : (
               <>
                 {indicator !== "none" && <StatusIcon status={GROUP_STATUS[indicator]} />}
+                {(pendingRequests[ws.id] ?? 0) > 0 && (
+                  <span
+                    className="rounded-full bg-primary px-1.5 font-mono text-[10px] font-semibold text-primary-foreground"
+                    title={`${pendingRequests[ws.id]} richieste dell'orchestratore`}
+                  >
+                    {pendingRequests[ws.id]}
+                  </span>
+                )}
                 {(boardActive[ws.id] ?? 0) > 0 && (
                   <span
                     className="rounded bg-status-running/15 px-1 font-mono text-[10px] text-status-running"
@@ -568,8 +579,16 @@ export default function Sidebar({
               >
                 <LayoutDashboard className="h-3 w-3 flex-shrink-0" />
                 <span className="text-xs">Board</span>
+                {(pendingRequests[ws.id] ?? 0) > 0 && (
+                  <span
+                    className="ml-auto rounded-full bg-primary px-1.5 font-mono text-[10px] font-semibold text-primary-foreground"
+                    title={`${pendingRequests[ws.id]} richieste dell'orchestratore`}
+                  >
+                    {pendingRequests[ws.id]}
+                  </span>
+                )}
                 {(boardActive[ws.id] ?? 0) > 0 && (
-                  <span className="ml-auto rounded bg-status-running/15 px-1.5 font-mono text-[11px] text-status-running">
+                  <span className="ml-1 rounded bg-status-running/15 px-1.5 font-mono text-[11px] text-status-running">
                     {boardActive[ws.id]}
                   </span>
                 )}

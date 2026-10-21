@@ -2,6 +2,7 @@ import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPermission } from "./workerPermission";
 import type { BoardView, TaskAction } from "./board";
+import type { UserRequestEvent } from "./requests";
 import type { Schedule, ScheduleState } from "./schedule";
 import type { AutoOrchestrate } from "./workflow";
 
@@ -351,6 +352,18 @@ export const api = {
   boardTaskAction: (workspaceId: string, taskId: string, action: TaskAction) =>
     invoke<BoardView>("board_task_action", { workspaceId, taskId, action }),
 
+  // Richieste dell'orchestratore (domande e proposte di impostazioni).
+  answerUserRequest: (workspaceId: string, requestId: string, answer: string) =>
+    invoke<BoardView>("answer_user_request", { workspaceId, requestId, answer }),
+  decideUserRequest: (
+    workspaceId: string,
+    requestId: string,
+    approve: boolean,
+    comment: string | null,
+  ) => invoke<BoardView>("decide_user_request", { workspaceId, requestId, approve, comment }),
+  dismissUserRequest: (workspaceId: string, requestId: string) =>
+    invoke<BoardView>("dismiss_user_request", { workspaceId, requestId }),
+
   // Esecuzione automatica e workflow (contratto in docs/SCHEDULE.MD).
   scheduleGet: () => invoke<ScheduleState>("schedule_get"),
 
@@ -403,6 +416,15 @@ export function onBoardUpdate(cb: (b: BoardView) => void) {
   return listen<BoardView>("board-update", (event) => cb(event.payload));
 }
 
+export function onUserRequest(cb: (e: UserRequestEvent) => void) {
+  return listen<UserRequestEvent>("user-request", (event) => cb(event.payload));
+}
+
 export function onAgentEvent(cb: (e: AgentEvent) => void) {
   return listen<AgentEvent>("agent-event", (event) => cb(event.payload));
+}
+
+/** Workspace modificato dal backend (es. proposta di impostazioni approvata). */
+export function onWorkspaceUpdated(cb: (ws: Workspace) => void) {
+  return listen<Workspace>("workspace-updated", (event) => cb(event.payload));
 }

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, ReactFlow } from "@xyflow/react";
 import type { Edge, ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { GitBranch, Loader2, Minus, Moon, Pause, Play, Plus } from "lucide-react";
+import { GitBranch, Inbox, Loader2, Minus, Moon, Pause, Play, Plus } from "lucide-react";
 import { Button } from "./ui/button";
 import TaskDetails from "./TaskDetails";
+import RequestsPanel from "./RequestsPanel";
+import { pendingCount } from "../lib/requests";
 import TaskNode from "./TaskNode";
 import type { TaskFlowNode } from "./TaskNode";
 import { api } from "../lib/tauri";
@@ -57,6 +59,7 @@ export default function BoardView({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
 
   const tasks = board?.tasks ?? [];
 
@@ -151,6 +154,13 @@ export default function BoardView({
     if (!selected) return;
     void run(() => api.boardTaskSetModel(workspaceId, selected.id, model));
   };
+
+  const pending = pendingCount(board);
+  const answerRequest = (id: string, answer: string) =>
+    void run(() => api.answerUserRequest(workspaceId, id, answer));
+  const decideRequest = (id: string, approve: boolean, comment: string | null) =>
+    void run(() => api.decideUserRequest(workspaceId, id, approve, comment));
+  const dismissRequest = (id: string) => void run(() => api.dismissUserRequest(workspaceId, id));
 
   const prog = progress(tasks);
   const counts = columnCounts(tasks);
@@ -278,6 +288,22 @@ export default function BoardView({
           </span>
         )}
 
+        <button
+          type="button"
+          onClick={() => setInboxOpen((v) => !v)}
+          title="Domande e proposte dell'orchestratore"
+          className={cn(
+            "flex h-6 items-center gap-1.5 rounded-md border px-2 text-[11px]",
+            pending > 0
+              ? "border-primary bg-primary font-semibold text-primary-foreground"
+              : "border-border-strong text-muted-foreground hover:bg-surface-2 hover:text-foreground",
+            inboxOpen && pending === 0 && "bg-surface-2 text-foreground",
+          )}
+        >
+          <Inbox className="h-3 w-3" />
+          Richieste ({pending})
+        </button>
+
         <ul className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1" aria-label="Legenda">
           {COLUMNS.map((c) => (
             <li key={c} className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -337,7 +363,24 @@ export default function BoardView({
           )}
         </div>
 
-        {selected && (
+        {inboxOpen && (
+          <RequestsPanel
+            requests={board?.requests ?? []}
+            busy={busy}
+            onAnswer={answerRequest}
+            onDecide={decideRequest}
+            onDismiss={dismissRequest}
+            onSelectTask={(id) => {
+              if (tasks.some((t) => t.id === id)) {
+                setSelectedId(id);
+                setInboxOpen(false);
+              }
+            }}
+            onClose={() => setInboxOpen(false)}
+          />
+        )}
+
+        {selected && !inboxOpen && (
           <TaskDetails
             task={selected}
             busy={busy}

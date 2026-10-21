@@ -6,6 +6,7 @@
 //! `automation::boards`. Il contratto condiviso col frontend e' `docs/BOARD.MD`.
 
 use crate::agents::PermissionMode;
+use crate::workspaces::SettingsPatch;
 use crate::automation::{
     clip_chars, default_title, req_text, resolve_permission, valid_model, WorkerStatus, DEFAULT_AGENT,
     TASK_MAX, TITLE_MAX,
@@ -201,6 +202,81 @@ pub struct Task {
     pub preparing_since: Option<i64>,
 }
 
+/// Richieste pendenti massime per board.
+pub const MAX_PENDING_REQUESTS: usize = 20;
+/// Richieste risolte conservate (le piu' recenti).
+pub const MAX_RESOLVED_REQUESTS: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    Question,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestStatus {
+    Pending,
+    Answered,
+    Approved,
+    Rejected,
+    Dismissed,
+}
+
+/// Richiesta dell'orchestratore all'utente: una domanda o una proposta di
+/// impostazioni. Vive nella board e si salva con essa.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRequest {
+    pub id: String,
+    pub kind: RequestKind,
+    pub status: RequestStatus,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<SettingsPatch>,
+    /// Valori attuali dei soli campi proposti, all'atto della creazione.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<SettingsPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// La domanda ha trattenuto il task collegato: lo rilascia la risoluzione.
+    #[serde(default)]
+    pub held_by_request: bool,
+}
+
+/// Esito con cui si risolve una richiesta pendente.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestOutcome {
+    Answered(String),
+    Approved(Option<String>),
+    Rejected(Option<String>),
+    Dismissed,
+}
+
+/// Dati di una nuova richiesta (id, stato e data li assegna la board).
+#[derive(Debug, Clone)]
+pub struct NewRequest {
+    pub kind: RequestKind,
+    pub task: Option<String>,
+    pub question: Option<String>,
+    pub options: Option<Vec<String>>,
+    pub reason: Option<String>,
+    pub proposal: Option<SettingsPatch>,
+    pub current: Option<SettingsPatch>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Board {
@@ -219,6 +295,11 @@ pub struct Board {
     pub owner: Option<String>,
     pub updated_at: i64,
     pub tasks: Vec<Task>,
+    /// Domande e proposte dell'orchestratore all'utente: tutte le pendenti e
+    /// le ultime `MAX_RESOLVED_REQUESTS` risolte.
+    pub requests: Vec<UserRequest>,
+    /// Contatore degli id `r-<n>` (mai riusati, anche dopo la potatura).
+    pub request_seq: u64,
     /// Revisione in memoria (ordina i salvataggi/eventi concorrenti).
     #[serde(skip)]
     pub rev: u64,
@@ -252,6 +333,8 @@ impl Default for Board {
             owner: None,
             updated_at: 0,
             tasks: Vec::new(),
+            requests: Vec::new(),
+            request_seq: 0,
             rev: 0,
             plan_completed_sent: false,
             automation: None,
@@ -286,6 +369,9 @@ pub struct BoardView {
     pub owner: Option<String>,
     pub updated_at: i64,
     pub tasks: Vec<TaskView>,
+    /// Richieste all'utente (pendenti e ultime risolte).
+    pub requests: Vec<UserRequest>,
+    pub pending_requests: usize,
     /// Null per i workspace non automatici.
     pub automation: Option<crate::schedule::AutomationInfo>,
     /// Orchestratore del workspace: `live` (disponibile), `starting` (aperto
@@ -372,6 +458,21 @@ impl BoardView {
         });
         if held > 0 {
             out["held"] = Value::from(held);
+        }
+        let pending: Vec<Value> = self
+            .requests
+            .iter()
+            .filter(|r| r.status == RequestStatus::Pending)
+            .map(|r| {
+                let mut o = serde_json::json!({"id": r.id, "kind": r.kind});
+                if let Some(t) = &r.task {
+                    o["task"] = Value::from(t.clone());
+                }
+                o
+            })
+            .collect();
+        if !pending.is_empty() {
+            out["requests_pending"] = Value::Array(pending);
         }
         // Multi-repository: solo se servono, per non appesantire il caso comune.
         if !self.base_branches.is_empty() {
@@ -1217,6 +1318,8 @@ impl Board {
                 .iter()
                 .map(|t| TaskView { task: t.clone(), column: self.column(t) })
                 .collect(),
+            requests: self.requests.clone(),
+            pending_requests: self.pending_requests(),
             automation: self.automation.clone(),
             orchestrator: self.orchestrator.clone(),
         }
@@ -1248,6 +1351,9 @@ impl Board {
                 t.held = false;
             }
         }
+        // Il contatore non scende sotto gli id gia' assegnati.
+        let floor = b.requests.iter().filter_map(|r| r.id.strip_prefix("r-")?.parse::<u64>().ok()).max().unwrap_or(0);
+        b.request_seq = b.request_seq.max(floor);
         b.plan_completed_sent = b.is_complete();
         Ok(b)
     }
@@ -1469,6 +1575,113 @@ impl Board {
         }
         self.updated_at = now;
         Ok(())
+    }
+
+    pub fn pending_requests(&self) -> usize {
+        self.requests.iter().filter(|r| r.status == RequestStatus::Pending).count()
+    }
+
+    /// Richiesta pendente `id` (di tipo `kind`, se indicato). Errori in italiano:
+    /// li vede l'utente.
+    pub fn pending_request(&self, id: &str, kind: Option<RequestKind>) -> Result<&UserRequest, String> {
+        let r = self.requests.iter().find(|r| r.id == id).ok_or_else(|| "richiesta non trovata".to_string())?;
+        if r.status != RequestStatus::Pending {
+            return Err("la richiesta e' gia' stata risolta".to_string());
+        }
+        match kind {
+            Some(RequestKind::Question) if r.kind != RequestKind::Question => Err("la richiesta non e' una domanda".to_string()),
+            Some(RequestKind::Settings) if r.kind != RequestKind::Settings => {
+                Err("la richiesta non e' una proposta di impostazioni".to_string())
+            }
+            _ => Ok(r),
+        }
+    }
+
+    /// Nuova richiesta pendente; ritorna l'id. Se e' collegata a un task in
+    /// coda non trattenuto, lo trattiene finche' la richiesta non e' risolta.
+    pub fn add_request(&mut self, new: NewRequest, now: i64) -> Result<String, String> {
+        if self.pending_requests() >= MAX_PENDING_REQUESTS {
+            return Err(format!(
+                "too many pending requests (max {MAX_PENDING_REQUESTS}): wait for the user to answer or dismiss some"
+            ));
+        }
+        let mut held_by_request = false;
+        if let Some(tid) = &new.task {
+            let t = self.task_mut(tid).ok_or_else(|| format!("unknown task: {tid}"))?;
+            if t.status == TaskStatus::Queued && !t.held {
+                t.held = true;
+                t.updated_at = now;
+                held_by_request = true;
+            }
+        }
+        let floor = self.requests.iter().filter_map(|r| r.id.strip_prefix("r-")?.parse::<u64>().ok()).max().unwrap_or(0);
+        self.request_seq = self.request_seq.max(floor) + 1;
+        let id = format!("r-{}", self.request_seq);
+        self.requests.push(UserRequest {
+            id: id.clone(),
+            kind: new.kind,
+            status: RequestStatus::Pending,
+            created_at: now,
+            resolved_at: None,
+            task: new.task,
+            question: new.question,
+            options: new.options,
+            reason: new.reason,
+            proposal: new.proposal,
+            current: new.current,
+            answer: None,
+            comment: None,
+            held_by_request,
+        });
+        self.updated_at = now;
+        Ok(id)
+    }
+
+    /// Risolve una richiesta pendente; ritorna la richiesta aggiornata. Una
+    /// risposta o uno scarto della domanda rilascia il task che aveva trattenuto.
+    pub fn resolve_request(&mut self, id: &str, outcome: RequestOutcome, now: i64) -> Result<UserRequest, String> {
+        let kind = match &outcome {
+            RequestOutcome::Answered(_) => Some(RequestKind::Question),
+            RequestOutcome::Approved(_) | RequestOutcome::Rejected(_) => Some(RequestKind::Settings),
+            RequestOutcome::Dismissed => None,
+        };
+        self.pending_request(id, kind)?;
+        let idx = self.requests.iter().position(|r| r.id == id).expect("richiesta presente");
+        let (status, answer, comment) = match outcome {
+            RequestOutcome::Answered(a) => (RequestStatus::Answered, Some(a), None),
+            RequestOutcome::Approved(c) => (RequestStatus::Approved, None, c),
+            RequestOutcome::Rejected(c) => (RequestStatus::Rejected, None, c),
+            RequestOutcome::Dismissed => (RequestStatus::Dismissed, None, None),
+        };
+        let release = {
+            let r = &mut self.requests[idx];
+            r.status = status;
+            r.resolved_at = Some(now);
+            r.answer = answer;
+            r.comment = comment;
+            let release = r.held_by_request.then(|| r.task.clone()).flatten();
+            r.held_by_request = false;
+            release
+        };
+        if let Some(t) = release.and_then(|tid| self.task_mut(&tid)) {
+            if t.held && t.status == TaskStatus::Queued {
+                t.held = false;
+                t.updated_at = now;
+            }
+        }
+        // Potatura: tutte le pendenti, le ultime MAX_RESOLVED_REQUESTS risolte.
+        let mut done: Vec<(i64, u64, String)> = self
+            .requests
+            .iter()
+            .filter(|r| r.status != RequestStatus::Pending)
+            .map(|r| (r.resolved_at.unwrap_or(0), r.id.trim_start_matches("r-").parse().unwrap_or(0), r.id.clone()))
+            .collect();
+        done.sort();
+        let excess = done.len().saturating_sub(MAX_RESOLVED_REQUESTS);
+        let old: Vec<String> = done.into_iter().take(excess).map(|(_, _, id)| id).collect();
+        self.requests.retain(|r| !old.contains(&r.id));
+        self.updated_at = now;
+        Ok(self.requests.iter().find(|r| r.id == id).cloned().expect("richiesta presente"))
     }
 
     /// `hold` / `unhold`: solo i task in coda si trattengono.
@@ -2678,5 +2891,121 @@ mod tests {
         assert!(!integration_matches("int", "integration"));
         assert_eq!(repo_key(None), ".");
         assert_eq!(repo_key(Some("a/b")), "a/b");
+    }
+
+    fn question(task: Option<&str>) -> NewRequest {
+        NewRequest {
+            kind: RequestKind::Question,
+            task: task.map(str::to_string),
+            question: Some("q".into()),
+            options: None,
+            reason: None,
+            proposal: None,
+            current: None,
+        }
+    }
+
+    #[test]
+    fn requests_hold_and_release_the_linked_task() {
+        let mut b = board_with(vec![spec("a"), spec_with(json!({"id": "b", "task": "x", "depends_on": ["a"]}))]);
+        set_status(&mut b, "a", TaskStatus::Running);
+        let r1 = b.add_request(question(Some("b")), 20).unwrap();
+        assert_eq!(r1, "r-1");
+        assert!(b.task("b").unwrap().held && b.requests[0].held_by_request);
+        // Task in corso: nessun hold; task sconosciuto: errore e nessuna richiesta.
+        let r2 = b.add_request(question(Some("a")), 21).unwrap();
+        assert!(!b.task("a").unwrap().held && !b.requests[1].held_by_request);
+        let e = b.add_request(question(Some("zz")), 22).unwrap_err();
+        assert_eq!(e, "unknown task: zz");
+        assert_eq!(b.requests.len(), 2);
+        assert_eq!(b.pending_requests(), 2);
+        b.resolve_request(&r1, RequestOutcome::Answered("si".into()), 30).unwrap();
+        assert!(!b.task("b").unwrap().held, "rilasciato");
+        assert!(!b.requests[0].held_by_request);
+        b.resolve_request(&r2, RequestOutcome::Dismissed, 31).unwrap();
+        // Risolta due volte, tipo sbagliato, id sconosciuto: errori italiani.
+        assert!(b.resolve_request(&r1, RequestOutcome::Dismissed, 32).unwrap_err().contains("gia' stata risolta"));
+        assert!(b.resolve_request("r-9", RequestOutcome::Dismissed, 32).unwrap_err().contains("non trovata"));
+        let r3 = b.add_request(question(None), 33).unwrap();
+        assert!(b.resolve_request(&r3, RequestOutcome::Approved(None), 34).unwrap_err().contains("proposta"));
+        assert_eq!(r3, "r-3");
+    }
+
+    #[test]
+    fn request_limits_pruning_and_persistence() {
+        let mut b = Board::new("ws-1");
+        for i in 0..MAX_PENDING_REQUESTS {
+            b.add_request(question(None), i as i64).unwrap();
+        }
+        let e = b.add_request(question(None), 99).unwrap_err();
+        assert!(e.contains("too many pending requests (max 20)"), "{e}");
+        // Si conservano tutte le pendenti e le ultime 20 risolte (per data di risoluzione).
+        for i in 1..=MAX_PENDING_REQUESTS {
+            b.resolve_request(&format!("r-{i}"), RequestOutcome::Answered("x".into()), 100 + i as i64).unwrap();
+        }
+        for _ in 0..5 {
+            b.add_request(question(None), 200).unwrap();
+        }
+        b.resolve_request("r-21", RequestOutcome::Dismissed, 300).unwrap();
+        let resolved: Vec<&str> =
+            b.requests.iter().filter(|r| r.status != RequestStatus::Pending).map(|r| r.id.as_str()).collect();
+        assert_eq!(resolved.len(), MAX_RESOLVED_REQUESTS);
+        assert!(!resolved.contains(&"r-1") && resolved.contains(&"r-21"));
+        assert_eq!(b.pending_requests(), 4);
+        // Gli id non si riusano e sopravvivono al ricaricamento.
+        let loaded = Board::from_json(&serde_json::to_string(&b).unwrap(), 5).unwrap();
+        assert_eq!(loaded.requests, b.requests);
+        let mut loaded = loaded;
+        assert_eq!(loaded.add_request(question(None), 400).unwrap(), "r-26");
+        // Una board vecchia, senza richieste, si legge lo stesso.
+        let old = Board::from_json(r#"{"workspace_id":"ws-1"}"#, 1).unwrap();
+        assert!(old.requests.is_empty() && old.view().pending_requests == 0);
+    }
+
+    #[test]
+    fn request_json_shapes() {
+        let mut b = board_with(vec![spec("a")]);
+        assert!(b.view().to_compact_json(None).get("requests_pending").is_none());
+        let mut ask = question(Some("a"));
+        ask.options = Some(vec!["x".into(), "y".into()]);
+        b.add_request(ask, 20).unwrap();
+        let patch: SettingsPatch = serde_json::from_value(json!({"workspace_rules": "r"})).unwrap();
+        b.add_request(
+            NewRequest {
+                kind: RequestKind::Settings,
+                task: None,
+                question: None,
+                options: None,
+                reason: Some("why".into()),
+                current: Some(SettingsPatch { workspace_rules: Some("old".into()), repos: None }),
+                proposal: Some(patch),
+            },
+            21,
+        )
+        .unwrap();
+        let v = b.view();
+        assert_eq!(v.pending_requests, 2);
+        let j = serde_json::to_value(&v).unwrap();
+        assert_eq!(j["pending_requests"], 2);
+        assert_eq!(
+            j["requests"][0],
+            json!({"id": "r-1", "kind": "question", "status": "pending", "created_at": 20, "task": "a",
+                   "question": "q", "options": ["x", "y"], "held_by_request": true})
+        );
+        assert_eq!(
+            j["requests"][1],
+            json!({"id": "r-2", "kind": "settings", "status": "pending", "created_at": 21, "reason": "why",
+                   "proposal": {"workspace_rules": "r"}, "current": {"workspace_rules": "old"}, "held_by_request": false})
+        );
+        assert_eq!(
+            v.to_compact_json(None)["requests_pending"],
+            json!([{"id": "r-1", "kind": "question", "task": "a"}, {"id": "r-2", "kind": "settings"}])
+        );
+        b.resolve_request("r-1", RequestOutcome::Answered("ok".into()), 30).unwrap();
+        let j = serde_json::to_value(b.view()).unwrap();
+        assert_eq!(j["requests"][0]["status"], "answered");
+        assert_eq!(j["requests"][0]["answer"], "ok");
+        assert_eq!(j["requests"][0]["resolved_at"], 30);
+        assert_eq!(b.view().to_compact_json(None)["requests_pending"], json!([{"id": "r-2", "kind": "settings"}]));
     }
 }

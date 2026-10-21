@@ -19,6 +19,21 @@ async function appHasFocus(): Promise<boolean> {
 }
 
 /**
+ * Notifica di sistema senza tab associato (nessun click: il toast cliccabile
+ * porta a un tab). Mostrata solo se la finestra non e' in primo piano.
+ */
+export async function notifyPlainIfUnfocused(title: string, body: string): Promise<void> {
+  try {
+    if (await appHasFocus()) return;
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    if (granted) sendNotification({ title, body });
+  } catch {
+    // Notifiche non disponibili.
+  }
+}
+
+/**
  * Mostra una notifica di sistema se la finestra non e' in primo piano.
  * Sicura da chiamare ovunque: permessi negati o plugin assente = nessun errore.
  */

@@ -2077,3 +2077,266 @@ fn unarchiving_resumes_the_scheduler() {
     assert_eq!(task["attempts"], 2);
     assert_ne!(task["session"].as_str().unwrap(), worker);
 }
+
+// --- richieste all'utente: domande e proposte di impostazioni ---
+
+fn ask(st: &AutomationState, h: &FakeHost, params: Value) -> Result<Value, String> {
+    call(st, h, ORCH, "ask_user", params)
+}
+
+fn view_of(st: &AutomationState, h: &FakeHost) -> BoardView {
+    st.run(h, |r| r.board_view("ws-1"))
+}
+
+#[test]
+fn ask_user_holds_the_task_and_the_answer_wakes_the_owner() {
+    let (st, h) = st_h();
+    st.run(&h, |r| hook(r, ORCH, "finished", None, 1));
+    submit(&st, &h, vec![t("a", &[]), t("b", &["a"])]);
+    let r = ask(&st, &h, json!({"question": "  Which db?  ", "options": ["pg", "sqlite"], "task": "b"})).unwrap();
+    assert_eq!(r, json!({"request": "r-1"}));
+    // Il task in coda e' trattenuto dalla richiesta; la board lo mostra e la notifica parte.
+    let b = task_of(&board_json(&st, &h), "b");
+    assert_eq!(b["held"], true);
+    let note = h.user_requests.lock().unwrap().clone();
+    assert_eq!(
+        note,
+        vec![json!({"workspace_id": "ws-1", "request_id": "r-1", "kind": "question", "title": "Proj", "body": "Which db?"})]
+    );
+    let compact = call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(compact["requests_pending"], json!([{"id": "r-1", "kind": "question", "task": "b"}]));
+    let v = view_of(&st, &h);
+    assert_eq!(v.pending_requests, 1);
+    assert_eq!(v.requests[0].options.as_deref(), Some(&["pg".to_string(), "sqlite".to_string()][..]));
+    assert!(v.requests[0].held_by_request);
+
+    // Risposta dell'utente: rilascia il task e sveglia l'orchestratore.
+    assert!(boards::request_answer(&st, &h, "ws-1", "r-1", "   ").is_err());
+    assert!(boards::request_answer(&st, &h, "ws-9", "r-1", "pg").is_err());
+    assert!(boards::request_answer(&st, &h, "ws-1", "r-9", "pg").unwrap_err().contains("non trovata"));
+    let v = boards::request_answer(&st, &h, "ws-1", "r-1", " postgres ").unwrap();
+    assert_eq!(v.pending_requests, 0);
+    assert_eq!(v.requests[0].status, board::RequestStatus::Answered);
+    assert_eq!(v.requests[0].answer.as_deref(), Some("postgres"));
+    assert!(v.requests[0].resolved_at.is_some());
+    assert_eq!(task_of(&board_json(&st, &h), "b")["held"], false);
+    assert_eq!(wake_count(&h, ORCH), 1, "user_answer e' azionabile");
+    let err = boards::request_answer(&st, &h, "ws-1", "r-1", "again").unwrap_err();
+    assert!(err.contains("gia' stata risolta"), "{err}");
+    let ev = events(&st, &h, ORCH);
+    let ans: Vec<_> = ev.iter().filter(|e| e["kind"] == "user_answer").collect();
+    assert_eq!(ans.len(), 1);
+    assert_eq!(ans[0]["text"], "postgres");
+    assert_eq!(ans[0]["request"], "r-1");
+    assert_eq!(ans[0]["task"], "b");
+    assert!(call(&st, &h, ORCH, "get_board", json!({})).unwrap().get("requests_pending").is_none());
+}
+
+#[test]
+fn dismissing_a_question_releases_only_what_it_held() {
+    let (st, h) = st_h();
+    st.run(&h, |r| hook(r, ORCH, "finished", None, 1));
+    submit(&st, &h, vec![t("a", &[]), json!({"id": "b", "task": "x", "depends_on": ["a"], "held": true}), t("c", &["a"])]);
+    ask(&st, &h, json!({"question": "q1", "task": "b"})).unwrap();
+    ask(&st, &h, json!({"question": "q2", "task": "c"})).unwrap();
+    assert!(!view_of(&st, &h).requests[0].held_by_request, "b era gia' trattenuto dall'utente");
+    boards::request_dismiss(&st, &h, "ws-1", "r-1").unwrap();
+    boards::request_dismiss(&st, &h, "ws-1", "r-2").unwrap();
+    let b = board_json(&st, &h);
+    assert_eq!(task_of(&b, "b")["held"], true, "il hold dell'utente resta");
+    assert_eq!(task_of(&b, "c")["held"], false);
+    let ev = events(&st, &h, ORCH);
+    let texts: Vec<_> = ev.iter().filter(|e| e["kind"] == "user_answer").map(|e| e["text"].clone()).collect();
+    assert_eq!(texts, vec![json!("(dismissed by the user)"), json!("(dismissed by the user)")]);
+    assert!(boards::request_dismiss(&st, &h, "ws-1", "r-1").is_err());
+}
+
+#[test]
+fn ask_user_validation_and_pending_cap() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![t("a", &[])]);
+    let err = |p: Value| ask(&st, &h, p).unwrap_err();
+    assert!(err(json!({})).contains("question"));
+    assert!(err(json!({"question": "  "})).contains("question"));
+    assert!(err(json!({"question": "x".repeat(2001)})).contains("too long"));
+    assert!(err(json!({"question": "q", "options": "a"})).contains("options"));
+    assert!(err(json!({"question": "q", "options": vec!["a"; 9]})).contains("too many options"));
+    assert!(err(json!({"question": "q", "options": ["x".repeat(101)]})).contains("option"));
+    assert!(err(json!({"question": "q", "options": [1]})).contains("options"));
+    assert!(err(json!({"question": "q", "task": "zz"})).contains("unknown task: zz"));
+    assert!(view_of(&st, &h).requests.is_empty(), "nessuna richiesta a meta'");
+    // Un task non in coda non si trattiene.
+    ask(&st, &h, json!({"question": "q", "task": "a"})).unwrap();
+    assert!(!view_of(&st, &h).requests[0].held_by_request);
+    for i in 2..=20 {
+        ask(&st, &h, json!({"question": format!("q{i}")})).unwrap();
+    }
+    let e = err(json!({"question": "one more"}));
+    assert!(e.contains("too many pending requests"), "{e}");
+    // Risolverne una libera un posto; gli id non si riusano.
+    boards::request_dismiss(&st, &h, "ws-1", "r-3").unwrap();
+    assert_eq!(ask(&st, &h, json!({"question": "again"})).unwrap(), json!({"request": "r-21"}));
+}
+
+#[test]
+fn propose_settings_approval_applies_atomically_and_wakes() {
+    let (st, h) = st_h();
+    st.run(&h, |r| hook(r, ORCH, "finished", None, 1));
+    *h.worker_rules.lock().unwrap() = "old rules".to_string();
+    h.repo_cfg.lock().unwrap().insert(
+        "api".to_string(),
+        crate::workspaces::RepoConfig { base_branch: Some("main".into()), setup: vec!["npm ci".into()], ..Default::default() },
+    );
+    let r = call(
+        &st,
+        &h,
+        ORCH,
+        "propose_settings",
+        json!({"reason": "tests are slow", "workspace_rules": "  never run e2e  ",
+               "repos": {"./api/": {"base_branch": "develop", "setup": [" npm ci ", "", "npm run gen"], "remove_force": true},
+                         ".": {"copy_ignored": [".env"], "container_root": null}}}),
+    )
+    .unwrap();
+    assert_eq!(r, json!({"request": "r-1"}));
+    assert_eq!(h.user_requests.lock().unwrap()[0]["kind"], "settings");
+    assert_eq!(h.user_requests.lock().unwrap()[0]["body"], "tests are slow");
+    // Niente cambia finche' l'utente non approva; lo snapshot "current" e' dei soli campi proposti.
+    assert_eq!(*h.worker_rules.lock().unwrap(), "old rules");
+    let req = view_of(&st, &h).requests[0].clone();
+    assert_eq!(req.kind, board::RequestKind::Settings);
+    let j = serde_json::to_value(&req).unwrap();
+    assert_eq!(j["proposal"]["workspace_rules"], "never run e2e");
+    assert_eq!(
+        j["proposal"]["repos"]["api"],
+        json!({"base_branch": "develop", "setup": ["npm ci", "npm run gen"], "remove_force": true})
+    );
+    assert_eq!(j["proposal"]["repos"]["."], json!({"container_root": null, "copy_ignored": [".env"]}));
+    assert_eq!(j["current"]["workspace_rules"], "old rules");
+    assert_eq!(j["current"]["repos"]["api"], json!({"base_branch": "main", "setup": ["npm ci"], "remove_force": false}));
+    assert_eq!(j["current"]["repos"]["."], json!({"container_root": null, "copy_ignored": []}));
+    assert_eq!(call(&st, &h, ORCH, "get_board", json!({})).unwrap()["requests_pending"], json!([{"id": "r-1", "kind": "settings"}]));
+    // Una proposta non si risponde come a una domanda.
+    assert!(boards::request_answer(&st, &h, "ws-1", "r-1", "ok").unwrap_err().contains("non e' una domanda"));
+
+    let v = boards::request_decide(&st, &h, "ws-1", "r-1", true, Some("  go ahead ")).unwrap();
+    assert_eq!(v.requests[0].status, board::RequestStatus::Approved);
+    assert_eq!(v.requests[0].comment.as_deref(), Some("go ahead"));
+    assert_eq!(*h.worker_rules.lock().unwrap(), "never run e2e");
+    let cfg = h.repo_cfg.lock().unwrap().clone();
+    assert_eq!(cfg["api"].base_branch.as_deref(), Some("develop"));
+    assert_eq!(cfg["api"].setup, vec!["npm ci", "npm run gen"]);
+    assert!(cfg["api"].remove_force);
+    assert_eq!(cfg["."].copy_ignored, vec![".env"]);
+    assert_eq!(wake_count(&h, ORCH), 1);
+    let ev = events(&st, &h, ORCH);
+    let d: Vec<_> = ev.iter().filter(|e| e["kind"] == "settings_decision").collect();
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0]["text"], "approved: go ahead");
+    assert_eq!(d[0]["request"], "r-1");
+    assert!(d[0].get("task").is_none());
+    assert!(boards::request_decide(&st, &h, "ws-1", "r-1", true, None).unwrap_err().contains("gia' stata risolta"));
+}
+
+#[test]
+fn propose_settings_rejection_and_dismissal_keep_the_settings() {
+    let (st, h) = st_h();
+    *h.worker_rules.lock().unwrap() = "old".to_string();
+    let p = || call(&st, &h, ORCH, "propose_settings", json!({"reason": "r", "workspace_rules": "new"})).unwrap();
+    p();
+    p();
+    let v = boards::request_decide(&st, &h, "ws-1", "r-1", false, None).unwrap();
+    assert_eq!(v.requests[0].status, board::RequestStatus::Rejected);
+    boards::request_dismiss(&st, &h, "ws-1", "r-2").unwrap();
+    assert_eq!(*h.worker_rules.lock().unwrap(), "old");
+    let ev = events(&st, &h, ORCH);
+    let texts: Vec<_> = ev.iter().filter(|e| e["kind"] == "settings_decision").map(|e| e["text"].clone()).collect();
+    assert_eq!(texts, vec![json!("rejected"), json!("rejected: dismissed by the user")]);
+    // Le regole vuote ("" le svuota) sono una proposta valida.
+    call(&st, &h, ORCH, "propose_settings", json!({"reason": "r", "workspace_rules": ""})).unwrap();
+    boards::request_decide(&st, &h, "ws-1", "r-3", true, None).unwrap();
+    assert_eq!(*h.worker_rules.lock().unwrap(), "");
+}
+
+#[test]
+fn propose_settings_validation_errors_are_english_and_leave_no_request() {
+    let (st, h) = st_h();
+    let err = |p: Value| call(&st, &h, ORCH, "propose_settings", p).unwrap_err();
+    assert!(err(json!({})).contains("reason"));
+    assert!(err(json!({"reason": "r"})).contains("nothing proposed"));
+    assert!(err(json!({"reason": "r", "worker_allow": ["Bash(rm:*)"]})).contains("unknown field"));
+    assert!(err(json!({"reason": "r", "permissions": "bypass"})).contains("unknown field"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"allow": ["x"]}}})).contains("unknown field"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {}}})).contains("no fields"));
+    assert!(err(json!({"reason": "r", "repos": {"../a": {"remove_force": true}}})).contains(".."));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"remove_force": true}, "./a": {"remove_force": false}}})).contains("duplicate"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"base_branch": "bad branch!"}}})).contains("invalid base_branch"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"copy_ignored": ["../x"]}}})).contains("copy_ignored"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"setup": ["a\nb"]}}})).contains("single-line"));
+    assert!(err(json!({"reason": "r", "repos": {"a": {"setup": "x"}}})).contains("invalid proposal"));
+    assert!(err(json!({"reason": "r", "workspace_rules": "x".repeat(4001)})).contains("too long"));
+    assert!(err(json!({"reason": "r", "workspace_rules": 5})).contains("invalid proposal"));
+    assert!(err(json!({"reason": "x".repeat(2001), "workspace_rules": "a"})).contains("too long"));
+    assert!(view_of(&st, &h).requests.is_empty());
+    assert!(h.user_requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn approval_applies_even_if_values_changed_and_bad_comment_changes_nothing() {
+    let (st, h) = st_h();
+    call(&st, &h, ORCH, "propose_settings", json!({"reason": "r", "workspace_rules": "new"})).unwrap();
+    // Le regole cambiano dopo la proposta: l'approvazione le sostituisce comunque.
+    *h.worker_rules.lock().unwrap() = "changed meanwhile".to_string();
+    boards::request_decide(&st, &h, "ws-1", "r-1", true, None).unwrap();
+    assert_eq!(*h.worker_rules.lock().unwrap(), "new");
+    // Commento troppo lungo: errore italiano, la richiesta resta pendente e nulla si applica.
+    call(&st, &h, ORCH, "propose_settings", json!({"reason": "r", "workspace_rules": "n2"})).unwrap();
+    let e = boards::request_decide(&st, &h, "ws-1", "r-2", true, Some(&"c".repeat(2001))).unwrap_err();
+    assert!(e.contains("troppo lungo"), "{e}");
+    assert_eq!(view_of(&st, &h).pending_requests, 1);
+    assert_eq!(*h.worker_rules.lock().unwrap(), "new");
+}
+
+#[test]
+fn user_events_wait_in_the_ownerless_queue() {
+    let (st, h) = st_h();
+    // Board caricata dal disco con una domanda pendente e senza owner.
+    let mut b = Board::new("ws-1");
+    let id = b
+        .add_request(
+            board::NewRequest {
+                kind: board::RequestKind::Question,
+                task: None,
+                question: Some("q".into()),
+                options: None,
+                reason: None,
+                proposal: None,
+                current: None,
+            },
+            1,
+        )
+        .unwrap();
+    let loaded = Board::from_json(&serde_json::to_string(&b).unwrap(), 5).unwrap();
+    st.inner.lock().unwrap().load_board(loaded);
+    boards::request_answer(&st, &h, "ws-1", &id, "yes").unwrap();
+    {
+        let reg = st.inner.lock().unwrap();
+        let q = &reg.board_queues["ws-1"];
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].kind, EventKind::UserAnswer);
+    }
+    // Il prossimo orchestratore che usa un tool di board li riceve.
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    let ev = events(&st, &h, ORCH);
+    assert_eq!(kinds_of(&ev), vec!["user_answer"]);
+    assert_eq!(ev[0]["text"], "yes");
+    assert_eq!(ev[0]["request"], "r-1");
+}
+
+#[test]
+fn request_tools_are_reserved_for_the_orchestrator() {
+    let (st, h) = st_h();
+    submit(&st, &h, vec![t("a", &[])]);
+    let w = session_of(&st, &h, "a");
+    assert!(call(&st, &h, &w, "ask_user", json!({"question": "q"})).is_err());
+    assert!(call(&st, &h, &w, "propose_settings", json!({"reason": "r", "workspace_rules": "x"})).is_err());
+}
