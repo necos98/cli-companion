@@ -288,3 +288,16 @@ L'app si chiamava `muse-companion`. Con la rinomina in `cli-companion`:
 - il comando di default globale non esiste più: gli avvii sono per workspace
   (menu “⋯” della card, Impostazioni → Workspace → Avvii);
 - le variabili d'ambiente dell'updater ora iniziano con `CLI_COMPANION_`.
+
+## Cartella dati (v0.9.2)
+
+L'identifier dell'app è ora `cli-companion`: i dati stanno in
+`%APPDATA%\cli-companion` invece di `%APPDATA%\com.jmagarelli.cli-companion`.
+
+- al primo avvio la vecchia cartella viene copiata per intero nella nuova
+  (quella vecchia resta intatta);
+- il plugin dell'agente già installato punta ancora alla vecchia cartella:
+  reinstallalo da **Impostazioni → Coding agent** (“Rimuovi”, poi “Installa”)
+  per ogni ambiente, dopodiché puoi cancellare
+  `%APPDATA%\com.jmagarelli.cli-companion` e
+  `%LOCALAPPDATA%\com.jmagarelli.cli-companion`.

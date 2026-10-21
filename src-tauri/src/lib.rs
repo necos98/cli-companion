@@ -22,6 +22,9 @@ use workspaces::WorkspaceStore;
 /// dall'identifier, quindi al primo avvio se ne copiano i file.
 const LEGACY_IDENTIFIER: &str = "com.jmagarelli.muse-companion";
 const DATA_FILES: [&str; 1] = ["workspaces.json"];
+/// Identifier di cli-companion fino alla v0.9.1: la sua cartella dati viene
+/// copiata per intero nella nuova.
+const PREVIOUS_IDENTIFIER: &str = "com.jmagarelli.cli-companion";
 
 /// Esegue lavoro bloccante (processi esterni, rete, filesystem) fuori dal
 /// main thread. I comandi Tauri sincroni girano sul main thread: un comando
@@ -51,12 +54,35 @@ pub(crate) fn write_atomic(path: &std::path::Path, data: &str) -> std::io::Resul
     })
 }
 
-/// Copia i dati della vecchia installazione (muse-companion) se la cartella
-/// dati nuova non li ha ancora. I file legacy restano intatti.
+/// Copia ricorsiva di una cartella (i file gia' presenti in `to` sono sovrascritti).
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copia i dati delle vecchie installazioni se la cartella dati nuova non li
+/// ha ancora. Le cartelle legacy restano intatte: il plugin dell'agente gia'
+/// installato punta ancora a quella vecchia finche' non viene reinstallato.
 fn migrate_legacy_data(app: &tauri::App) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
+    if let Some(previous) = dir.parent().map(|p| p.join(PREVIOUS_IDENTIFIER)) {
+        if previous != dir && previous.is_dir() && !dir.exists() {
+            if let Err(e) = copy_dir(&previous, &dir) {
+                eprintln!("migrazione dati da {}: {e}", previous.display());
+            }
+        }
+    }
     let Some(legacy) = dir.parent().map(|p| p.join(LEGACY_IDENTIFIER)) else {
         return;
     };
