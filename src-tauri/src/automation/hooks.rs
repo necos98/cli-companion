@@ -78,7 +78,7 @@ pub(super) fn wsl_hook_argv(command: &str, env: &[(String, String)]) -> Vec<Stri
 }
 
 fn distro_of(ws: &Workspace) -> Result<&str, String> {
-    ws.distro.as_deref().filter(|d| !d.is_empty()).ok_or_else(|| "distro WSL mancante".to_string())
+    ws.distro.as_deref().filter(|d| !d.is_empty()).ok_or_else(|| "WSL distro missing".to_string())
 }
 
 fn out_of(output: std::process::Output) -> GitOut {

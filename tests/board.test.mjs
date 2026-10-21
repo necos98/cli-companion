@@ -5,6 +5,7 @@ import {
   COLUMNS,
   activeCount,
   allowedActions,
+  canDeleteTask,
   canEditModel,
   canOpenTerminal,
   clampMaxParallel,
@@ -13,6 +14,7 @@ import {
   columnTextClass,
   emptyBoard,
   heldCount,
+  orchestratorStatus,
   sanitizeWorkerRules,
   WORKER_RULES_MAX,
   isBoardOf,
@@ -60,6 +62,26 @@ describe("board: colonne", () => {
   });
 });
 
+describe("board: eliminazione task", () => {
+  const b = (...tasks) => ({ tasks });
+  it("queued/cancelled mai avviati e senza dipendenti", () => {
+    const t = task({ id: "a", attempts: 0 });
+    assert.equal(canDeleteTask(t, b(t)), true);
+    const c = task({ id: "a", status: "cancelled", attempts: 0 });
+    assert.equal(canDeleteTask(c, b(c)), true);
+  });
+  it("no se avviato, con worktree/sessione o altro stato", () => {
+    assert.equal(canDeleteTask(task({ id: "a", attempts: 1 }), b()), false);
+    assert.equal(canDeleteTask(task({ id: "a", attempts: 0, session: "s" }), b()), false);
+    assert.equal(canDeleteTask(task({ id: "a", attempts: 0, worktree: { path: "p" } }), b()), false);
+    assert.equal(canDeleteTask(task({ id: "a", status: "failed", attempts: 0 }), b()), false);
+  });
+  it("no se un altro task dipende da lui", () => {
+    const t = task({ id: "a", attempts: 0 });
+    assert.equal(canDeleteTask(t, b(t, task({ id: "b", depends_on: ["a"] }))), false);
+  });
+});
+
 describe("board: azioni consentite", () => {
   it("queued: trattieni / rilascia e annulla", () => {
     assert.deepEqual(allowedActions(task()), ["hold", "cancel"]);
@@ -89,7 +111,7 @@ describe("board: azioni consentite", () => {
     }
   });
   it("ogni azione ha un'etichetta", () => {
-    for (const a of ["hold", "unhold", "retry", "cancel", "done"]) assert.ok(ACTION_LABELS[a]);
+    for (const a of ["hold", "unhold", "retry", "cancel", "done", "delete"]) assert.ok(ACTION_LABELS[a]);
   });
   it("apri terminale solo con una sessione", () => {
     assert.equal(canOpenTerminal({ session: "t1" }), true);
@@ -252,5 +274,18 @@ describe("task fuori board e regole dei worker", () => {
 
   it("la UI non offre done da queued (serve una nota: lo fa l'orchestratore)", () => {
     assert.equal(allowedActions({ status: "queued", held: false }).includes("done"), false);
+  });
+});
+
+describe("orchestratorStatus", () => {
+  it("mostra solo gli stati che richiedono un messaggio", () => {
+    for (const s of ["live", "window", null, undefined]) assert.equal(orchestratorStatus(s), null);
+    assert.equal(orchestratorStatus("starting").canStart, false);
+    assert.equal(orchestratorStatus("waiting").tone, "subtle");
+  });
+  it("stopped e' un avviso con pulsante", () => {
+    const st = orchestratorStatus("stopped");
+    assert.equal(st.tone, "warning");
+    assert.equal(st.canStart, true);
   });
 });

@@ -21,6 +21,8 @@ interface Props {
   task: Task;
   /** Azione in corso (disabilita i pulsanti). */
   busy: boolean;
+  /** Il task può essere eliminato dalla board (vedi canDeleteTask). */
+  canDelete?: boolean;
   onAction: (action: TaskAction) => void;
   /** Cambia il modello del task (null = predefinito del workspace). */
   onSetModel: (model: string | null) => void;
@@ -68,6 +70,7 @@ const TEST_LABELS: Record<string, string> = {
 export default function TaskDetails({
   task,
   busy,
+  canDelete,
   onAction,
   onSetModel,
   onOpenTerminal,
@@ -80,7 +83,10 @@ export default function TaskDetails({
   const modelProblem = modelError(modelDraft);
   const editableModel = canEditModel(task.status);
   const sub = workerSubStatus(task);
-  const actions = allowedActions(task);
+  const actions: TaskAction[] = [
+    ...allowedActions(task),
+    ...(canDelete ? (["delete"] as TaskAction[]) : []),
+  ];
   const report = task.report;
   return (
     <aside className="flex w-[340px] flex-shrink-0 flex-col border-l bg-base">
@@ -130,7 +136,7 @@ export default function TaskDetails({
             <Button
               key={a}
               size="sm"
-              variant={a === "cancel" ? "destructive" : "secondary"}
+              variant={a === "cancel" || a === "delete" ? "destructive" : "secondary"}
               disabled={busy}
               className="h-7 px-2.5 text-xs"
               onClick={() => onAction(a)}

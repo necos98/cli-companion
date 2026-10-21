@@ -15,6 +15,18 @@
 //!   `WINDOW_CLOSED_TEXT` quando e' idle; poi drain: idle, nessun task in
 //!   esecuzione e nessun evento azionabile in coda -> il tab si chiude.
 //!
+//! Orchestratore su richiesta: in ogni workspace lo scheduler non avvia
+//! task se nessun orchestratore e' disponibile (owner vivo, manuale vivo,
+//! tab automatico/su richiesta vivo o in attesa). Il flag e' in cache per
+//! workspace (`AutoCore::orch_avail`): lo ricalcola ogni giro e lo aggiornano
+//! subito le transizioni (tool di board, uscita/chiusura del tab, avvio
+//! manuale, apertura). I workspace NON automatici (o a schedule spento)
+//! ottengono un tab "Orchestratore" quando la board ne ha bisogno (task
+//! avviabili, review, eventi azionabili); si chiude da solo quando e' idle e
+//! la board non ne ha piu' bisogno. Chiuso dall'utente o troppi fallimenti:
+//! non si riapre finche' la board non smette di servire o l'utente non lo
+//! chiede (`start_board_orchestrator`).
+//!
 //! Un orchestratore aperto dall'utente non viene mai toccato.
 
 use super::*;
@@ -53,6 +65,12 @@ const ORCHESTRATOR_TITLE: &str = "Orchestratore automatico";
 /// modello: inglese.
 pub const ORCHESTRATOR_BOOTSTRAP_PROMPT: &str = "You are the automatic orchestrator of this workspace for the current execution window. Load the cli-companion-notify:orchestrate skill if your agent supports skills, call get_workflow and get_board, then carry the plan forward: integrate the tasks in review, handle failures and help requests, and add work only through the board. When nothing is left to do right now, end your turn.";
 
+/// Titolo del tab dell'orchestratore su richiesta.
+const ON_DEMAND_TITLE: &str = "Orchestratore";
+
+/// Prompt di avvio dell'orchestratore su richiesta (stesse regole ASCII).
+pub const ON_DEMAND_BOOTSTRAP_PROMPT: &str = "You are the orchestrator of this workspace board, opened by cli-companion because the board has work and no orchestrator was running. Load the cli-companion-notify:orchestrate skill if your agent supports skills, call get_workflow, get_board and get_events, then carry the plan forward: integrate the tasks in review, handle failures and help requests, and add work only through the board. When nothing is left to do right now, end your turn.";
+
 /// Digitato nel prompt dell'orchestratore automatico alla chiusura della
 /// finestra (quando e' idle).
 pub const WINDOW_CLOSED_TEXT: &str = "[cli-companion] The execution window is closed: no new tasks will start. Call get_events, integrate the tasks that complete (merge, test, set_task_status), handle failures, do not plan new work, then end your turn.";
@@ -74,6 +92,9 @@ struct AutoTab {
     text_sent: bool,
     /// Quando e' iniziato il drain (vedi `DRAIN_MAX_MS`).
     closing_since: Option<i64>,
+    /// Aperto su richiesta (fuori dalla finestra automatica): si chiude da
+    /// solo quando e' idle e la board non ne ha piu' bisogno.
+    on_demand: bool,
 }
 
 /// Orchestratore avviato a mano (avvio integrato) registrato dal frontend.
@@ -112,6 +133,10 @@ pub(super) struct AutoCore {
     pub(super) info: HashMap<String, AutomationInfo>,
     /// Workspace con l'orchestratore automatico attivo (ultimo giro).
     enabled: HashSet<String>,
+    /// Workspace con un orchestratore disponibile (gate dello scheduler).
+    pub(super) orch_avail: HashSet<String>,
+    /// `orchestrator` esposto per ogni workspace (assente = null).
+    pub(super) orch_view: HashMap<String, &'static str>,
     awake: bool,
     /// Numero d'ordine degli effetti `KeepAwake`.
     awake_seq: u64,
@@ -128,7 +153,8 @@ pub struct TickEnv<'a> {
     /// Il tab ha un pty vivo?
     pub live: &'a dyn Fn(&str) -> bool,
     /// Comando di avvio dell'orchestratore automatico.
-    pub command: &'a dyn Fn(&Workspace, &AutoOrchestrate) -> Result<String, String>,
+    /// Il terzo argomento e' il prompt di avvio.
+    pub command: &'a dyn Fn(&Workspace, &AutoOrchestrate, &'static str) -> Result<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +215,7 @@ impl Registry {
             return Err("Un orchestratore e' gia' attivo in questo workspace".to_string());
         }
         self.auto.manual.insert(tab.to_string(), ManualOrch { ws: ws.to_string(), registered_at: now });
+        self.orch_alive_now(ws);
         Ok(())
     }
 
@@ -198,6 +225,85 @@ impl Registry {
             .and_then(|b| b.owner.as_deref())
             .filter(|o| !o.is_empty())
             .is_some_and(|o| (env.live)(o))
+    }
+
+    /// Eventi azionabili della board ancora da consegnare: in attesa di un
+    /// owner (coda della board) o nella coda dell'owner (anche morto).
+    fn board_events_pending(&self, ws: &str) -> bool {
+        let ownerless = self.board_queues.get(ws).is_some_and(|q| q.iter().any(|e| e.kind.is_actionable()));
+        let owner = self.boards.get(ws).and_then(|b| b.owner.as_deref()).filter(|o| !o.is_empty());
+        ownerless
+            || owner.and_then(|o| self.queues.get(o)).is_some_and(|q| {
+                q.events.iter().any(|e| e.kind.is_actionable() && e.board.as_deref() == Some(ws))
+            })
+    }
+
+    /// La board ha bisogno di un orchestratore: task avviabili (non in pausa,
+    /// non trattenuti, dipendenze fatte; `window_blocked`: l'avvio e' fermo
+    /// per la finestra), task in review o eventi azionabili da consegnare.
+    fn board_needs(&self, ws: &str, window_blocked: bool) -> bool {
+        let Some(b) = self.boards.get(ws) else {
+            return false;
+        };
+        let startable = !window_blocked
+            && !b.paused
+            && b.tasks.iter().any(|t| t.status == TaskStatus::Queued && !t.held && b.deps_done(t));
+        startable || b.tasks.iter().any(|t| t.status == TaskStatus::Review) || self.board_events_pending(ws)
+    }
+
+    /// Il gate della finestra ferma l'avvio dei task adesso (ultimo giro).
+    fn window_blocked_now(&self, ws: &str) -> bool {
+        self.auto.enabled.contains(ws) && self.auto.sched.enabled && !self.auto.window_open
+    }
+
+    /// Aggiorna il flag di disponibilita'; alla transizione false->true la
+    /// board riparte (i task in coda si avviano subito).
+    fn set_orch_avail(&mut self, ws: &str, avail: bool) {
+        if !avail {
+            self.auto.orch_avail.remove(ws);
+        } else if self.auto.orch_avail.insert(ws.to_string()) {
+            self.mark_dirty(ws);
+        }
+    }
+
+    /// `orchestrator` esposto: ripubblica solo se cambia.
+    fn set_orch_view(&mut self, ws: &str, state: Option<&'static str>) {
+        let changed = match state {
+            Some(s) => self.auto.orch_view.insert(ws.to_string(), s) != Some(s),
+            None => self.auto.orch_view.remove(ws).is_some(),
+        };
+        if changed {
+            self.mark_dirty(ws);
+        }
+    }
+
+    /// Prova di vita di un orchestratore del workspace.
+    pub(super) fn orch_alive_now(&mut self, ws: &str) {
+        self.set_orch_avail(ws, true);
+        self.set_orch_view(ws, Some("live"));
+    }
+
+    /// Il tab non c'e' piu': i workspace di cui era l'orchestratore (owner,
+    /// manuale o automatico) perdono la disponibilita' fino al prossimo giro.
+    fn orch_tab_gone(&mut self, tab: &str) {
+        let mut ids: Vec<String> =
+            self.boards.iter().filter(|(_, b)| b.owner.as_deref() == Some(tab)).map(|(k, _)| k.clone()).collect();
+        ids.extend(self.auto.manual.get(tab).map(|m| m.ws.clone()));
+        ids.extend(self.auto.ws.iter().filter(|(_, e)| e.tab.as_ref().is_some_and(|t| t.id == tab)).map(|(k, _)| k.clone()));
+        for id in ids {
+            self.set_orch_avail(&id, false);
+            self.set_orch_view(&id, None);
+        }
+    }
+
+    /// L'utente chiede l'orchestratore della board: azzera chiusura e
+    /// fallimenti (il giro che segue lo apre se serve).
+    pub fn orch_reset(&mut self, ws: &str) {
+        if let Some(e) = self.auto.ws.get_mut(ws) {
+            e.dismissed = false;
+            e.fails = 0;
+        }
+        self.mark_dirty(ws);
     }
 
     /// Il tab puo' chiudersi: nessun task in esecuzione (o in avvio) e
@@ -215,6 +321,15 @@ impl Registry {
             return;
         };
         let idle = self.last_hook.get(&t.id).map(String::as_str) == Some("finished");
+        // Su richiesta: idle, niente in corso/da consegnare e la board non
+        // ne ha piu' bisogno -> si chiude (senza testo di finestra).
+        if t.on_demand {
+            if idle && self.drainable(ws, &t.id) && !self.board_needs(ws, self.window_blocked_now(ws)) {
+                self.effects.push(Effect::Close { tab_id: t.id.clone(), delay: Duration::ZERO });
+                e.tab = None;
+            }
+            return;
+        }
         if !t.closing || !idle {
             return;
         }
@@ -255,7 +370,10 @@ impl Registry {
                 }
                 e.tab = None;
                 self.effects.push(Effect::Close { tab_id: tab.to_string(), delay: Duration::ZERO });
-                self.auto.ws.insert(ws, e);
+                self.auto.ws.insert(ws.clone(), e);
+                self.orch_tab_gone(tab);
+                self.set_orch_avail(&ws, false);
+                self.set_orch_view(&ws, None);
                 self.update_awake();
                 return;
             }
@@ -271,6 +389,7 @@ impl Registry {
     /// consumato (max `MAX_SPAWN_FAILS` per finestra) e il giro successivo
     /// lo riapre se c'e' ancora lavoro.
     pub(super) fn auto_tab_exited(&mut self, tab: &str, _now: i64) {
+        self.orch_tab_gone(tab);
         self.last_hook.remove(tab);
         self.auto.manual.remove(tab);
         for e in self.auto.ws.values_mut() {
@@ -288,6 +407,7 @@ impl Registry {
     /// dimentica (e, se non stava chiudendo, e' stato l'utente: l'uscita
     /// spontanea arriva prima via `auto_tab_exited` e qui non c'e' piu').
     pub(super) fn auto_tab_closed(&mut self, tab: &str) {
+        self.orch_tab_gone(tab);
         self.last_hook.remove(tab);
         self.auto.manual.remove(tab);
         for e in self.auto.ws.values_mut() {
@@ -304,6 +424,8 @@ impl Registry {
     pub fn auto_forget(&mut self, ws: &str) {
         self.auto.ws.remove(ws);
         self.auto.manual.retain(|_, m| m.ws != ws);
+        self.auto.orch_avail.remove(ws);
+        self.auto.orch_view.remove(ws);
         if self.auto.info.remove(ws).is_some() {
             self.mark_dirty(ws);
         }
@@ -353,6 +475,9 @@ impl Registry {
         }
         let mut ids: Vec<String> = self.auto.ws.keys().cloned().collect();
         ids.extend(enabled.keys().map(|k| k.to_string()).filter(|k| !self.auto.ws.contains_key(k)));
+        // Anche le board dei workspace non automatici (orchestratore su richiesta).
+        let more: Vec<String> = self.boards.keys().filter(|k| !ids.contains(k)).cloned().collect();
+        ids.extend(more);
         for id in &ids {
             self.auto_step(id, enabled.get(id.as_str()).copied(), sc.window_open, env, now);
         }
@@ -369,6 +494,8 @@ impl Registry {
         now: i64,
     ) {
         let active = open && cfg.is_some();
+        // Finestre in vigore per questo workspace (automatico con schedule attivo).
+        let auto_mode = cfg.is_some() && self.auto.sched.enabled;
         self.auto.manual.retain(|t, m| Self::manual_alive(m, t, env, now));
         let mut e = self.auto.ws.remove(id).unwrap_or_default();
         // Gate dello scheduler: a ogni transizione la board riparte.
@@ -395,9 +522,9 @@ impl Registry {
                 e.tab = None;
             }
         }
-        // Chiusura: finestra chiusa o automatismo spento.
+        // Chiusura: finestra chiusa o automatismo spento (non per il tab su richiesta).
         if !active {
-            if let Some(t) = e.tab.as_mut() {
+            if let Some(t) = e.tab.as_mut().filter(|t| !t.on_demand) {
                 t.closing = true;
                 t.closing_since.get_or_insert(now);
             }
@@ -410,12 +537,33 @@ impl Registry {
             }
             e.drain_forced = true;
         }
-        // Apertura: lavoro in board e nessun owner con tab vivo.
-        if let (true, Some((ws, a))) = (active, cfg) {
-            if e.tab.is_none() && !e.dismissed && e.fails < MAX_SPAWN_FAILS && self.has_work(id) && !self.owner_alive(id, env)
-                && !self.manual_orchestrator_alive(id, env, now)
-            {
-                match (env.command)(ws, a) {
+        // La board non serve piu' (e nessun tab): chiusura/fallimenti si azzerano,
+        // la prossima richiesta riparte da capo.
+        let blocked = auto_mode && !open;
+        let needs = self.board_needs(id, blocked);
+        if !active && !needs && e.tab.is_none() {
+            e.dismissed = false;
+            e.fails = 0;
+        }
+        let owner_or_manual = self.owner_alive(id, env) || self.manual_orchestrator_alive(id, env, now);
+        // Apertura: lavoro in board e nessun orchestratore vivo. Nella finestra
+        // (workspace automatico) l'orchestratore automatico; negli altri casi quello
+        // su richiesta; fuori dalla finestra di un workspace automatico, nessuno.
+        let wants = if active { self.has_work(id) } else { !auto_mode && needs };
+        let ws_cfg = cfg.map(|(w, a)| (w, a.clone())).or_else(|| {
+            let w = env.workspaces.iter().find(|w| w.id == id)?;
+            let a = w.auto_orchestrate.clone().unwrap_or(AutoOrchestrate {
+                enabled: false,
+                agent: DEFAULT_AGENT.to_string(),
+                model: None,
+            });
+            Some((w, a))
+        });
+        if let (true, Some((ws, a))) = (wants, ws_cfg) {
+            if e.tab.is_none() && !e.dismissed && e.fails < MAX_SPAWN_FAILS && !owner_or_manual {
+                let (prompt, title) =
+                    if active { (ORCHESTRATOR_BOOTSTRAP_PROMPT, ORCHESTRATOR_TITLE) } else { (ON_DEMAND_BOOTSTRAP_PROMPT, ON_DEMAND_TITLE) };
+                match (env.command)(ws, &a, prompt) {
                     Ok(command) => {
                         self.next_worker += 1;
                         let tab_id = format!("auto-{now}-{}", self.next_worker);
@@ -424,22 +572,45 @@ impl Registry {
                             workspace_id: ws.id.clone(),
                             command,
                             cwd: None,
-                            title: ORCHESTRATOR_TITLE.to_string(),
+                            title: title.to_string(),
                             parent_tab_id: String::new(),
                             agent_id: a.agent.clone(),
                             role: Role::Orchestrator,
                         };
                         self.effects.push(Effect::SpawnTab(Box::new(ev)));
-                        e.tab = Some(AutoTab { id: tab_id, spawned_at: now, seen_live: false, closing: false, text_sent: false, closing_since: None });
+                        e.tab = Some(AutoTab {
+                            id: tab_id,
+                            spawned_at: now,
+                            seen_live: false,
+                            closing: false,
+                            text_sent: false,
+                            closing_since: None,
+                            on_demand: !active,
+                        });
                     }
                     Err(err) => {
-                        eprintln!("orchestratore automatico {id}: {err}");
+                        eprintln!("orchestratore {id}: {err}");
                         e.fails = MAX_SPAWN_FAILS;
                     }
                 }
             }
         }
-        if e.tab.is_some() || cfg.is_some() || e.drain_forced {
+        // Disponibilita' (gate dello scheduler) e stato esposto.
+        let tab_live = e.tab.as_ref().is_some_and(|t| t.seen_live);
+        let tab_starting = e.tab.as_ref().is_some_and(|t| !t.seen_live);
+        self.set_orch_avail(id, owner_or_manual || tab_live || tab_starting);
+        let state = if owner_or_manual || tab_live {
+            Some("live")
+        } else if tab_starting {
+            Some("starting")
+        } else if blocked {
+            (needs || self.has_work(id)).then_some("window")
+        } else {
+            let wants_any = if active { self.has_work(id) } else { needs };
+            wants_any.then_some(if e.dismissed || e.fails >= MAX_SPAWN_FAILS { "stopped" } else { "waiting" })
+        };
+        self.set_orch_view(id, state);
+        if e.tab.is_some() || cfg.is_some() || e.drain_forced || e.dismissed || e.fails > 0 {
             self.auto.ws.insert(id.to_string(), e);
         }
     }
@@ -487,9 +658,9 @@ impl AutomationState {
         let minute = host.local_minute(now);
         let workspaces = host.workspaces();
         let live = |t: &str| host.tab_workspace(t).is_some();
-        let command = |ws: &Workspace, a: &AutoOrchestrate| {
+        let command = |ws: &Workspace, a: &AutoOrchestrate, prompt: &'static str| {
             let req = AutomationRequest {
-                bootstrap_prompt: ORCHESTRATOR_BOOTSTRAP_PROMPT,
+                bootstrap_prompt: prompt,
                 permission_mode: ws.worker_permission_mode(),
                 model: a.model.as_deref(),
                 settings_path: None,
@@ -507,9 +678,21 @@ impl AutomationState {
             return Err("workspace non trovato".to_string());
         }
         let live = |t: &str| host.tab_workspace(t).is_some();
-        let command = |_: &Workspace, _: &AutoOrchestrate| Err(String::new());
+        let command = |_: &Workspace, _: &AutoOrchestrate, _: &'static str| Err(String::new());
         let env = TickEnv { minute: 0, workspaces: &[], live: &live, command: &command };
         self.run(host, |r| r.manual_orchestrator_open(ws, tab, &env, now))
+    }
+
+    /// `start_board_orchestrator`: l'utente chiede l'orchestratore della
+    /// board (dopo averlo chiuso o troppi fallimenti): azzera lo stato e fa
+    /// un giro subito, che lo apre se serve. Ritorna la vista della board.
+    pub fn start_board_orchestrator<H: Host>(&self, host: &H, ws: &str, now: i64) -> Result<BoardView, String> {
+        if host.workspace(ws).is_none() {
+            return Err("workspace non trovato".to_string());
+        }
+        self.run(host, |r| r.orch_reset(ws));
+        self.reconcile_at(host, now, false);
+        Ok(self.run(host, |r| r.board_view(ws)))
     }
 
     /// Cambio di configurazione (schedule o workspace): giro immediato.
@@ -580,6 +763,16 @@ pub(super) fn data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 
 pub(super) fn workflows_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     data_dir(app).map(|d| d.join("workflows"))
+}
+
+/// Apre l'orchestratore della board del workspace se serve e non c'e' (dopo
+/// che l'utente lo ha chiuso o dopo troppi fallimenti). Ritorna la board.
+#[tauri::command]
+pub async fn start_board_orchestrator(app: AppHandle, workspace_id: String) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        app.state::<AutomationState>().start_board_orchestrator(&TauriHost(app.clone()), &workspace_id, now_millis())
+    })
+    .await
 }
 
 #[tauri::command]

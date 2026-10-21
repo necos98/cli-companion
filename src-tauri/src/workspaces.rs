@@ -338,7 +338,7 @@ fn add_workspace_blocking(
     let distro = if kind == "wsl" {
         let distro = distro.unwrap_or_default().trim().to_string();
         if distro.is_empty() {
-            return Err("distro WSL mancante".to_string());
+            return Err("WSL distro missing".to_string());
         }
         // Accetta anche path incollati in formato Windows o \\wsl$\...
         if !path.starts_with('/') {
@@ -801,7 +801,7 @@ fn explorer_target(ws: &Workspace) -> Result<String, String> {
             .distro
             .as_deref()
             .filter(|d| !d.is_empty())
-            .ok_or_else(|| "distro WSL mancante".to_string())?;
+            .ok_or_else(|| "WSL distro missing".to_string())?;
         Ok(wsl_unc_path(distro, &ws.path))
     } else {
         Ok(ws.path.clone())

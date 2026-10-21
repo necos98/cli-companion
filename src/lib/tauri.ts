@@ -323,6 +323,10 @@ export const api = {
   // Board dei task (backend: src-tauri, contratto in docs/BOARD.MD).
   boardGet: (workspaceId: string) => invoke<BoardView>("board_get", { workspaceId }),
 
+  /** Azzera il blocco e fa aprire subito l'orchestratore se serve. */
+  startBoardOrchestrator: (workspaceId: string) =>
+    invoke<void>("start_board_orchestrator", { workspaceId }),
+
   /** Repository del workspace: "." se la root è un repo, più le sottocartelle con un .git. */
   workspaceDetectRepos: (workspaceId: string) =>
     invoke<string[]>("workspace_detect_repos", { workspaceId }),

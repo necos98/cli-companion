@@ -158,6 +158,7 @@ pub fn run() {
             automation::board_task_action,
             automation::board_task_set_model,
             automation::auto::schedule_get,
+            automation::auto::start_board_orchestrator,
             automation::auto::schedule_set,
             automation::auto::workflow_get,
             automation::auto::workflow_save,

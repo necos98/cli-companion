@@ -26,7 +26,7 @@ export type TaskColumn =
   | "cancelled";
 
 /** Azioni dell'utente sul task (`board_task_action`). */
-export type TaskAction = "hold" | "unhold" | "retry" | "cancel" | "done";
+export type TaskAction = "hold" | "unhold" | "retry" | "cancel" | "done" | "delete";
 
 export interface TaskWorktree {
   path: string;
@@ -117,6 +117,42 @@ export interface BoardView {
   tasks: Task[];
   /** Presente solo per i workspace automatici (docs/SCHEDULE.MD). */
   automation?: BoardAutomation | null;
+  /** Stato dell'orchestratore richiesto dallo scheduler; assente nei payload vecchi. */
+  orchestrator?: OrchestratorState | null;
+}
+
+export type OrchestratorState = "live" | "starting" | "waiting" | "stopped" | "window";
+
+export interface OrchestratorStatus {
+  text: string;
+  tone: "subtle" | "warning";
+  /** Mostra il pulsante "Avvia orchestratore". */
+  canStart: boolean;
+}
+
+/** Messaggio da mostrare per lo stato dell'orchestratore (null = niente da mostrare). */
+export function orchestratorStatus(
+  state: OrchestratorState | null | undefined,
+): OrchestratorStatus | null {
+  switch (state) {
+    case "starting":
+      return { text: "Avvio dell'orchestratore...", tone: "subtle", canStart: false };
+    case "waiting":
+      return {
+        text: "In attesa dell'orchestratore: i task partono quando è attivo",
+        tone: "subtle",
+        canStart: false,
+      };
+    case "stopped":
+      return {
+        text: "Nessun orchestratore attivo: i task non partono",
+        tone: "warning",
+        canStart: true,
+      };
+    default:
+      // "window" lo spiega già il badge dell'automazione; live/null: nulla da dire.
+      return null;
+  }
 }
 
 export const MAX_PARALLEL_MIN = 1;
@@ -230,6 +266,7 @@ export const ACTION_LABELS: Record<TaskAction, string> = {
   retry: "Riprova",
   cancel: "Annulla",
   done: "Segna come fatto",
+  delete: "Elimina",
 };
 
 /**
@@ -263,6 +300,19 @@ export function allowedActions(
   }
   if (task.status !== "done" && task.status !== "cancelled") out.push("cancel");
   return out;
+}
+
+/**
+ * Un task si elimina solo se non ha mai girato (queued/cancelled, 0 tentativi, nessun
+ * worktree né sessione) e nessun altro task lo elenca in `depends_on`.
+ */
+export function canDeleteTask(
+  task: Pick<Task, "id" | "status" | "attempts" | "worktree" | "session">,
+  board: { tasks: Pick<Task, "id" | "depends_on">[] },
+): boolean {
+  if (task.status !== "queued" && task.status !== "cancelled") return false;
+  if (task.attempts !== 0 || task.worktree || task.session) return false;
+  return !board.tasks.some((t) => t.id !== task.id && (t.depends_on ?? []).includes(task.id));
 }
 
 /** "Apri terminale" ha senso solo se il task ha un tab worker. */

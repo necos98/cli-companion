@@ -227,6 +227,10 @@ pub struct Board {
     /// imposta il registro a ogni pubblicazione.
     #[serde(skip)]
     pub automation: Option<crate::schedule::AutomationInfo>,
+    /// Stato dell'orchestratore del workspace (vedi `BoardView::orchestrator`);
+    /// lo imposta il registro a ogni pubblicazione.
+    #[serde(skip)]
+    pub orchestrator: Option<String>,
     /// Repository rilevati nel workspace (calcolati su richiesta, in cache
     /// fino a submit_plan / set_board).
     #[serde(skip)]
@@ -249,6 +253,7 @@ impl Default for Board {
             rev: 0,
             plan_completed_sent: false,
             automation: None,
+            orchestrator: None,
             repos: None,
         }
     }
@@ -281,6 +286,13 @@ pub struct BoardView {
     pub tasks: Vec<TaskView>,
     /// Null per i workspace non automatici.
     pub automation: Option<crate::schedule::AutomationInfo>,
+    /// Orchestratore del workspace: `live` (disponibile), `starting` (aperto
+    /// dall'app, non ancora vivo), `waiting` (serve e l'app lo apre al
+    /// prossimo giro), `stopped` (serve ma l'app non lo riapre: chiuso
+    /// dall'utente o troppi tentativi), `window` (serve, fuori dalla finestra
+    /// automatica); null se la board non ne ha bisogno e nessuno e' vivo.
+    /// Non e' in `to_compact_json`.
+    pub orchestrator: Option<String>,
 }
 
 /// Lunghezza massima di `note` e `summary` nelle righe compatte.
@@ -1204,6 +1216,7 @@ impl Board {
                 .map(|t| TaskView { task: t.clone(), column: self.column(t) })
                 .collect(),
             automation: self.automation.clone(),
+            orchestrator: self.orchestrator.clone(),
         }
     }
 
@@ -1352,6 +1365,42 @@ impl Board {
             ),
             _ => "unsupported status change".to_string(),
         })
+    }
+
+    /// `deleted`: solo un task in coda o annullato che non e' mai partito, senza
+    /// worktree ne' sessione e che nessun altro task elenca in `depends_on`.
+    pub fn check_delete(&self, id: &str) -> Result<(), String> {
+        let t = self.task(id).ok_or_else(|| format!("task not found: {id}"))?;
+        if !matches!(t.status, TaskStatus::Queued | TaskStatus::Cancelled) {
+            return Err(format!(
+                "task '{id}' is {}: only queued or cancelled tasks that never started can be deleted",
+                t.status.as_str()
+            ));
+        }
+        if t.attempts > 0 || t.worktree.is_some() || t.session.is_some() {
+            return Err(format!(
+                "task '{id}' was already started (attempts: {}{}): only tasks that never started can be deleted; cancel it instead",
+                t.attempts,
+                if t.worktree.is_some() { ", has a worktree" } else { "" }
+            ));
+        }
+        let dependents: Vec<&str> =
+            self.tasks.iter().filter(|x| x.depends_on.iter().any(|d| d == id)).map(|x| x.id.as_str()).collect();
+        if !dependents.is_empty() {
+            return Err(format!(
+                "task '{id}' cannot be deleted: it is a dependency of {}. Remove it from their depends_on (update_task) or delete them first",
+                dependents.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Toglie il task dalla board (dopo `check_delete`).
+    pub fn delete_task(&mut self, id: &str, now: i64) -> Result<(), String> {
+        self.check_delete(id)?;
+        self.tasks.retain(|t| t.id != id);
+        self.updated_at = now;
+        Ok(())
     }
 
     pub fn apply_status(&mut self, id: &str, to: TaskStatus, note: Option<String>, now: i64) -> Result<(), String> {

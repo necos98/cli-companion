@@ -14,9 +14,11 @@ import {
   EMPTY_BOARD_TEXT,
   MAX_PARALLEL_MAX,
   MAX_PARALLEL_MIN,
+  canDeleteTask,
   clampMaxParallel,
   columnCounts,
   heldCount,
+  orchestratorStatus,
   columnDotClass,
   columnHex,
   columnLabel,
@@ -54,6 +56,7 @@ export default function BoardView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   const tasks = board?.tasks ?? [];
 
@@ -123,11 +126,24 @@ export default function BoardView({
     [onBoard],
   );
 
+  const startOrchestrator = async () => {
+    setError(null);
+    setStarting(true);
+    try {
+      await api.startBoardOrchestrator(workspaceId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const setMaxParallel = (n: number) =>
     void run(() => api.boardSet(workspaceId, { maxParallel: clampMaxParallel(n) }));
   const setPaused = (paused: boolean) => void run(() => api.boardSet(workspaceId, { paused }));
   const doAction = (a: TaskAction) => {
     if (!selected) return;
+    if (a === "delete" && !window.confirm(`Eliminare il task ${selected.id}? Non sarà più sulla board.`)) return;
     void run(() => api.boardTaskAction(workspaceId, selected.id, a));
   };
 
@@ -144,6 +160,7 @@ export default function BoardView({
   const shownError = error ?? loadError;
   const badge = automationBadgeText(board?.automation);
   const tone = automationBadgeTone(board?.automation);
+  const orch = orchestratorStatus(board?.orchestrator);
   // Branch di integrazione gestiti dalla board (repo → branch), in un tooltip.
   const integrations = useMemo(() => {
     const entries = Object.entries(board?.integrations ?? {});
@@ -238,6 +255,29 @@ export default function BoardView({
           </span>
         )}
 
+        {orch && (
+          <span
+            className={cn(
+              "flex items-center gap-1.5 text-[11px]",
+              orch.tone === "warning" ? "text-status-attention" : "text-muted-foreground",
+            )}
+          >
+            {orch.text}
+            {orch.canStart && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={starting}
+                onClick={() => void startOrchestrator()}
+                className="h-6 gap-1.5 px-2 text-[11px]"
+              >
+                {starting && <Loader2 className="!size-3 animate-spin" />}
+                Avvia orchestratore
+              </Button>
+            )}
+          </span>
+        )}
+
         <ul className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1" aria-label="Legenda">
           {COLUMNS.map((c) => (
             <li key={c} className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -301,6 +341,7 @@ export default function BoardView({
           <TaskDetails
             task={selected}
             busy={busy}
+            canDelete={board ? canDeleteTask(selected, board) : false}
             onAction={doAction}
             onSetModel={setTaskModel}
             onOpenTerminal={onOpenTerminal}

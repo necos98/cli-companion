@@ -159,6 +159,33 @@ l'evento `plan_completed`, una volta sola per transizione. Il testo dà i conteg
 Se tutti i task sono stati annullati senza mai partire (`attempts` 0) non parte nessun
 evento: non c'è nulla da riferire (l'orchestratore li ha annullati lui).
 
+### Orchestratore disponibile (on demand)
+
+Lo scheduler avvia un nuovo task solo se nel workspace c'è un orchestratore
+disponibile: il tab dell'owner della board vivo, un orchestratore aperto
+dall'utente o quello aperto dall'app. I worker già in esecuzione non vengono
+mai fermati.
+
+- Se la board ha bisogno di un orchestratore (non in pausa con task avviabili,
+  oppure task in `review`, oppure richieste di aiuto/eventi in coda) e nessuno è
+  vivo, l'app ne apre uno da sola (**on demand**, in qualunque workspace, non
+  solo in quelli automatici) con un prompt di avvio che gli dice di caricare la
+  skill orchestrate, chiamare `get_workflow`, `get_board` e `get_events` e
+  portare avanti il piano. Lo chiude da sola quando è idle e la board non
+  richiede altro.
+- I workspace con l'orchestratore automatico mantengono le finestre di
+  esecuzione (`docs/SCHEDULE.MD`): fuori finestra non parte nulla e non si apre
+  nulla.
+- Se l'utente chiude l'orchestratore aperto dall'app, o l'avvio fallisce 3
+  volte, l'app non lo riapre: la vista Board mostra "Nessun orchestratore
+  attivo" con il pulsante "Avvia orchestratore". La vista mostra anche gli
+  stati "in attesa" e "avvio".
+- Per gli orchestratori: chiudere il turno è sicuro; un nuovo orchestratore parte
+  da `get_board` e `get_events` per recuperare gli eventi pendenti. La
+  preparazione del worktree spetta agli hook di setup del repo: il worker parte
+  appena worktree e setup sono pronti, l'orchestratore non può prepararlo nel
+  mezzo.
+
 ## Worktree gestiti dall'app
 
 Per i task con `isolation: "worktree"`:
@@ -378,16 +405,19 @@ Nuovi (descrizioni in inglese, come gli altri):
     obbligatoria, il task diventa `external`; nessuna pulizia (non ha worktree). La UI non
     offre questa azione.
   - `cancelled`: da qualunque stato non `done`; se `running` chiude il tab.
+  - `deleted`: rimuove dalla board un task mai avviato e senza dipendenti.
   - `queued` (retry): da `failed`, `blocked`, `cancelled`, `review`; senza `note` la nota
     esistente resta, una nuova la sostituisce.
   Ritorna `{ task, warnings? }` senza il testo del task. Con la board in pausa `update_task`,
   `set_task_status` e `submit_plan` aggiungono `warnings: ["the board is paused: ..."]`.
   `update_task` restituisce anche il testo (`task`) se la modifica cambia `task`.
-- `set_board { max_parallel?, paused?, base_branches?, integration_branch?, close_integration? }` — ritorna la board compatta.
+- `set_board { max_parallel?, paused?, base_branches?, integration_branch?, close_integration?, close_integration_cleanup? }` — ritorna la board compatta.
   `close_integration` (chiave repo, `"."` = root, o array di chiavi) dimentica l'integrazione
   registrata del repo senza toccare worktree e branch (li rimuove l'orchestratore): il task
   successivo del repo crea una nuova integrazione (primo suffisso libero, es. `-3`) dalla
-  base aggiornata. Se la cartella del worktree di integrazione è stata rimossa e il suo
+  base aggiornata. Con `close_integration_cleanup: true` l'app esegue anche gli hook di
+  pulizia, rimuove il worktree di integrazione e cancella il branch locale solo se è
+  contenuto nel suo upstream (non fa mai push). Se la cartella del worktree di integrazione è stata rimossa e il suo
   branch è già mergiato nella base del repo, l'app ne avvia una nuova da sola; se non è
   mergiato ricrea il worktree sullo stesso branch.
 - `get_workflow` — oltre a `workflow`, restituisce in sola lettura `workspace_rules` (le

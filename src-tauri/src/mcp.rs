@@ -108,6 +108,21 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     })
 }
 
+/// Description used where a property repeats one defined elsewhere.
+const SAME_AS_PLAN: &str = "Same as in submit_plan.";
+const SAME_AS_SPAWN: &str = "Same as in spawn_session.";
+
+/// Replaces the description of every property with `text` (schemas stay
+/// identical, only the prose shrinks).
+fn with_brief_descriptions(mut props: Value, text: &str) -> Value {
+    if let Some(map) = props.as_object_mut() {
+        for v in map.values_mut() {
+            v["description"] = json!(text);
+        }
+    }
+    props
+}
+
 /// Campi di un task della board (`submit_plan` li usa per ogni task,
 /// `update_task` li accetta tutti; `id` identifica il task).
 fn task_spec_properties() -> Value {
@@ -115,68 +130,68 @@ fn task_spec_properties() -> Value {
         "id": {
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
-            "description": "Unique id on the board: lowercase letters, digits and '-', 1..40 characters (e.g. auth-api). It also names the worktree folder and the branch task/<id>."
+            "description": "Unique id: lowercase letters, digits, '-', 1..40 chars. Names the worktree folder and branch task/<id>."
         },
         "title": {
             "type": "string",
             "maxLength": 80,
-            "description": "Short title shown on the board (default: the first words of the task)."
+            "description": "Board title."
         },
         "task": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100000,
-            "description": "Complete instructions for the worker, in English: goal, files or folders involved, constraints, success criteria. The worker cannot see your conversation."
+            "description": "Worker instructions, in English; the worker cannot see your conversation."
         },
         "depends_on": {
             "type": "array",
             "items": { "type": "string" },
             "maxItems": 50,
-            "description": "Ids of the tasks that must be done (status done: reviewed, merged and marked by you) before this one starts. They may be in the same call or already on the board. No cycles. A cancelled dependency never satisfies: update the dependencies."
+            "description": "Ids that must be done first (same call or on the board). No cycles; a cancelled one never satisfies."
         },
         "touches": {
             "type": "array",
             "items": { "type": "string", "maxLength": 256 },
             "maxItems": 50,
-            "description": "Areas of the repository this task will modify, as paths relative to the workspace root (e.g. src/auth/ or package.json). Two tasks whose areas overlap (equal, or one inside the other) never run at the same time. Be accurate: too broad serializes the plan, too narrow lets conflicting work run in parallel. Empty = no declared area."
+            "description": "Paths modified, relative to the workspace root (or repo). Tasks with overlapping paths never run together."
         },
         "isolation": {
             "type": "string",
             "enum": ["worktree", "none"],
-            "description": "worktree (default): the app creates a git worktree .worktrees/<id> on the branch task/<id> for the worker; use it for anything that changes code. none: the worker uses the workspace folder directly, with no branch; at most one non read-only 'none' task (permission_mode other than plan) runs at a time."
+            "description": "worktree (default): own git worktree and branch task/<id>. none: the workspace folder, no branch; at most one non read-only 'none' task runs at a time."
         },
         "base_branch": {
             "type": ["string", "null"],
-            "description": "Branch the worktree starts from, read when the task starts. Default: the integration branch of the board when integration_branch is on, else the board's base_branches entry for the task's repo, else the board's base_branch (root tasks), else for a repo task the default branch of its origin, else the branch currently checked out in the workspace folder (so dependents start from a base that already contains the merged work of their dependencies)."
+            "description": "Worktree start branch, read at start. Default: integration branch, else the repo/board base branch, else the origin default."
         },
         "repo": {
             "type": ["string", "null"],
             "maxLength": 256,
-            "description": "Multi-repository workspaces (the workspace folder is not a git repo but contains several): the repository this task works in, as a folder relative to the workspace root (e.g. freud-manager). The worktree is created in that repository (<repo>/.worktrees/<id>), 'touches' are relative to it and tasks of different repositories never conflict. Omit (or '.') for the workspace root itself. See the repos field of get_board. Cannot change once the task has a worktree."
+            "description": "Multi-repository workspaces: repo folder relative to the workspace root (see `repos` in get_board); worktree and 'touches' are relative to it. Omit or '.' for the root. Fixed once the task has a worktree."
         },
-        "agent": { "type": "string", "description": "Id of the coding agent (see list_agents). Default: claude-code." },
+        "agent": { "type": "string", "description": SAME_AS_SPAWN },
         "model": {
             "type": ["string", "null"],
             "pattern": "^[A-Za-z0-9._-]{1,64}$",
-            "description": "Model to use (e.g. sonnet, opus or a full id). Default: the workspace's worker model (see the instructions), else the coding agent's own."
+            "description": SAME_AS_SPAWN
         },
         "permission_mode": {
             "type": ["string", "null"],
             "enum": ["default", "accept-edits", "plan", "bypass", null],
-            "description": "Worker permissions, same rules as spawn_session: the default is the workspace maximum and you can only restrict it. 'plan' makes the worker read-only."
+            "description": SAME_AS_SPAWN
         },
         "priority": {
             "type": "integer",
-            "description": "Higher starts first among the tasks that are ready (default 0)."
+            "description": "Higher starts first among ready tasks."
         },
         "held": {
             "type": "boolean",
-            "description": "If true the scheduler does not start the task until you release it with update_task (held: false) or the user does from the board view."
+            "description": "If true the task is not started until released (held: false via update_task, or by the user). Shown only on queued tasks; a cancelled task keeps it, so a retry stays held."
         },
         "orchestrator_note": {
             "type": ["string", "null"],
             "maxLength": 2000,
-            "description": "Private note for yourself (e.g. merge order, what to check at review). Shown on the board and returned by get_board and get_task_details, but NEVER sent to the worker. null clears it."
+            "description": "Private note, shown by get_board and get_task_details, NEVER sent to the worker. null clears it."
         }
     })
 }
@@ -187,27 +202,31 @@ fn repo_settings_properties() -> Value {
         "base_branches": {
             "type": "object",
             "additionalProperties": { "type": ["string", "null"] },
-            "description": "Base branch per repository: {\"freud-manager\": \"master\", \"DDB\": \"main\"} (key '.' = the workspace root). Merged into the current entries; an empty string or null removes an entry. Tasks of a repo start from it (fetched from origin first when origin exists) unless integration_branch is on or the task has its own base_branch. Default for a repo: the default branch of its origin, else its current branch."
+            "description": "Base branch per repo, e.g. {\"api\": \"main\"} ('.' = root). Merged into existing entries; empty or null removes one. Default: origin default branch, else current."
         },
         "integration_branch": {
             "type": ["string", "null"],
-            "description": "Template of the integration branch, e.g. 'integration/{date}' ({date} = local date YYYY-MM-DD). When set, before the first task of a repository starts cli-companion creates that branch (from the repo base, after a fetch) with its own worktree <repo>/.worktrees/integration, and every worktree task of the repo without an explicit base_branch starts from it, so dependents see what you merged there. get_board returns `integrations` (repo -> {branch, path, base, setup}): merge and test in that worktree. If the branch name already exists and is not ours, -2, -3... is appended. The app never pushes and never switches branches in the main checkout. Empty string or null turns it off."
+            "description": "Template like 'integration/{date}' ({date} = YYYY-MM-DD). When set, each repo gets that branch with its own worktree <repo>/.worktrees/integration before its first task, and tasks without base_branch start from it (see `integrations` in get_board). A taken name gets -2, -3... Never pushed. Empty or null turns it off."
         }
     })
 }
 
-/// `props` piu' le impostazioni multi-repository.
-fn with_repo_settings(mut props: Value) -> Value {
-    if let (Some(p), Some(extra)) = (props.as_object_mut(), repo_settings_properties().as_object()) {
+/// `props` piu' le impostazioni multi-repository (descrizioni brevi se `brief`).
+fn with_repo_settings(mut props: Value, brief: bool) -> Value {
+    let mut extra = repo_settings_properties();
+    if brief {
+        extra = with_brief_descriptions(extra, SAME_AS_PLAN);
+    }
+    if let (Some(p), Some(extra)) = (props.as_object_mut(), extra.as_object()) {
         p.extend(extra.clone());
     }
     props
 }
 
-/// Come `task_spec_properties`, senza `id` obbligatorio nel testo.
+/// Come `task_spec_properties`, con descrizioni di una riga.
 fn update_task_properties() -> Value {
-    let mut props = task_spec_properties();
-    props["id"] = json!({ "type": "string", "description": "Id of the task to change." });
+    let mut props = with_brief_descriptions(task_spec_properties(), SAME_AS_PLAN);
+    props["id"]["description"] = json!("Id of the task to change.");
     props
 }
 
@@ -215,33 +234,26 @@ fn orchestrator_tools() -> Vec<Value> {
     vec![
         tool(
             "list_agents",
-            "List the coding agents that can be started as automated sessions (id and name). \
-             The id goes in the `agent` parameter of spawn_session; the default is claude-code.",
+            "List the coding agents you can start (id, name). The id goes in `agent`; default claude-code.",
             json!({}),
             &[],
         ),
         tool(
             "spawn_session",
-            "Start an automated session (worker): cli-companion opens a new tab in the orchestrator's workspace \
-             (yours: it cannot be chosen) with a coding agent that carries out the task autonomously. Returns \
-             immediately with the session id, without waiting for the work to finish. After starting the \
-             workers, end your turn: cli-companion types a message into your prompt when they need you \
-             (then call get_events). Do not wait, sleep or poll. The worker talks to you only through its \
-             tools (report_fact, request_help, complete_task): do not read its terminal. Write the task so \
-             it is self-contained, since the worker cannot see your conversation. Write the `task` text (and \
-             any later send_message text) in English. At most 16 active workers per orchestrator. You decide \
-             isolation (e.g. git worktrees) and the work queue, also through `cwd`.",
+            "Start one automated worker session in a new tab of your workspace (the workspace cannot be chosen). \
+             Returns the session id immediately. The worker cannot see your conversation: make `task` \
+             self-contained, in English. Max 16 active workers per orchestrator. For dependent batches use submit_plan.",
             json!({
                 "task": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100000,
-                    "description": "Complete instructions for the worker, in English: goal, files or folders involved, constraints, success criteria."
+                    "description": "Complete worker instructions, in English."
                 },
                 "title": {
                     "type": "string",
                     "maxLength": 80,
-                    "description": "Short title shown on the tab (default: the first words of the task)."
+                    "description": "Short tab title."
                 },
                 "agent": {
                     "type": "string",
@@ -249,93 +261,72 @@ fn orchestrator_tools() -> Vec<Value> {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Working folder: an existing absolute path, equal to or inside your workspace folder (no '..'), in its environment (e.g. C:\\projects\\app\\.worktrees\\x or /home/user/app/.worktrees/x for WSL). For git worktrees use a subfolder of the workspace, e.g. .worktrees/. Default: the workspace folder."
+                    "description": "Existing absolute path equal to or inside the workspace folder (no '..'), in its environment (Windows or WSL path). Default: the workspace folder."
                 },
                 "permission_mode": {
                     "type": "string",
                     "enum": ["default", "accept-edits", "plan", "bypass"],
-                    "description": "Worker permissions. Default: the workspace setting (`worker_permission`, see the instructions). You can only restrict it, never widen it: above the workspace maximum the call fails. From most restrictive: 'plan' (read-only), 'default' (asks for confirmation on every action: the worker stays stuck waiting for the user), 'accept-edits' (approves file edits), 'bypass' (skips all permissions, use with care). With 'bypass' Claude Code shows a confirmation dialog on first start, which does not appear only if ~/.claude/settings.json has skipDangerousModePermissionPrompt: true."
+                    "description": "plan = read-only; default = asks on every action (the worker stays stuck waiting for the user); accept-edits = approves file edits; bypass = no checks (Claude Code asks a one-time confirmation unless ~/.claude/settings.json has skipDangerousModePermissionPrompt: true). Default: the workspace maximum; you can only restrict it."
                 },
                 "model": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9._-]{1,64}$",
-                    "description": "Model to use (e.g. sonnet, opus or a full id). Default: the workspace's worker model (see the instructions), else the coding agent's own."
+                    "description": "Model (e.g. sonnet, opus or a full id). Default: the workspace worker model, else the agent's own."
                 },
                 "keep_open": {
                     "type": "boolean",
-                    "description": "If true the tab stays open after complete_task (default false: it closes by itself after a few seconds)."
+                    "description": "Keep the tab open after complete_task (default: closes after a few seconds)."
                 }
             }),
             &["task"],
         ),
         tool(
             "list_sessions",
-            "List the automated sessions you started, with their status: starting (task not read yet), \
-             running, background (turn ended while waiting for a background command: it resumes by itself), \
-             needs_input (waiting for a permission or an answer from the user), idle (stopped without having \
-             called complete_task), completed, failed, blocked, closed. A starting session also has \
-             `starting_secs` (seconds since it was spawned) so you can tell a slow start from a stuck one. \
-             Includes the last report. \
-             For news prefer get_events.",
+            "List your sessions with status and last report. Status: starting (`starting_secs` since spawn), running, \
+             background (waiting on a background command; resumes by itself), needs_input (waiting for the user), idle \
+             (stopped without complete_task), completed, failed, blocked, closed. For news prefer get_events.",
             json!({}),
             &[],
         ),
         tool(
             "send_message",
-            "Send a message to one of your automated sessions: it is typed into its prompt as if the user \
-             wrote it. Use it to answer a help_request or to give new instructions. Write the text in English.",
+            "Type a message into the prompt of one of your sessions, as if the user wrote it (answer a help_request, \
+             new instructions). In English.",
             json!({
-                "session": { "type": "string", "description": "Session id (from spawn_session or list_sessions)." },
+                "session": { "type": "string", "description": "Session id." },
                 "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Message text, in English." }
             }),
             &["session", "text"],
         ),
         tool(
             "close_session",
-            "Close the tab of one of your automated sessions, even if it has not finished. Work in progress is lost.",
+            "Close the tab of one of your sessions, even if unfinished. Work in progress is lost.",
             json!({
-                "session": { "type": "string", "description": "Id of the session to close." }
+                "session": { "type": "string", "description": "Session id." }
             }),
             &["session"],
         ),
         tool(
             "get_events",
-            "Return the new events from your automated sessions and drain the queue. It never waits: \
-             if nothing happened `events` is empty. Call it when cli-companion types \"New events from \
-             your automated sessions\" into your prompt, handle the events, then end your turn: do not \
-             call it in a loop and do not wait, sleep or poll for workers. You are woken while idle at \
-             the prompt only by help_request, completed, needs_input, stopped_without_report and exited; \
-             started and fact stay queued until the next call. Each event has: seq, session, title, \
-             kind, text (optional), worker status, at (unix ms). kind: started (the worker read the \
-             task), fact (reported fact), help_request (question: answer with send_message), completed \
-             (final outcome in text), needs_input (the worker is waiting for a permission from the user \
-             in its tab), stopped_without_report (it stopped without complete_task, even after being \
-             nudged), exited (the tab was closed), start_failed (a board task could not be started, e.g. \
-             a git error: text has the reason), plan_completed (every task on the board is done or \
-             cancelled; text gives the counts: done, of which outside the board, failed, cancelled; not sent \
-             when every task was cancelled without ever starting), user_action (the user acted from the board view; informational, it does not \
-             wake you). Events of board workers also carry the id of their task in `task`.",
+            "Drain and return the new events of your sessions. It never waits: `events` is empty if nothing happened. \
+             Event: seq, session, title, kind, text (optional), status, at (unix ms), task (board workers). \
+             kind: started, fact, help_request (answer with send_message), completed (outcome in text), needs_input \
+             (waiting for a permission in its tab), stopped_without_report, exited, start_failed (board task could not \
+             start; text = reason), plan_completed (every board task done or cancelled; text = counts), user_action \
+             (informational). Only help_request, completed, needs_input, stopped_without_report and exited wake you \
+             while idle; the others wait for the next call.",
             json!({}),
             &[],
         ),
         tool(
             "submit_plan",
-            "Add a batch of tasks to the task board of your workspace and let cli-companion run them. The board \
-             is persistent and its scheduler starts the workers by itself: a task starts as soon as all its \
-             dependencies are done, a slot is free (max_parallel) and no running task touches the same areas. \
-             For a single ad-hoc session use spawn_session instead. cli-companion creates the git worktree of \
-             each task and tells the worker where to work. Everything is validated before anything changes \
-             (unique ids, dependencies that exist, no cycles, permissions within the workspace maximum, a git \
-             repository for worktree tasks): on error nothing is added. Dependencies may point to tasks of \
-             the same call or already on the board. You become the owner of the board (the last orchestrator \
-             tab calling a board tool): worker events arrive in your queue. Returns the compact board (as get_board); each task has a \
-             derived column: backlog (waiting for dependencies), ready (can start, waiting for a slot or for a \
-             conflicting task), running, review (the worker finished: you integrate it), done, failed, \
-             blocked, cancelled. After submitting, end your turn: never wait, sleep or poll; cli-companion \
-             types a message into your prompt when something needs you (then call get_events). Integration is \
-             yours: when a task reaches review, check its report and diffstat, merge its branch task/<id> into \
-             the base branch, run the regression tests, then call set_task_status with done (this unblocks the \
-             dependents and removes the worktree). Limits: 50 tasks per call, 200 per board.",
+            "Add tasks to the persistent board of your workspace (you become its owner). The scheduler starts each task, in \
+             its own git worktree, when its dependencies are done, a slot is free (max_parallel) and no running task \
+             touches overlapping areas. All-or-nothing validation (unique ids, existing dependencies, no cycles, \
+             permissions within the workspace maximum, git repo for worktree tasks). Limits: 50 tasks per call, 200 per \
+             board. Returns the compact board (as get_board). Columns: backlog (waiting for dependencies), ready, \
+             running, review (worker finished: you integrate it, then set_task_status done), done, failed, blocked, \
+             cancelled.",
             with_repo_settings(json!({
                 "tasks": {
                     "type": "array",
@@ -353,31 +344,23 @@ fn orchestrator_tools() -> Vec<Value> {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 16,
-                    "description": "How many board workers run at the same time (default 3 for a new board). Also capped by the 16 active workers per orchestrator."
+                    "description": "Concurrent board workers (default 3 for a new board)."
                 },
                 "base_branch": {
                     "type": "string",
-                    "description": "Default base branch of the board for the worktrees of root tasks (default: the branch currently checked out, read when each task starts). For repo tasks use base_branches."
+                    "description": "Default base branch of root tasks (default: branch checked out when each task starts). Repo tasks use base_branches."
                 }
-            })),
+            }), false),
             &["tasks"],
         ),
         tool(
             "get_board",
-            "Return a compact summary of the task board of your workspace (and make you its owner): settings \
-             (max_parallel, paused, base_branch, plus base_branches, integration_branch and `integrations` \
-             (repo -> {branch, path, base, setup}: where to merge and test; setup is done, none = no setup configured for the repo so nothing was prepared, or pending = setup not completed; missing: true when the worktree folder no longer exists; an entry appears after the first worktree task of the repo starts) when set, and `repos`: the git repositories \
-             found in the workspace, \".\" being the workspace root itself), `automation`, `counts` (tasks per derived column: backlog, \
-             ready, running, review, done, failed, blocked, cancelled; empty columns left out) and `tasks`, one \
-             short row per open task (id, title, column, attempts, plus held, external, worker_status, waiting_on for a \
-             backlog task, priority, model, note, orchestrator_note and the report summary when they apply; note, \
-             orchestrator_note and summary are truncated). A held task is in the ready column but does not start: \
-             it has `held: true` (only on queued tasks), and the top-level `held` is the number of held tasks (left out when 0). Done and cancelled tasks are only counted: pass `columns` to list specific ones, e.g. \
-             [\"done\"]. Use get_task_details for the full text, report (commit, files_changed, tests, \
-             follow_ups, diffstat), worktree and note of one task. `automation` is null for a normal workspace; \
-             for an automatic one it tells whether execution windows are enabled, whether the window is open \
-             now and when it changes (next_change_at, unix ms): while it is closed the scheduler starts no new \
-             task. It never waits. Do not call it in a loop: events tell you when something changes.",
+            "Compact summary of the board of your workspace (makes you its owner): settings, `integrations` (repo -> {branch, \
+             path, base, setup}: where to merge and test; setup done | none = not configured | pending; missing: true if \
+             the worktree is gone), `repos` (git repositories, '.' = root), `automation` (null for a normal workspace, \
+             else execution-window state; while closed no new task starts), `counts` per column and one short row per \
+             open task (long texts truncated). done and cancelled are only counted: pass `columns` to list them. held: \
+             true only on queued tasks (in ready, not started); top-level `held` counts them. Never waits.",
             json!({
                 "columns": {
                     "type": "array",
@@ -385,18 +368,16 @@ fn orchestrator_tools() -> Vec<Value> {
                         "type": "string",
                         "enum": ["backlog", "ready", "running", "review", "done", "failed", "blocked", "cancelled"]
                     },
-                    "description": "List only the tasks in these columns (default: every column except done and cancelled)."
+                    "description": "List only tasks in these columns (default: all except done and cancelled)."
                 }
             }),
             &[],
         ),
         tool(
             "get_task_details",
-            "Return the full detail of one task of the board: its text, dependencies, touches, isolation, \
-             status and column, worker status, attempts, worktree, last report, note, your private orchestrator_note, \
-             external (completed outside the board) and the structured report \
-             (summary, commit, files_changed, tests, follow_ups, diffstat). Use it when you review a task in \
-             review, failed or blocked, before merging or retrying it. It never waits.",
+            "Full detail of one board task: text, dependencies, touches, isolation, status, column, worker status, \
+             attempts, worktree, notes, external, and the structured report (summary, commit, files_changed, tests, \
+             follow_ups, diffstat). Never waits.",
             json!({
                 "id": { "type": "string", "description": "Id of the task." }
             }),
@@ -404,81 +385,81 @@ fn orchestrator_tools() -> Vec<Value> {
         ),
         tool(
             "update_task",
-            "Change a task of the board: any field of submit_plan except that id only identifies the task. Only \
-             for tasks that are queued, failed, blocked or cancelled (not running, review or done); isolation \
-             cannot change once the task has a worktree. Dependencies are validated again (existing tasks, no \
-             cycles). Use it to release a held task (held: false), fix the instructions before a retry, or \
-             re-point the dependencies of a task whose dependency was cancelled. Fields you leave out stay as \
-             they are; null clears base_branch, model and permission_mode. Returns the updated task (without its text, unless the patch changes `task`); `warnings` when the board is paused.",
+            "Change a board task: any submit_plan field, `id` only selects it. Only for queued, failed, blocked or \
+             cancelled tasks; isolation is fixed once there is a worktree. Dependencies are revalidated. Omitted \
+             fields stay; null clears base_branch, model, permission_mode. Returns the task (without its text unless \
+             `task` changed); `warnings` when the board is paused.",
             update_task_properties(),
             &["id"],
         ),
         tool(
             "set_task_status",
-            "Move a task to a new status. done: from review, failed or blocked, after you integrated the work \
-             (merged the branch task/<id>, ran the tests); it unblocks the dependents and, unless cleanup is \
-             false, removes the task worktree and branch (git worktree remove and git branch -D when the branch is already merged into the integration branch of the repo (or the worktree base), else -d with a warning, without \
-             force: problems come back as warnings and in the task note, they never block the change). Not \
-             allowed for a running task. done also works from queued (including held) or cancelled for work completed \
-             outside the board (e.g. you or the user did it by hand): a non-empty `note` saying how is then \
-             required, the task is marked as completed outside the board (`external`) and the dependents are \
-             unblocked. Moving to done clears `held`. cancelled: from any status except done; a running task has its tab \
-             closed and its work is lost; tasks depending on it stay in backlog until you update their \
-             dependencies. queued: retry a failed, blocked, cancelled or review task; the scheduler starts it \
-             again when possible (the existing worktree is reused); the existing note is kept unless you pass a new `note`. Returns the task (without its text); `warnings` when the board is paused.",
+            "Move a task to a new status. done: from review, failed or blocked, after you integrated the work; unblocks the \
+             dependents and, unless cleanup is false, removes the worktree and branch (never forced; problems come back \
+             as warnings). Not allowed for a running task. done also works from queued (even held) or cancelled for work \
+             done outside the board: a non-empty `note` saying how is then required and the task is marked `external`. \
+             done clears `held`. cancelled: from any status except done; a running task's tab is closed and its work \
+             lost; dependents stay in backlog until you update them. queued: retry a failed, blocked, cancelled or \
+             review task (worktree reused; the note is kept unless you pass a new one). deleted: remove a task that \
+             never started (queued or cancelled, never attempted, no worktree, no session) and that no other task \
+             depends on; it disappears from the board and the counts. Returns the task; `warnings` when the board is \
+             paused.",
             json!({
                 "id": { "type": "string", "description": "Id of the task." },
                 "status": {
                     "type": "string",
-                    "enum": ["done", "cancelled", "queued"],
-                    "description": "done = integrated; cancelled = give up; queued = retry."
+                    "enum": ["done", "cancelled", "queued", "deleted"],
+                    "description": "done = integrated; cancelled = give up; queued = retry; deleted = remove a never-started task."
                 },
                 "note": {
                     "type": "string",
                     "maxLength": 2000,
-                    "description": "Note stored on the task (e.g. why it was cancelled). Required (non-empty) for done from queued or cancelled. For queued a new note replaces the existing one."
+                    "description": "Note stored on the task. Required (non-empty) for done from queued or cancelled. For queued it replaces the existing one."
                 },
                 "cleanup": {
                     "type": "boolean",
-                    "description": "Only for done: remove the worktree and the branch of the task (default true)."
+                    "description": "Only for done: remove the task worktree and branch (default true)."
                 }
             }),
             &["id", "status"],
         ),
         tool(
             "set_board",
-            "Change the settings of the board: max_parallel (how many board workers run at once, 1..16) and/or \
-             paused (true = the scheduler starts nothing new; running workers go on), and for multi-repository \
-             workspaces base_branches, integration_branch and close_integration. Returns the compact board (as get_board).",
+            "Change board settings: max_parallel (1..16), paused (true = start nothing new; running workers go on) and, \
+             for multi-repository workspaces, base_branches, integration_branch and close_integration. Returns the \
+             compact board.",
             with_repo_settings(json!({
-                "max_parallel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Board workers running at the same time." },
+                "max_parallel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Concurrent board workers." },
                 "paused": { "type": "boolean", "description": "Pause or resume the scheduler." },
                 "close_integration": {
                     "oneOf": [
                         { "type": "string" },
                         { "type": "array", "items": { "type": "string" } }
                     ],
-                    "description": "Repo key ('.' = root) or array of keys: forget the registered integration of that repo. The worktree and the branch are not touched (you remove them); the next task of the repo creates a fresh integration branch (next free suffix, e.g. -3) from the updated base."
+                    "description": "Repo key ('.' = root) or array: forget the registered integration; the next task of the repo creates a fresh integration branch from the updated base. Worktree and branch stay for you to remove, unless close_integration_cleanup."
+                },
+                "close_integration_cleanup": {
+                    "type": "boolean",
+                    "description": "Only with close_integration: also run the repo cleanup hooks in the integration worktree, remove the worktree and delete the local integration branch only if already contained in its upstream (never pushes, never forces). Problems come back as `warnings`."
                 }
-            })),
+            }), true),
             &[],
         ),
         tool(
             "get_workflow",
-            "Return the workflow of your workspace: a markdown document written by the user (usually with the 
-             workflow wizard) that gives you an identity and a method for this project: goals, branching and merge 
-             policy, verification commands, task design, parallelism and models, boundaries, when to escalate, what 
-             to do unattended, reporting. Call it BEFORE planning anything. `workflow` is null when the workspace 
-             has none: then follow the generic method of the orchestrate skill. When it exists it takes precedence 
-             over that generic method (but never over safety: do not push or merge what the workflow forbids). It also returns, read-only, `workspace_rules` (the \"Workspace rules\" text the user set; only when non-empty) and `repo_settings` (per repo key: base_branch, container_root, copy_ignored, setup, cleanup, remove_force; only non-empty ones). Only the user edits them, in the workspace settings.",
+            "Return the workflow of your workspace: markdown written by the user with the method for this project (branching \
+             and merge policy, verification, task design, parallelism, boundaries, escalation, unattended behavior, \
+             reporting). Call it BEFORE planning. `workflow` is null when none exists (then follow the orchestrate \
+             skill); otherwise it takes precedence over the skill, never over safety. Also returns, read-only, \
+             `workspace_rules` (when non-empty) and `repo_settings` (per repo key: base_branch, container_root, \
+             copy_ignored, setup, cleanup, remove_force; non-empty only).",
             json!({}),
             &[],
         ),
         tool(
             "save_workflow",
-            "Save (overwrite) the workflow of your workspace. Used by the workflow wizard, which interviews the 
-             user and saves the confirmed document: do not call it on your own initiative. Write it in English. 
-             Max 50000 characters.",
+            "Overwrite the workflow of your workspace. Only for the workflow wizard, never on your own initiative. \
+             In English, max 50000 characters.",
             json!({
                 "content": { "type": "string", "minLength": 1, "maxLength": 50000, "description": "The complete workflow, in markdown." }
             }),
@@ -491,60 +472,55 @@ fn worker_tools() -> Vec<Value> {
     vec![
         tool(
             "get_task",
-            "FIRST step of every automated session: returns the task assigned by the orchestrator and the \
-             working instructions. Call it right away, before doing anything else, and follow the instructions.",
+            "FIRST call of every automated session: returns your task and the working instructions.",
             json!({}),
             &[],
         ),
         tool(
             "report_fact",
-            "Tell the orchestrator about a useful fact that emerged during the work (finding, decision made, \
-             important progress). It is not the conclusion: use complete_task for that. Nobody reads your \
-             terminal output, so everything the orchestrator needs to know goes through here.",
+            "Tell the orchestrator a useful fact or progress (finding, decision). Not the conclusion: use complete_task. \
+             Nobody reads your terminal output.",
             json!({
-                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The fact to report, self-contained." }
+                "text": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The fact, self-contained." }
             }),
             &["text"],
         ),
         tool(
             "request_help",
-            "Ask the orchestrator a question when you are blocked or a decision is needed. After the call \
-             wait: the answer arrives as a message in your prompt. Do not use it for questions you can \
-             resolve yourself.",
+            "Ask the orchestrator a question when blocked or a decision is needed, then wait: the answer arrives as a \
+             message in your prompt. Not for what you can resolve yourself.",
             json!({
-                "question": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The question, with the context needed to answer it." }
+                "question": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "The question, with the context to answer it." }
             }),
             &["question"],
         ),
         tool(
             "complete_task",
-            "Finish the work and hand the outcome to the orchestrator. ALWAYS call it at the end, even if \
-             you fail or are blocked: without this call the orchestrator does not know how it went. \
-             Normally the tab closes by itself shortly after. Besides status and summary, fill the optional \
-             structured fields whenever they apply: they become the structured report of your task on the \
-             board, which the orchestrator uses to review and merge your work.",
+            "ALWAYS call it at the end, even on failure or when blocked: it hands the outcome to the orchestrator. The tab \
+             then closes by itself. Fill the optional fields when they apply: they form the structured report used to \
+             review and merge your work.",
             json!({
                 "status": {
                     "type": "string",
                     "enum": ["completed", "failed", "blocked"],
-                    "description": "completed = task succeeded; failed = task failed; blocked = cannot proceed without intervention."
+                    "description": "completed = succeeded; failed; blocked = cannot proceed without intervention."
                 },
                 "summary": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 50000,
-                    "description": "Full summary: what you did, files touched, test results, open issues."
+                    "description": "What you did, files touched, test results, open issues."
                 },
                 "commit": {
                     "type": "string",
                     "maxLength": 100,
-                    "description": "Hash of your last commit, if you committed."
+                    "description": "Hash of your last commit, if any."
                 },
                 "files_changed": {
                     "type": "array",
                     "items": { "type": "string", "maxLength": 512 },
                     "maxItems": 500,
-                    "description": "Paths of the files you changed, relative to your working folder."
+                    "description": "Changed files, relative to your working folder."
                 },
                 "tests": {
                     "type": "array",
@@ -552,20 +528,20 @@ fn worker_tools() -> Vec<Value> {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "command": { "type": "string", "maxLength": 1000, "description": "The test command you ran." },
+                            "command": { "type": "string", "maxLength": 1000, "description": "The test command." },
                             "result": { "type": "string", "enum": ["passed", "failed", "not_run"] },
-                            "details": { "type": "string", "maxLength": 2000, "description": "Optional: failures, or why it was not run." }
+                            "details": { "type": "string", "maxLength": 2000, "description": "Failures, or why not run." }
                         },
                         "required": ["command", "result"],
                         "additionalProperties": false
                     },
-                    "description": "The test commands you ran and their results."
+                    "description": "Test commands run and their results."
                 },
                 "follow_ups": {
                     "type": "array",
                     "items": { "type": "string", "maxLength": 2000 },
                     "maxItems": 100,
-                    "description": "Things left to do, or worth checking, that are outside your task."
+                    "description": "Things left to do or check outside your task."
                 }
             }),
             &["status", "summary"],
@@ -611,26 +587,14 @@ fn instructions(
 ) -> String {
     match role {
         Some(Role::Orchestrator) => {
-            let mut text = "cli-companion: you can start automated sessions, but only in the workspace of your own tab: \
-                workers open there and spawn_session cannot pick another one. Flow: spawn_session for \
-                each task, then end your turn. Never wait for workers (no sleep, no polling, no \
-                repeated tool calls): when they need you cli-companion types a message into your \
-                prompt; then call get_events, handle the events (answer help_requests with \
-                send_message) and end your turn again. Use close_session only when needed. Write task \
-                and message texts for workers in English. For a batch of tasks with dependencies use the \
-                task board: submit_plan adds the tasks, cli-companion starts the workers when they are \
-                ready (it creates their git worktrees) and, when a task reaches review, you integrate it \
-                (merge, test) and call set_task_status done; get_board shows a compact state, get_task_details the full detail of one task. If the workspace folder holds several git repositories (get_board lists them in `repos`) set `repo` on each task and consider integration_branch. Tool results are already structured: read them directly, never parse them with shell scripts. For a single \
-                ad-hoc session use spawn_session. Before orchestrating a batch of tasks, load \
-                the orchestrate skill (cli-companion-notify:orchestrate) if your agent supports skills: \
-                it has the full method (planning, task template, isolation, review and merge). Before planning call \
-                get_workflow: the workflow of this workspace, when it exists, takes precedence over the generic \
-                method of the skill. You may be the automatic orchestrator that cli-companion opens in a \
-                workspace during its execution windows: the board scheduler only starts tasks while a window is \
-                open; when cli-companion types that the execution window is closed, finish integrating the tasks \
-                that complete, do not plan new work, and end your turn. Every worker (board or spawn_session) \
-                already receives the workspace rules the user set in the workspace settings (as \"Workspace rules\" \
-                in its instructions): do not repeat them in task texts; you can read them, and the per-repo settings, with get_workflow."
+            let mut text = "cli-companion: you start automated sessions (workers) only in the workspace of your own tab: \
+                spawn_session for one ad-hoc task, the task board (submit_plan) for a batch with dependencies. \
+                Before orchestrating load the cli-companion-notify:orchestrate skill (if your agent supports skills) \
+                and call get_workflow before planning: the workspace workflow takes precedence over the skill. \
+                Never wait for workers (no sleep, polling or repeated calls): end your turn; cli-companion types a \
+                message into your prompt when they need you, then call get_events. Board tasks start only while an \
+                orchestrator is alive in the workspace, and cli-companion reopens one when needed, so ending your \
+                turn is always safe. Write task and message texts in English."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));
@@ -638,17 +602,11 @@ fn instructions(
             if let Some(c) = ceiling {
                 text.push_str(&format!(
                     " Maximum worker permissions in this workspace: {c}. Without permission_mode workers start \
-                     at this level; you can only restrict it, not widen it (the user changes it in the \
-                     workspace settings)."
+                     at this level; you can only restrict it."
                 ));
                 match worker_model {
-                    Some(m) => text.push_str(&format!(
-                        " Default worker model in this workspace: {m} (used when a task or spawn_session sets no model)."
-                    )),
-                    None => text.push_str(
-                        " No default worker model is set in this workspace: workers use the coding agent's default \
-                         model unless a task or spawn_session sets one.",
-                    ),
+                    Some(m) => text.push_str(&format!(" Default worker model: {m}.")),
+                    None => text.push_str(" No default worker model: workers use the agent's own unless a task sets one."),
                 }
                 if let Some(r) = worker_rules {
                     text.push_str(r);
@@ -850,6 +808,10 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    const ORCH_TOOLS_CEILING: usize = 16_900;
+    const WORKER_TOOLS_CEILING: usize = 2_800;
+    const ORCH_INSTRUCTIONS_CEILING: usize = 1_250;
+
     /// Backend finto: registra le chiamate e risponde con `reply`.
     struct Fake {
         role: &'static str,
@@ -890,6 +852,33 @@ mod tests {
             .collect()
     }
 
+    fn orchestrator_instructions_full() -> String {
+        let rules = worker_rules_text(&["Bash(git:*)".to_string()], &["Bash(rm:*)".to_string()]);
+        instructions(
+            Some(Role::Orchestrator),
+            Some("Proj (wsl, /home/u/app)"),
+            Some("accept-edits"),
+            Some("sonnet"),
+            rules.as_deref(),
+        )
+    }
+
+    #[test]
+    fn size_budget_of_the_model_facing_text() {
+        let orch = serde_json::to_string(&orchestrator_tools()).unwrap().chars().count();
+        let work = serde_json::to_string(&worker_tools()).unwrap().chars().count();
+        let instr = orchestrator_instructions_full().chars().count();
+        let worker_instr = instructions(Some(Role::Worker), None, None, None, None).chars().count();
+        println!("SIZES orchestrator_tools={orch} worker_tools={work} orchestrator_instructions={instr} worker_instructions={worker_instr}");
+        // The ceilings are intentional: tool definitions and server instructions are sent to the
+        // model in every session. Procedural method belongs to the orchestrate skill
+        // (agents/orchestrate_skill.md), loaded on demand. Do not raise a ceiling to fit new text:
+        // shorten the text or move it to the skill.
+        assert!(orch <= ORCH_TOOLS_CEILING, "orchestrator tools are {orch} chars, ceiling {ORCH_TOOLS_CEILING}: intentional budget, move method text to the skill");
+        assert!(work <= WORKER_TOOLS_CEILING, "worker tools are {work} chars, ceiling {WORKER_TOOLS_CEILING}: intentional budget");
+        assert!(instr <= ORCH_INSTRUCTIONS_CEILING, "orchestrator instructions are {instr} chars, ceiling {ORCH_INSTRUCTIONS_CEILING}: intentional budget, move method text to the skill");
+    }
+
     #[test]
     fn initialize_negotiates_protocol_version() {
         let b = Fake::new("orchestrator");
@@ -916,7 +905,7 @@ mod tests {
         let text = r["result"]["instructions"].as_str().unwrap();
         assert!(text.contains("Proj (wsl, /home/u/app)") && !text.contains("list_workspaces"));
         assert!(text.contains("Maximum worker permissions in this workspace: accept-edits"));
-        assert!(text.contains("in English"));
+        assert!(text.contains("in English") && text.contains("cli-companion-notify:orchestrate"));
         let w = Fake::new("worker");
         let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
         assert!(!r["result"]["instructions"].as_str().unwrap().contains("Proj"));
@@ -967,12 +956,12 @@ mod tests {
         }
         assert_eq!(spawn["inputSchema"]["required"], json!(["task"]));
         assert!(!props.contains_key("workspace"));
-        assert!(props["cwd"]["description"].as_str().unwrap().contains(".worktrees"));
+        assert!(props["cwd"]["description"].as_str().unwrap().contains("workspace folder"));
         let pm = props["permission_mode"]["description"].as_str().unwrap();
         assert!(pm.contains("skipDangerousModePermissionPrompt"));
-        assert!(pm.contains("workspace setting") && pm.contains("only restrict it"));
+        assert!(pm.contains("workspace maximum") && pm.contains("only restrict it"));
         let desc = spawn["description"].as_str().unwrap();
-        assert!(desc.contains("in English") && desc.contains("send_message"));
+        assert!(desc.contains("in English") && desc.contains("submit_plan"));
         assert!(props["task"]["description"].as_str().unwrap().contains("English"));
     }
 
@@ -1001,27 +990,33 @@ mod tests {
         assert_eq!(keys(&upd["inputSchema"]["properties"]), spec_keys);
         assert_eq!(upd["inputSchema"]["required"], json!(["id"]));
         assert_eq!(keys(&by("set_task_status")["inputSchema"]["properties"]), ["cleanup", "id", "note", "status"]);
-        assert_eq!(by("set_task_status")["inputSchema"]["properties"]["status"]["enum"], json!(["done", "cancelled", "queued"]));
+        assert_eq!(by("set_task_status")["inputSchema"]["properties"]["status"]["enum"], json!(["done", "cancelled", "queued", "deleted"]));
+        assert!(by("set_task_status")["description"].as_str().unwrap().contains("deleted"));
+        assert_eq!(by("set_board")["inputSchema"]["properties"]["close_integration_cleanup"]["type"], "boolean");
+        // update_task keeps the schema of submit_plan items, with one-line descriptions.
+        assert_eq!(upd["inputSchema"]["properties"]["depends_on"]["maxItems"], item["properties"]["depends_on"]["maxItems"]);
+        assert_eq!(upd["inputSchema"]["properties"]["depends_on"]["description"], SAME_AS_PLAN);
         assert_eq!(
             keys(&by("set_board")["inputSchema"]["properties"]),
-            ["base_branches", "close_integration", "integration_branch", "max_parallel", "paused"]
+            ["base_branches", "close_integration", "close_integration_cleanup", "integration_branch", "max_parallel", "paused"]
         );
-        assert!(item["properties"]["repo"]["description"].as_str().unwrap().contains("Multi-repository"));
+        assert!(item["properties"]["repo"]["description"].as_str().unwrap().contains("Multi-repository") && item["properties"]["agent"]["description"] == SAME_AS_SPAWN);
         assert_eq!(keys(&by("get_board")["inputSchema"]["properties"]), ["columns"]);
         let sts = by("set_task_status")["description"].as_str().unwrap().to_string();
         assert!(sts.contains("from queued") && sts.contains("outside the board") && sts.contains("note"));
         let on = &plan["inputSchema"]["properties"]["tasks"]["items"]["properties"]["orchestrator_note"];
         assert_eq!(on["maxLength"], 2000);
         assert!(on["description"].as_str().unwrap().contains("NEVER sent to the worker"));
-        assert!(instructions(Some(Role::Orchestrator), None, None, None, None).contains("workspace rules"));
+        
         assert_eq!(keys(&by("get_task_details")["inputSchema"]["properties"]), ["id"]);
         assert_eq!(by("get_task_details")["inputSchema"]["required"], json!(["id"]));
         // Il modello non deve attendere; la colonna e l'integrazione sono spiegate.
         let d = plan["description"].as_str().unwrap();
-        for t in ["never wait, sleep or poll", "review", "set_task_status", "owner", "backlog", "ready", "merge"] {
+        for t in ["review", "set_task_status", "owner", "backlog", "ready"] {
             assert!(d.contains(t), "{t}");
         }
-        assert!(by("get_board")["description"].as_str().unwrap().contains("Do not call it in a loop"));
+        assert!(by("get_board")["description"].as_str().unwrap().contains("Never waits"));
+        assert!(item["properties"]["held"]["description"].as_str().unwrap().contains("cancelled task keeps it"));
         // Tutto in inglese (ASCII) e ogni tool ha descrizione e schema a oggetto.
         for t in &tools {
             assert!(t["description"].as_str().unwrap().is_ascii(), "{}", t["name"]);
@@ -1042,7 +1037,7 @@ mod tests {
         );
         // Le istruzioni dell'orchestratore citano il flusso della board.
         let text = instructions(Some(Role::Orchestrator), None, None, None, None);
-        assert!(text.contains("submit_plan") && text.contains("spawn_session") && text.contains("set_task_status"));
+        assert!(text.contains("submit_plan") && text.contains("spawn_session"));
     }
 
     #[test]
@@ -1141,7 +1136,7 @@ mod tests {
         assert!(by("get_board")["description"].as_str().unwrap().contains("`automation`"));
         let text = instructions(Some(Role::Orchestrator), None, None, None, None);
         assert!(text.contains("get_workflow") && text.contains("takes precedence"));
-        assert!(text.contains("execution window is closed") && text.contains("end your turn"));
+        assert!(text.contains("end your turn"));
         // I tool del workflow non esistono per i worker.
         assert!(worker_tools().iter().all(|t| t["name"] != "get_workflow" && t["name"] != "save_workflow"));
     }
@@ -1152,10 +1147,11 @@ mod tests {
         let get = tools.iter().find(|t| t["name"] == "get_events").unwrap();
         assert_eq!(get["inputSchema"]["properties"], json!({}));
         let desc = get["description"].as_str().unwrap();
-        assert!(desc.contains("never waits") && desc.contains("end your turn"));
+        assert!(desc.contains("never waits"));
         let text = instructions(Some(Role::Orchestrator), None, None, None, None);
         assert!(text.contains("end your turn") && text.contains("Never wait"));
         assert!(text.contains("cli-companion-notify:orchestrate"));
+        assert!(text.contains("ending your turn is always safe") || text.contains("turn is always safe"));
         // Nessun testo per il modello nomina ancora il vecchio long-poll.
         let all = serde_json::to_string(&tools).unwrap() + &text;
         assert!(!all.contains("wait_for_events") && !all.contains("timeout_secs"));

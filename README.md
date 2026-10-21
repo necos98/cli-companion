@@ -145,7 +145,8 @@ Chi fa cosa:
   (dipendenze, `touches`, isolamento, priorità), poi **integra**: controlla il lavoro, fa il
   merge dei branch dei task uno alla volta, risolve i conflitti, lancia i test di regressione e
   segna il task come fatto (`set_task_status done`);
-- l'**app** fa lo scheduler: avvia i worker quando un task è pronto (dipendenze fatte, nessun
+- l'**app** fa lo scheduler: avvia i worker (solo con un orchestratore disponibile nel
+  workspace: se serve e nessuno è vivo, ne apre uno lei, "on demand") quando un task è pronto (dipendenze fatte, nessun
   conflitto di aree, entro `max_parallel`), crea e pulisce i **git worktree**
   (`.worktrees/<task>`, branch `task/<task>`), raccoglie i report strutturati e sveglia
   l'orchestratore solo quando serve una decisione.

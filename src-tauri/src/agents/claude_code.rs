@@ -129,8 +129,8 @@ fn plugin_version_for(exe: &str) -> String {
 fn plugin_json(version: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
-        "description": "Avvisa cli-companion quando una sessione Claude Code finisce o aspetta una risposta \
-                        e fornisce i tool MCP e la skill per orchestrare sessioni automatiche.",
+        "description": "Notifies cli-companion when a Claude Code session finishes or waits for an answer, \
+                        and provides the MCP tools and the skills to orchestrate automated sessions.",
         "version": version,
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()

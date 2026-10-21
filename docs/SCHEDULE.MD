@@ -91,6 +91,14 @@ Alle transizioni, e al cambio di configurazione:
   parte uno nuovo con contesto pulito (piano e stato sono nella board).
 - Un orchestratore aperto dall'utente non viene mai chiuso.
 
+### Orchestratore on demand
+
+Nei workspace non automatici vale la regola generale della board
+(`docs/BOARD.MD`, "Orchestratore disponibile"): lo scheduler avvia task solo con
+un orchestratore disponibile e l'app ne apre uno quando serve. Nei workspace
+automatici le finestre restano il gate: fuori finestra non parte nessun task e
+non si apre nessun orchestratore.
+
 ### Note di implementazione
 
 - La riconciliazione e' a livello, non a fronte: gira ogni 30 s (la prima

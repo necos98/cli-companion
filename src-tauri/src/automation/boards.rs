@@ -45,6 +45,8 @@ pub struct RepoSettings {
     pub integration_branch: Option<Option<String>>,
     /// Chiavi dei repository di cui chiudere l'integrazione registrata.
     pub close_integration: Vec<String>,
+    /// Con `close_integration`: ripulisce anche worktree e branch locale.
+    pub close_cleanup: bool,
 }
 
 /// Chiave del repository di `close_integration` ("." = root).
@@ -76,7 +78,15 @@ impl RepoSettings {
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err(BAD.to_string()),
         };
-        Ok(RepoSettings { base_branches, integration_branch, close_integration })
+        let close_cleanup = match params.get("close_integration_cleanup") {
+            None | Some(Value::Null) => false,
+            Some(_) if close_integration.is_empty() => {
+                return Err("close_integration_cleanup requires close_integration".to_string());
+            }
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("close_integration_cleanup must be a boolean".to_string()),
+        };
+        Ok(RepoSettings { base_branches, integration_branch, close_integration, close_cleanup })
     }
 }
 
@@ -104,6 +114,7 @@ impl Registry {
     pub fn board_view(&self, ws: &str) -> BoardView {
         let mut v = self.boards.get(ws).map(Board::view).unwrap_or_else(|| Board::new(ws).view());
         v.automation = self.auto.info.get(ws).cloned();
+        v.orchestrator = self.auto.orch_view.get(ws).map(|s| s.to_string());
         v
     }
 
@@ -139,6 +150,8 @@ impl Registry {
     /// rimasti in attesa senza proprietario).
     pub fn claim_board(&mut self, ws: &str, orch: &str) -> Result<(), String> {
         self.require_orchestrator(orch)?;
+        // Un orchestratore che chiama un tool e' vivo: il gate dello scheduler si apre subito.
+        self.orch_alive_now(ws);
         let b = self.boards.entry(ws.to_string()).or_insert_with(|| Board::new(ws));
         let old = b.owner.replace(orch.to_string());
         if old.as_deref() == Some(orch) {
@@ -238,7 +251,14 @@ impl Registry {
             "done" => TaskStatus::Done,
             "cancelled" => TaskStatus::Cancelled,
             "queued" => TaskStatus::Queued,
-            _ => return Err("invalid status (use done, cancelled or queued)".to_string()),
+            "deleted" => {
+                self.board_ref(ws)?;
+                let b = self.boards.get_mut(ws).expect("board presente");
+                b.delete_task(id, now)?;
+                self.mark_dirty(ws);
+                return Ok(None);
+            }
+            _ => return Err("invalid status (use done, cancelled, queued or deleted)".to_string()),
         };
         let b = self.board_ref(ws)?;
         b.check_transition(id, to)?;
@@ -264,7 +284,7 @@ impl Registry {
     }
 
     pub fn set_board(&mut self, ws: &str, max_parallel: Option<u8>, paused: Option<bool>, now: i64) -> Result<(), String> {
-        self.set_board_ext(ws, max_parallel, paused, RepoSettings::default(), now)
+        self.set_board_ext(ws, max_parallel, paused, RepoSettings::default(), now).map(|_| ())
     }
 
     /// Come `set_board`, con in piu' `base_branches` e `integration_branch`.
@@ -275,7 +295,7 @@ impl Registry {
         paused: Option<bool>,
         repo: RepoSettings,
         now: i64,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<(String, board::Integration)>, String> {
         if max_parallel.is_none() && paused.is_none() && repo.is_empty() {
             return Err("nothing to change: pass max_parallel, paused, base_branches, integration_branch and/or close_integration".to_string());
         }
@@ -287,9 +307,8 @@ impl Registry {
         if let Some(k) = repo.close_integration.iter().find(|k| !b.integrations.contains_key(*k)) {
             return Err(format!("no integration registered for repo '{k}' (see integrations in get_board)"));
         }
-        for k in &repo.close_integration {
-            b.integrations.remove(k);
-        }
+        let closed: Vec<(String, board::Integration)> =
+            repo.close_integration.iter().filter_map(|k| b.integrations.remove(k).map(|i| (k.clone(), i))).collect();
         if !repo.is_empty() {
             b.apply_repo_settings(repo.base_branches, repo.integration_branch);
         }
@@ -302,7 +321,7 @@ impl Registry {
         }
         b.updated_at = now;
         self.mark_dirty(ws);
-        Ok(())
+        Ok(closed)
     }
 
     /// Integrazione gia' risolta del repository (chiave "." = root).
@@ -425,7 +444,10 @@ impl Registry {
                 max_start,
             };
             // Gate della finestra: separato dalla pausa, che non si tocca.
-            let chosen = if self.window_blocks(&ws, open) { Vec::new() } else { board::schedule(b, &ctx) };
+            // Gate dell'orchestratore: senza nessuno vivo i worker resterebbero
+            // senza risposte. I task in corso non si toccano.
+            let blocked = self.window_blocks(&ws, open) || !self.auto.orch_avail.contains(ws_id);
+            let chosen = if blocked { Vec::new() } else { board::schedule(b, &ctx) };
             let b = self.boards.get_mut(ws_id).expect("board presente");
             for id in chosen {
                 // Subito `running`: un'altra esecuzione non lo sceglie due volte.
@@ -456,6 +478,7 @@ impl Registry {
         }
         let b = self.boards.get_mut(ws_id).expect("board presente");
         b.automation = self.auto.info.get(ws_id).cloned();
+        b.orchestrator = self.auto.orch_view.get(ws_id).map(|s| s.to_string());
         // Ogni pubblicazione e' una modifica della vista: nuova revisione.
         self.next_rev += 1;
         b.rev = self.next_rev;
@@ -1302,7 +1325,7 @@ pub fn detect_repos(ws: &Workspace) -> Result<Vec<String>, String> {
             .distro
             .as_deref()
             .filter(|d| !d.is_empty())
-            .ok_or_else(|| "distro WSL mancante".to_string())?;
+            .ok_or_else(|| "WSL distro missing".to_string())?;
         let script = "for d in */; do [ -e \"${d}.git\" ] && printf '%s\\n' \"${d%/}\"; done; [ -e .git ] && printf '.\\n'; exit 0";
         let cmd = crate::wsl::wsl_run_command(distro, &ws.path, &["sh", "-c", script]);
         let out = output_with_timeout(cmd, GIT_TIMEOUT)?;
@@ -1610,6 +1633,10 @@ pub(super) fn rpc_board<H: Host>(
             let status = req_str(params, "status")?.trim().to_string();
             let note = opt_str(params, "note")?.map(str::to_string);
             let cleanup = opt_bool(params, "cleanup")?.unwrap_or(true);
+            if status == "deleted" {
+                board_op(st, host, now, |r| r.set_task_status(&ws.id, &id, "deleted", None, now))?;
+                return Ok(json!({ "deleted": id }));
+            }
             let wt = board_op(st, host, now, |r| r.set_task_status(&ws.id, &id, &status, note, now))?;
             let warnings = cleanup_after_done(st, host, &ws, &id, wt.filter(|_| cleanup));
             let view = st.run(host, |r| r.task_view(&ws.id, &id));
@@ -1630,11 +1657,84 @@ pub(super) fn rpc_board<H: Host>(
             };
             let paused = opt_bool(params, "paused")?;
             let repo = RepoSettings::parse(params)?;
-            board_op(st, host, now, |r| r.set_board_ext(&ws.id, max_parallel, paused, repo, now))?;
-            Ok(st.run(host, |r| r.board_view(&ws.id)).to_compact_json(None))
+            let cleanup = repo.close_cleanup;
+            let closed = board_op(st, host, now, |r| r.set_board_ext(&ws.id, max_parallel, paused, repo, now))?;
+            // Git e comandi di pulizia fuori dal lock, a registrazione gia' dimenticata.
+            let mut warnings = Vec::new();
+            if cleanup {
+                for (key, integ) in &closed {
+                    warnings.extend(cleanup_integration(host, &ws, key, integ));
+                }
+            }
+            let mut out = st.run(host, |r| r.board_view(&ws.id)).to_compact_json(None);
+            if !warnings.is_empty() {
+                out["warnings"] = json!(warnings);
+            }
+            Ok(out)
         }
         _ => Err(format!("unknown method: {method}")),
     }
+}
+
+/// `set_board close_integration_cleanup`: comandi di pulizia del repository nel
+/// worktree di integrazione, rimozione del worktree e, solo se il branch ha un
+/// upstream che lo contiene gia', del branch locale. Mai push, mai forzature
+/// oltre `remove_force`. Ritorna gli avvisi.
+fn cleanup_integration<H: Host>(host: &H, ws: &Workspace, key: &str, integ: &board::Integration) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let repo = (key != ".").then_some(key);
+    let root = repo_dir(ws, repo);
+    let root = root.as_str();
+    let cfg = repo_cfg(ws, repo).cloned().unwrap_or_default();
+    let label = |w: String| format!("integration '{key}': {w}");
+    if host.dir_exists(ws, &integ.path) {
+        if !cfg.cleanup.is_empty() {
+            let vars = hooks::HookVars {
+                repo_dir: root,
+                worktree: &integ.path,
+                task_id: "integration",
+                branch: &integ.branch,
+                base: &integ.base,
+            };
+            warnings.extend(hooks::run_cleanup(host, ws, &cfg, &vars).into_iter().map(label));
+        }
+        let mut args = vec!["worktree", "remove"];
+        if cfg.remove_force {
+            args.push("--force");
+        }
+        args.push(&integ.path);
+        if let Err(e) = git(host, ws, root, &args) {
+            warnings.push(label(format!("worktree not removed: {e}")));
+        }
+    }
+    let _ = git(host, ws, root, &["worktree", "prune"]);
+    let upstream_ref = format!("{}@{{upstream}}", integ.branch);
+    let has_upstream = host
+        .git(ws, root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", &upstream_ref])
+        .map(|o| o.ok && !o.stdout.trim().is_empty())
+        .unwrap_or(false);
+    if !has_upstream {
+        warnings.push(label(format!(
+            "branch '{}' kept: it has no upstream (not pushed); delete it yourself once it is safe",
+            integ.branch
+        )));
+        return warnings;
+    }
+    let merged = host
+        .git(ws, root, &["merge-base", "--is-ancestor", &integ.branch, &upstream_ref])
+        .map(|o| o.ok)
+        .unwrap_or(false);
+    if !merged {
+        warnings.push(label(format!(
+            "branch '{}' kept: it is not contained in its upstream (unpushed commits); push it, then delete it yourself",
+            integ.branch
+        )));
+        return warnings;
+    }
+    if let Err(e) = git(host, ws, root, &["branch", "-D", &integ.branch]) {
+        warnings.push(label(format!("branch not deleted: {e}")));
+    }
+    warnings
 }
 
 /// Pulizia git del worktree dopo `done` (fuori dal lock); gli avvisi
@@ -1701,7 +1801,8 @@ pub(super) fn board_action<H: Host>(
         "retry" => ("retried (back to the queue)", Some("queued")),
         "cancel" => ("cancelled", Some("cancelled")),
         "done" => ("marked as done", Some("done")),
-        _ => return Err("azione non valida (usa hold, unhold, retry, cancel o done)".to_string()),
+        "delete" => ("deleted", Some("deleted")),
+        _ => return Err("azione non valida (usa hold, unhold, retry, cancel, done o delete)".to_string()),
     };
     let wt = board_op(st, host, now, |r| {
         let wt = match target {
@@ -1802,7 +1903,7 @@ pub(super) fn run_git(ws: &Workspace, dir: &str, args: &[&str]) -> Result<GitOut
             .distro
             .as_deref()
             .filter(|d| !d.is_empty())
-            .ok_or_else(|| "distro WSL mancante".to_string())?;
+            .ok_or_else(|| "WSL distro missing".to_string())?;
         crate::wsl::wsl_git_command(distro, dir, args)
     } else {
         let mut cmd = std::process::Command::new("git");
@@ -1832,7 +1933,7 @@ pub(super) fn append_exclude_line(ws: &Workspace, file: &str, line: &str) -> Res
             .distro
             .as_deref()
             .filter(|d| !d.is_empty())
-            .ok_or_else(|| "distro WSL mancante".to_string())?;
+            .ok_or_else(|| "WSL distro missing".to_string())?;
         let script = "mkdir -p \"$(dirname \"$1\")\" && { grep -qxF -e \"$2\" \"$1\" 2>/dev/null || printf '%s\n' \"$2\" >> \"$1\"; }";
         let cmd = crate::wsl::wsl_run_command(distro, &ws.path, &["sh", "-c", script, "sh", file, line]);
         let out = output_with_timeout(cmd, GIT_TIMEOUT)?;

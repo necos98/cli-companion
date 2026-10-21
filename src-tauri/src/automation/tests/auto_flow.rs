@@ -403,12 +403,15 @@ fn config_change_mid_window_spawns_or_drains() {
     at(&h, "22:00");
     st.schedule_set(&h, night(), NOW).unwrap();
     load_work(&st, &h, vec![t("a")]);
+    // In pausa nemmeno l'orchestratore su richiesta serve.
+    st.run(&h, |r| r.set_board("ws-1", None, Some(true), 2)).unwrap();
     tick(&st, &h);
     assert!(h.spawns().is_empty(), "workspace non automatico");
     // L'utente attiva l'orchestratore automatico a meta' finestra.
     h.auto.lock().unwrap().insert("ws-1".into(), auto_cfg(true));
     st.reconcile_at(&h, NOW, true);
     let tab = orch_tabs(&h).remove(0);
+    st.run(&h, |r| r.set_board("ws-1", None, Some(false), 3)).unwrap();
     assert_eq!(board_task(&st, &h, "a"), "running");
     pty_up(&h, &tab);
     finished(&st, &h, &tab);
@@ -764,7 +767,8 @@ fn registration_fails_while_the_automatic_orchestrator_is_open() {
 #[test]
 fn closing_or_exiting_the_manual_orchestrator_frees_the_workspace() {
     let (st, h) = setup("20:00");
-    load_work(&st, &h, vec![t("a")]);
+    // `b` resta in coda (dipende da `a`): c'e' ancora lavoro dopo l'avvio di `a`.
+    load_work(&st, &h, vec![t("a"), dep("b", "a")]);
     open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
     pty_up(&h, "man-1");
     tick(&st, &h);
@@ -787,8 +791,256 @@ fn closing_or_exiting_the_manual_orchestrator_frees_the_workspace() {
 #[test]
 fn a_registration_whose_tab_never_appeared_expires() {
     let (st, h) = setup("20:00");
-    load_work(&st, &h, vec![t("a")]);
+    load_work(&st, &h, vec![t("a"), dep("b", "a")]);
     open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
     st.tick(&h, NOW + GRACE_MS + 1);
     assert_eq!(orch_tabs(&h).len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestratore su richiesta e gate dello scheduler
+// ---------------------------------------------------------------------------
+
+/// Workspace normale (non automatico), nessuno schedule.
+fn plain() -> (AutomationState, FakeHost) {
+    (AutomationState::default(), FakeHost::default())
+}
+
+fn orch_state(st: &AutomationState) -> Option<String> {
+    st.inner.lock().unwrap().board_view("ws-1").orchestrator
+}
+
+fn go_review(st: &AutomationState, h: &FakeHost, id: &str) {
+    st.run(h, |r| {
+        let b = r.boards.get_mut("ws-1").unwrap();
+        b.start_task(id, 5);
+        b.finish_running(id, None, board::TaskStatus::Review, None, None, 6);
+    });
+}
+
+fn finish_worker(st: &AutomationState, h: &FakeHost, session: &str) {
+    call(st, h, session, "get_task", json!({})).unwrap();
+    call(st, h, session, "complete_task", json!({"status": "completed", "summary": "fatto"})).unwrap();
+}
+
+#[test]
+fn the_scheduler_starts_nothing_without_an_orchestrator_until_one_is_alive() {
+    let (st, h) = plain();
+    load_work(&st, &h, vec![t("a")]);
+    // La board riparte (modifica dell'utente), ma nessun orchestratore: niente avvio.
+    st.run(&h, |r| r.set_board("ws-1", Some(3), None, 2)).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    assert!(spawns_of(&h, Role::Worker).is_empty());
+    // Un orchestratore che chiama un tool di board e' la prova di vita: il task parte subito.
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "running");
+    assert_eq!(orch_state(&st).as_deref(), Some("live"));
+}
+
+#[test]
+fn a_manual_orchestrator_opens_the_gate_and_its_exit_closes_it_for_new_tasks() {
+    let (st, h) = plain();
+    load_work(&st, &h, vec![t("a"), t("b")]);
+    st.run(&h, |r| r.set_board("ws-1", Some(1), None, 2)).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "running", "false->true: la board riparte subito");
+    pty_up(&h, "man-1");
+    st.run(&h, |r| r.auto_tab_exited("man-1", NOW + 1));
+    // Un posto si libera ma nessun orchestratore: `b` non parte.
+    st.run(&h, |r| {
+        let b = r.boards.get_mut("ws-1").unwrap();
+        b.finish_running("a", None, board::TaskStatus::Failed, None, None, 9);
+        r.mark_dirty("ws-1");
+    });
+    assert_eq!(board_task(&st, &h, "b"), "queued");
+}
+
+#[test]
+fn on_demand_orchestrator_spawns_for_a_plain_workspace_and_starts_the_tasks() {
+    let (st, h) = plain();
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    let tabs = spawns_of(&h, Role::Orchestrator);
+    assert_eq!(tabs.len(), 1);
+    let o = &tabs[0];
+    assert_eq!(o.title, "Orchestratore");
+    assert_eq!(o.agent_id, "claude-code");
+    assert!(o.command.contains(crate::automation::auto::ON_DEMAND_BOOTSTRAP_PROMPT) && !o.command.contains(ORCHESTRATOR_BOOTSTRAP_PROMPT));
+    // Il tab in attesa vale come orchestratore disponibile.
+    assert_eq!(board_task(&st, &h, "a"), "running");
+    assert_eq!(orch_state(&st).as_deref(), Some("starting"));
+    pty_up(&h, &o.tab_id);
+    tick(&st, &h);
+    assert_eq!(orch_state(&st).as_deref(), Some("live"));
+    // Non ne apre un secondo.
+    tick(&st, &h);
+    assert_eq!(spawns_of(&h, Role::Orchestrator).len(), 1);
+}
+
+#[test]
+fn on_demand_uses_the_configured_agent_and_model_even_when_disabled() {
+    let (st, h) = plain();
+    h.auto.lock().unwrap().insert("ws-1".into(), auto_cfg(false));
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    let tabs = spawns_of(&h, Role::Orchestrator);
+    assert_eq!(tabs.len(), 1);
+    assert!(tabs[0].command.contains("model=opus"), "{}", tabs[0].command);
+}
+
+#[test]
+fn on_demand_does_not_spawn_for_a_paused_board_with_only_queued_tasks_but_does_for_review() {
+    let (st, h) = plain();
+    load_work(&st, &h, vec![t("a"), t("b")]);
+    st.run(&h, |r| r.set_board("ws-1", None, Some(true), 2)).unwrap();
+    tick(&st, &h);
+    assert!(h.spawns().is_empty());
+    assert_eq!(orch_state(&st), None);
+    // Un task in review da integrare serve anche con la board in pausa.
+    go_review(&st, &h, "a");
+    tick(&st, &h);
+    assert_eq!(orch_tabs(&h).len(), 1);
+    // Task trattenuti o con dipendenze non fatte non servono.
+    let (st, h) = plain();
+    load_work(&st, &h, vec![json!({"id": "a", "task": "x", "held": true}), dep("b", "a")]);
+    tick(&st, &h);
+    assert!(h.spawns().is_empty());
+}
+
+#[test]
+fn on_demand_spawns_for_actionable_events_of_a_dead_owner() {
+    let (st, h) = plain();
+    // Task in corso con owner morto: nulla da fare finche' non arriva un evento azionabile.
+    load_work(&st, &h, vec![t("a")]);
+    pty_up(&h, "orch-x");
+    call(&st, &h, "orch-x", "get_board", json!({})).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "running");
+    pty_down(&h, "orch-x");
+    st.run(&h, |r| r.auto_tab_exited("orch-x", NOW));
+    tick(&st, &h);
+    assert!(orch_tabs(&h).is_empty());
+    let w = spawns_of(&h, Role::Worker).remove(0).tab_id;
+    st.run(&h, |r| r.push_event(&w, EventKind::HelpRequest, Some("?".into()), 7));
+    tick(&st, &h);
+    assert_eq!(orch_tabs(&h).len(), 1);
+}
+
+#[test]
+fn a_dismissed_on_demand_tab_is_not_reopened_until_the_user_asks() {
+    let (st, h) = plain();
+    // `b` resta in coda (parallelismo 1): la board continua ad avere bisogno di un orchestratore.
+    load_work(&st, &h, vec![t("a"), t("b")]);
+    st.run(&h, |r| r.set_board("ws-1", Some(1), None, 2)).unwrap();
+    assert!(h.spawns().is_empty());
+    tick(&st, &h);
+    let tab = orch_tabs(&h).remove(0);
+    pty_up(&h, &tab);
+    tick(&st, &h);
+    // L'utente lo chiude.
+    pty_down(&h, &tab);
+    st.run(&h, |r| r.tab_closed(&tab, NOW + 1));
+    for i in 0..3 {
+        st.tick(&h, NOW + 2 + i);
+    }
+    assert_eq!(orch_tabs(&h).len(), 1, "niente riapertura");
+    assert_eq!(orch_state(&st).as_deref(), Some("stopped"));
+    // Lo chiede l'utente.
+    let view = st.start_board_orchestrator(&h, "ws-1", NOW + 20).unwrap();
+    assert_eq!(orch_tabs(&h).len(), 2);
+    assert_eq!(view.orchestrator.as_deref(), Some("starting"));
+    assert!(st.start_board_orchestrator(&h, "ws-x", NOW).is_err());
+}
+
+#[test]
+fn on_demand_gives_up_after_the_spawn_failures_and_the_command_resets_them() {
+    let (st, h) = plain();
+    // `b` resta in coda (parallelismo 1): la board continua ad avere bisogno di un orchestratore.
+    load_work(&st, &h, vec![t("a"), t("b")]);
+    st.run(&h, |r| r.set_board("ws-1", Some(1), None, 2)).unwrap();
+    assert!(h.spawns().is_empty());
+    // Il tab non compare mai: un tentativo per giro oltre il tempo concesso.
+    for i in 0..6 {
+        st.tick(&h, NOW + i * (GRACE_MS + 1));
+    }
+    assert_eq!(orch_tabs(&h).len(), 3, "MAX_SPAWN_FAILS");
+    assert_eq!(orch_state(&st).as_deref(), Some("stopped"));
+    st.start_board_orchestrator(&h, "ws-1", NOW + 20 * GRACE_MS).unwrap();
+    assert_eq!(orch_tabs(&h).len(), 4);
+}
+
+#[test]
+fn a_crashed_on_demand_orchestrator_is_replaced() {
+    let (st, h) = plain();
+    // `b` resta in coda (parallelismo 1): la board continua ad avere bisogno di un orchestratore.
+    load_work(&st, &h, vec![t("a"), t("b")]);
+    st.run(&h, |r| r.set_board("ws-1", Some(1), None, 2)).unwrap();
+    assert!(h.spawns().is_empty());
+    tick(&st, &h);
+    let tab = orch_tabs(&h).remove(0);
+    pty_up(&h, &tab);
+    tick(&st, &h);
+    pty_down(&h, &tab);
+    st.run(&h, |r| r.auto_tab_exited(&tab, NOW + 1));
+    assert_eq!(orch_state(&st), None, "non piu' vivo fino al giro");
+    tick(&st, &h);
+    assert_eq!(orch_tabs(&h).len(), 2, "crash: riaperto");
+}
+
+#[test]
+fn the_on_demand_tab_closes_when_idle_and_the_board_needs_nothing() {
+    let (st, h) = plain();
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    let tab = orch_tabs(&h).remove(0);
+    pty_up(&h, &tab);
+    // L'orchestratore legge la board (diventa owner) e finisce il turno: il worker gira.
+    call(&st, &h, &tab, "get_board", json!({})).unwrap();
+    let w = spawns_of(&h, Role::Worker).remove(0).tab_id;
+    finished(&st, &h, &tab);
+    assert!(!is_closed(&h, &tab), "task in corso");
+    finish_worker(&st, &h, &w);
+    // In review il lavoro serve ancora.
+    finished(&st, &h, &tab);
+    assert!(!is_closed(&h, &tab));
+    // Integrato, ma eventi azionabili ancora in coda: prima si consegnano.
+    call(&st, &h, &tab, "set_task_status", json!({"id": "a", "status": "done"})).unwrap();
+    finished(&st, &h, &tab);
+    assert!(!is_closed(&h, &tab));
+    call(&st, &h, &tab, "get_events", json!({})).unwrap();
+    // Idle, niente in corso/da consegnare e nessun bisogno: chiude (senza testo di finestra).
+    finished(&st, &h, &tab);
+    assert!(is_closed(&h, &tab), "{:?}", h.log());
+    assert_eq!(closed_texts(&h, &tab), 0);
+}
+
+#[test]
+fn a_user_orchestrator_is_never_closed_by_the_on_demand_logic() {
+    let (st, h) = plain();
+    call(&st, &h, ORCH, "submit_plan", json!({"tasks": [t("a")]})).unwrap();
+    finished(&st, &h, ORCH);
+    tick(&st, &h);
+    assert!(h.log().iter().all(|l| !l.starts_with("close:")));
+    assert!(orch_tabs(&h).is_empty());
+}
+
+#[test]
+fn an_automatic_workspace_outside_the_window_still_starts_and_spawns_nothing() {
+    let (st, h) = setup("15:00");
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    assert!(h.spawns().is_empty());
+    assert_eq!(orch_state(&st).as_deref(), Some("window"));
+    // Anche con un orchestratore vivo il gate della finestra tiene i task.
+    call(&st, &h, ORCH, "get_board", json!({})).unwrap();
+    assert_eq!(board_task(&st, &h, "a"), "queued");
+    // Dentro la finestra: l'orchestratore automatico (non quello su richiesta).
+    let (st, h) = setup("15:00");
+    load_work(&st, &h, vec![t("a")]);
+    at(&h, "21:00");
+    tick(&st, &h);
+    let tabs = spawns_of(&h, Role::Orchestrator);
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0].title, "Orchestratore automatico");
+    assert!(tabs[0].command.contains(ORCHESTRATOR_BOOTSTRAP_PROMPT));
 }
