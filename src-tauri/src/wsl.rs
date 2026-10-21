@@ -218,6 +218,17 @@ pub fn windows_to_wsl_path(win: &str) -> Option<String> {
     None
 }
 
+/// `true` se il path Linux sta su un drive Windows montato (`/mnt/c/...`,
+/// mount root predefinita): li' ci sono i programmi di Windows.
+pub fn is_windows_drive_path(linux: &str) -> bool {
+    let mut comps = linux.trim().split('/').filter(|c| !c.is_empty());
+    linux.trim().starts_with('/')
+        && comps.next() == Some("mnt")
+        && comps
+            .next()
+            .is_some_and(|d| d.len() == 1 && d.as_bytes()[0].is_ascii_alphabetic())
+}
+
 /// Inverso di `windows_to_wsl_path`: path Linux di `distro` -> path Windows
 /// leggibile dall'host.
 /// - `/mnt/c/Users/me` -> `C:\Users\me`
@@ -294,6 +305,16 @@ mod tests {
         c.put(2, None);
         c.clear();
         assert_eq!(c.get(&2), None);
+    }
+
+    #[test]
+    fn windows_drive_paths_are_recognized() {
+        for p in ["/mnt/c/Users/me/AppData/Roaming/npm/claude", "/mnt/D/x", "/mnt/c", " /mnt/c/x "] {
+            assert!(is_windows_drive_path(p), "{p}");
+        }
+        for p in ["/home/u/.local/bin/claude", "/mnt/cd/x", "/mnt/wsl/x", "/mnt", "/usr/mnt/c/x", "mnt/c/x", ""] {
+            assert!(!is_windows_drive_path(p), "{p}");
+        }
     }
 
     #[test]
