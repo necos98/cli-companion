@@ -100,6 +100,8 @@ impl Workspace {
 #[derive(Default)]
 pub struct WorkspaceStore {
     inner: Mutex<StoreData>,
+    /// Serializza i salvataggi su disco (vedi `persist`).
+    save: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -201,7 +203,6 @@ fn add_workspace_blocking(
     distro: Option<String>,
     shell: Option<String>,
 ) -> Result<Workspace, String> {
-    let state = app.state::<WorkspaceStore>();
     let kind = kind.trim().to_lowercase();
     if kind != "windows" && kind != "wsl" {
         return Err("kind non valido (usa \"windows\" o \"wsl\")".to_string());
@@ -233,7 +234,7 @@ fn add_workspace_blocking(
         None
     };
 
-    let mut data = state.inner.lock().unwrap();
+    persist(app, |data| {
     let duplicate = data.workspaces.iter().any(|w| {
         w.kind == kind && w.path == path && w.distro.as_deref().unwrap_or("") == distro.as_deref().unwrap_or("")
     });
@@ -265,99 +266,98 @@ fn add_workspace_blocking(
         default_launch: None,
     };
     data.workspaces.push(ws.clone());
-    save_to_disk(app, &data.workspaces)?;
     Ok(ws)
+    })
+}
+
+/// Applica `f` ai dati e salva su disco SENZA tenere il lock dei workspace
+/// durante l'I/O: `save` serializza le scritture (snapshot e scrittura sotto lo
+/// stesso mutex, cosi' uno snapshot vecchio non sovrascrive uno piu' nuovo),
+/// mentre `inner` resta libero per i lettori.
+fn persist<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut StoreData) -> Result<T, String>,
+) -> Result<T, String> {
+    let store = app.state::<WorkspaceStore>();
+    let _save = store.save.lock().unwrap();
+    let (out, snapshot) = {
+        let mut data = store.inner.lock().unwrap();
+        let out = f(&mut data)?;
+        (out, data.workspaces.clone())
+    };
+    save_to_disk(app, &snapshot)?;
+    Ok(out)
+}
+
+fn ws_mut<'a>(data: &'a mut StoreData, id: &str) -> Result<&'a mut Workspace, String> {
+    data.workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "workspace non trovato".to_string())
 }
 
 #[tauri::command]
-pub fn rename_workspace(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    id: String,
-    name: String,
-) -> Result<Workspace, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("nome mancante".to_string());
-    }
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    ws.name = name.to_string();
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+pub async fn rename_workspace(app: AppHandle, id: String, name: String) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("nome mancante".to_string());
+        }
+        persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.name = name;
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 /// Imposta il tetto dei permessi dei worker automatici del workspace.
 #[tauri::command]
-pub fn set_worker_permission(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    id: String,
-    mode: String,
-) -> Result<Workspace, String> {
-    let mode = PermissionMode::parse(mode.trim())
-        .ok_or_else(|| "permesso non valido (usa plan, default, accept-edits o bypass)".to_string())?;
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    ws.worker_permission = mode.as_str().to_string();
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+pub async fn set_worker_permission(app: AppHandle, id: String, mode: String) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let mode = PermissionMode::parse(mode.trim())
+            .ok_or_else(|| "permesso non valido (usa plan, default, accept-edits o bypass)".to_string())?;
+        persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.worker_permission = mode.as_str().to_string();
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 /// Imposta il modello di default dei worker automatici (vuoto = quello dell'agente).
 #[tauri::command]
-pub fn set_worker_model(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    id: String,
-    model: Option<String>,
-) -> Result<Workspace, String> {
-    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
-    if model.as_deref().is_some_and(|m| !crate::automation::valid_model(m)) {
-        return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string());
-    }
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    ws.worker_model = model;
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+pub async fn set_worker_model(app: AppHandle, id: String, model: Option<String>) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+        if model.as_deref().is_some_and(|m| !crate::automation::valid_model(m)) {
+            return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string());
+        }
+        persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.worker_model = model;
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 /// Comando di setup dei worktree del workspace (vuoto = nessuno).
 #[tauri::command]
-pub fn set_worktree_setup(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    id: String,
-    command: Option<String>,
-) -> Result<Workspace, String> {
-    let command = normalize_setup(command)?;
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    ws.worktree_setup = command;
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+pub async fn set_worktree_setup(app: AppHandle, id: String, command: Option<String>) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let command = normalize_setup(command)?;
+        persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.worktree_setup = command;
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
+
 
 /// Trim; vuoto = nessun comando; massimo `MAX_COMMAND_LEN` caratteri.
 fn normalize_setup(command: Option<String>) -> Result<Option<String>, String> {
@@ -397,55 +397,49 @@ fn normalize_auto(
 
 /// Imposta l'orchestratore automatico del workspace (None = lo rimuove).
 #[tauri::command]
-pub fn set_auto_orchestrate(
+pub async fn set_auto_orchestrate(
     app: AppHandle,
-    state: State<WorkspaceStore>,
     id: String,
     config: Option<AutoOrchestrate>,
 ) -> Result<Workspace, String> {
-    let known: Vec<(String, String)> = crate::agents::automation_agents()
-        .into_iter()
-        .map(|(i, n)| (i.to_string(), n.to_string()))
-        .collect();
-    let config = normalize_auto(config, &known)?;
-    let out = {
-        let mut data = state.inner.lock().unwrap();
-        let ws = data
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == id)
-            .ok_or_else(|| "workspace non trovato".to_string())?;
-        ws.auto_orchestrate = config;
-        let out = ws.clone();
-        save_to_disk(&app, &data.workspaces)?;
-        out
-    };
-    // Fuori dal lock dei workspace: il riallineamento li rilegge.
-    let automation = app.state::<crate::automation::AutomationState>();
-    automation.reconcile(&crate::automation::TauriHost(app.clone()));
-    Ok(out)
+    crate::blocking(move || {
+        let known: Vec<(String, String)> = crate::agents::automation_agents()
+            .into_iter()
+            .map(|(i, n)| (i.to_string(), n.to_string()))
+            .collect();
+        let config = normalize_auto(config, &known)?;
+        let out = persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.auto_orchestrate = config;
+            Ok(ws.clone())
+        })?;
+        // Fuori dal lock dei workspace: il riallineamento li rilegge.
+        let automation = app.state::<crate::automation::AutomationState>();
+        automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        Ok(out)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn remove_workspace(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    id: String,
-) -> Result<(), String> {
-    {
-        let mut data = state.inner.lock().unwrap();
-        let before = data.workspaces.len();
-        data.workspaces.retain(|w| w.id != id);
-        if data.workspaces.len() == before {
-            return Err("workspace non trovato".to_string());
-        }
-        save_to_disk(&app, &data.workspaces)?;
-    }
-    // Fuori dal lock dei workspace: la board lo rilegge per schedulare.
-    let automation = app.state::<crate::automation::AutomationState>();
-    automation.remove_board(&crate::automation::TauriHost(app.clone()), &id);
-    Ok(())
+pub async fn remove_workspace(app: AppHandle, id: String) -> Result<(), String> {
+    crate::blocking(move || {
+        persist(&app, |data| {
+            let before = data.workspaces.len();
+            data.workspaces.retain(|w| w.id != id);
+            if data.workspaces.len() == before {
+                return Err("workspace non trovato".to_string());
+            }
+            Ok(())
+        })?;
+        // Fuori dal lock dei workspace: la board lo rilegge per schedulare.
+        let automation = app.state::<crate::automation::AutomationState>();
+        automation.remove_board(&crate::automation::TauriHost(app.clone()), &id);
+        Ok(())
+    })
+    .await
 }
+
 
 // ---------------------------------------------------------------------------
 // Avvii personalizzati
@@ -504,102 +498,86 @@ fn valid_default_launch(ws: &Workspace, id: &str, builtin: &[crate::agents::Buil
 }
 
 #[tauri::command]
-pub fn add_launch(
+pub async fn add_launch(
     app: AppHandle,
-    state: State<WorkspaceStore>,
     workspace_id: String,
     name: String,
     command: String,
     is_default: bool,
 ) -> Result<Workspace, String> {
-    let mut data = state.inner.lock().unwrap();
-    data.counter += 1;
-    let id = format!("ln-{}-{}", now_millis(), data.counter);
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == workspace_id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    push_launch(&mut ws.launches, id.clone(), &name, &command)?;
-    if is_default {
-        ws.default_launch = Some(id);
-    }
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+    crate::blocking(move || {
+        persist(&app, |data| {
+            data.counter += 1;
+            let id = format!("ln-{}-{}", now_millis(), data.counter);
+            let ws = ws_mut(data, &workspace_id)?;
+            push_launch(&mut ws.launches, id.clone(), &name, &command)?;
+            if is_default {
+                ws.default_launch = Some(id);
+            }
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn update_launch(
+pub async fn update_launch(
     app: AppHandle,
-    state: State<WorkspaceStore>,
     workspace_id: String,
     launch_id: String,
     name: String,
     command: String,
 ) -> Result<Workspace, String> {
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == workspace_id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    edit_launch(&mut ws.launches, &launch_id, &name, &command)?;
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+    crate::blocking(move || {
+        persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            edit_launch(&mut ws.launches, &launch_id, &name, &command)?;
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn remove_launch(
-    app: AppHandle,
-    state: State<WorkspaceStore>,
-    workspace_id: String,
-    launch_id: String,
-) -> Result<Workspace, String> {
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == workspace_id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    let before = ws.launches.len();
-    ws.launches.retain(|l| l.id != launch_id);
-    if ws.launches.len() == before {
-        return Err("avvio non trovato".to_string());
-    }
-    if ws.default_launch.as_deref() == Some(launch_id.as_str()) {
-        ws.default_launch = None;
-    }
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+pub async fn remove_launch(app: AppHandle, workspace_id: String, launch_id: String) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            let before = ws.launches.len();
+            ws.launches.retain(|l| l.id != launch_id);
+            if ws.launches.len() == before {
+                return Err("avvio non trovato".to_string());
+            }
+            if ws.default_launch.as_deref() == Some(launch_id.as_str()) {
+                ws.default_launch = None;
+            }
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 /// Imposta l'avvio predefinito del workspace (None = eredita il globale).
 #[tauri::command]
-pub fn set_default_launch(
+pub async fn set_default_launch(
     app: AppHandle,
-    state: State<WorkspaceStore>,
     workspace_id: String,
     launch_id: Option<String>,
 ) -> Result<Workspace, String> {
-    let builtin = crate::agents::builtin_launch_list();
-    let mut data = state.inner.lock().unwrap();
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == workspace_id)
-        .ok_or_else(|| "workspace non trovato".to_string())?;
-    if let Some(id) = launch_id.as_deref() {
-        if !valid_default_launch(ws, id, &builtin) {
-            return Err("avvio predefinito non valido".to_string());
-        }
-    }
-    ws.default_launch = launch_id;
-    let out = ws.clone();
-    save_to_disk(&app, &data.workspaces)?;
-    Ok(out)
+    crate::blocking(move || {
+        let builtin = crate::agents::builtin_launch_list();
+        persist(&app, |data| {
+            let ws = ws_mut(data, &workspace_id)?;
+            if let Some(id) = launch_id.as_deref() {
+                if !valid_default_launch(ws, id, &builtin) {
+                    return Err("avvio predefinito non valido".to_string());
+                }
+            }
+            ws.default_launch = launch_id;
+            Ok(ws.clone())
+        })
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------

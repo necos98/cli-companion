@@ -44,7 +44,7 @@ fn bring_to_front(app: &tauri::AppHandle) {
 /// Mostra la toast per il tab `tab_id`; al click focus + `notification-activated`.
 /// Solo Windows: altrove errore, e il frontend ripiega sul plugin.
 #[tauri::command]
-pub fn show_agent_notification(
+pub async fn show_agent_notification(
     app: tauri::AppHandle,
     tab_id: String,
     title: String,
@@ -55,22 +55,26 @@ pub fn show_agent_notification(
     }
     #[cfg(windows)]
     {
-        use tauri::Emitter;
-        use tauri_winrt_notification::Toast;
-        let id = app_id(&app.config().identifier);
-        let handle = app.clone();
-        Toast::new(&id)
-            .title(&title)
-            .text1(&body)
-            // Il suono lo riproduce gia' l'app.
-            .sound(None)
-            .on_activated(move |_| {
-                bring_to_front(&handle);
-                let _ = handle.emit(ACTIVATED_EVENT, serde_json::json!({ "tab_id": tab_id }));
-                Ok(())
-            })
-            .show()
-            .map_err(|e| format!("toast non mostrata: {e}"))
+        // WinRT fuori dal main thread (async + thread bloccante).
+        crate::blocking(move || {
+            use tauri::Emitter;
+            use tauri_winrt_notification::Toast;
+            let id = app_id(&app.config().identifier);
+            let handle = app.clone();
+            Toast::new(&id)
+                .title(&title)
+                .text1(&body)
+                // Il suono lo riproduce gia' l'app.
+                .sound(None)
+                .on_activated(move |_| {
+                    bring_to_front(&handle);
+                    let _ = handle.emit(ACTIVATED_EVENT, serde_json::json!({ "tab_id": tab_id }));
+                    Ok(())
+                })
+                .show()
+                .map_err(|e| format!("toast non mostrata: {e}"))
+        })
+        .await
     }
     #[cfg(not(windows))]
     {

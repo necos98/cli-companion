@@ -23,6 +23,9 @@ interface UsageTab {
  * avvio sessione e ogni 20 s mentre l'agente lavora). Con `enabled` falso non
  * parte alcuna chiamata e lo stato e' vuoto.
  */
+/** Confronto per valore di risposte piccole (evita re-render con dati identici). */
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
 export function useUsage(enabled: boolean, agentEnvs: AgentEnvStatus[], tabs: UsageTab[]) {
   const [limits, setLimits] = useState<Record<string, UsageLimitsReply>>({});
   const [sessions, setSessions] = useState<Record<string, SessionUsage>>({});
@@ -39,7 +42,7 @@ export function useUsage(enabled: boolean, agentEnvs: AgentEnvStatus[], tabs: Us
 
   useEffect(() => {
     if (!enabled || envKeys.length === 0) {
-      setLimits({});
+      setLimits((p) => (Object.keys(p).length === 0 ? p : {}));
       return;
     }
     let cancelled = false;
@@ -48,7 +51,8 @@ export function useUsage(enabled: boolean, agentEnvs: AgentEnvStatus[], tabs: Us
         api
           .agentUsageLimits(CLAUDE_AGENT_ID, env)
           .then((reply) => {
-            if (!cancelled) setLimits((p) => ({ ...p, [env]: reply }));
+            if (cancelled) return;
+            setLimits((p) => (env in p && sameJson(p[env], reply) ? p : { ...p, [env]: reply }));
           })
           .catch(() => undefined);
       }
@@ -81,6 +85,7 @@ export function useUsage(enabled: boolean, agentEnvs: AgentEnvStatus[], tabs: Us
             const { [key]: _drop, ...rest } = p;
             return rest;
           }
+          if (key in p && sameJson(p[key], u)) return p;
           return { ...p, [key]: u };
         });
       })
@@ -95,21 +100,27 @@ export function useUsage(enabled: boolean, agentEnvs: AgentEnvStatus[], tabs: Us
     [refreshSession],
   );
 
-  // Ogni 20 s per i tab in cui l'agente sta lavorando.
   useEffect(() => {
     if (!enabled) {
-      setSessions({});
+      setSessions((p) => (Object.keys(p).length === 0 ? p : {}));
       return;
     }
     // Alla riattivazione si rileggono i tab che hanno gia' un transcript.
     for (const t of tabsRef.current) refreshSession(t.key);
+  }, [enabled, refreshSession]);
+
+  // Ogni 20 s per i tab in cui l'agente sta lavorando: il timer esiste solo
+  // finche' almeno un tab lavora.
+  const anyWorking = tabs.some((t) => sessionPollInterval(t.agent?.phase) !== null);
+  useEffect(() => {
+    if (!enabled || !anyWorking) return;
     const id = setInterval(() => {
       for (const t of tabsRef.current) {
         if (sessionPollInterval(t.agent?.phase) !== null) refreshSession(t.key);
       }
     }, SESSION_POLL_MS);
     return () => clearInterval(id);
-  }, [enabled, refreshSession]);
+  }, [enabled, anyWorking, refreshSession]);
 
   // Tab chiusi: via i loro dati.
   const tabSig = tabs.map((t) => t.key).join("\n");

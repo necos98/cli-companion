@@ -33,6 +33,8 @@ impl Default for LaunchSettings {
 #[derive(Default)]
 pub struct LaunchSettingsStore {
     inner: Mutex<LaunchSettings>,
+    /// Serializza le modifiche: l'I/O avviene fuori dal lock `inner` (i lettori girano sul main thread).
+    save: Mutex<()>,
 }
 
 /// Solo `None` o l'id di un avvio integrato (quelli personalizzati sono per workspace).
@@ -73,29 +75,28 @@ pub fn get_launch_settings(state: State<LaunchSettingsStore>) -> LaunchSettings 
 }
 
 #[tauri::command]
-pub fn set_global_default_launch(
-    app: AppHandle,
-    state: State<LaunchSettingsStore>,
-    launch_id: Option<String>,
-) -> Result<LaunchSettings, String> {
-    validate(&launch_id, &crate::agents::builtin_launch_list())?;
-    let mut s = state.inner.lock().unwrap();
-    let next = LaunchSettings { default_launch: launch_id, ..s.clone() };
-    save_to_disk(&app, &next)?;
-    *s = next.clone();
-    Ok(next)
+pub async fn set_global_default_launch(app: AppHandle, launch_id: Option<String>) -> Result<LaunchSettings, String> {
+    crate::blocking(move || {
+        validate(&launch_id, &crate::agents::builtin_launch_list())?;
+        update(&app, |s| s.default_launch = launch_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_show_usage(
-    app: AppHandle,
-    state: State<LaunchSettingsStore>,
-    enabled: bool,
-) -> Result<LaunchSettings, String> {
-    let mut s = state.inner.lock().unwrap();
-    let next = LaunchSettings { show_usage: enabled, ..s.clone() };
-    save_to_disk(&app, &next)?;
-    *s = next.clone();
+pub async fn set_show_usage(app: AppHandle, enabled: bool) -> Result<LaunchSettings, String> {
+    crate::blocking(move || update(&app, |s| s.show_usage = enabled)).await
+}
+
+/// Applica `f`, salva e solo poi aggiorna la memoria (se il salvataggio fallisce
+/// lo stato resta invariato). Il lock `inner` non copre l'I/O.
+fn update(app: &AppHandle, f: impl FnOnce(&mut LaunchSettings)) -> Result<LaunchSettings, String> {
+    let store = app.state::<LaunchSettingsStore>();
+    let _save = store.save.lock().unwrap();
+    let mut next = store.inner.lock().unwrap().clone();
+    f(&mut next);
+    save_to_disk(app, &next)?;
+    *store.inner.lock().unwrap() = next.clone();
     Ok(next)
 }
 

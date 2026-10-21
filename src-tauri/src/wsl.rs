@@ -1,4 +1,9 @@
-use std::process::Command;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::io::Read;
+use std::process::{Command, Output, Stdio};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -32,10 +37,117 @@ fn decode_output(bytes: &[u8]) -> String {
     }
 }
 
+/// Come `Command::output` ma con timeout: allo scadere il figlio viene
+/// ucciso e si ritorna `TimedOut`. stdout/stderr sono letti in thread
+/// dedicati (un figlio loquace non si blocca su una pipe piena); dopo il
+/// kill un nipote che tiene aperte le pipe non blocca: si usa quanto letto.
+pub(crate) fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            let buf = buf.clone();
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = pipe.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+                let _ = tx.send(());
+            });
+        } else {
+            let _ = tx.send(());
+        }
+        (buf, rx)
+    };
+    let (out_buf, out_done) = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let (err_buf, err_done) = drain(child.stderr.take().map(|p| Box::new(p) as _));
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break Some(s);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let grace = Duration::from_secs(1);
+    let _ = out_done.recv_timeout(grace);
+    let _ = err_done.recv_timeout(grace);
+    let take = |b: &Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap());
+    match status {
+        Some(status) => Ok(Output { status, stdout: take(&out_buf), stderr: take(&err_buf) }),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("nessuna risposta entro {}s", timeout.as_secs()),
+        )),
+    }
+}
+
+/// Cache in-process con scadenza: i risultati del rilevamento WSL (processi
+/// lenti) non vanno rifatti a ogni apertura delle impostazioni.
+pub(crate) struct TtlCache<K, V> {
+    ttl: Duration,
+    map: Mutex<HashMap<K, (Instant, V)>>,
+}
+
+impl<K: Eq + Hash, V: Clone> TtlCache<K, V> {
+    pub(crate) fn new(ttl: Duration) -> Self {
+        Self { ttl, map: Mutex::new(HashMap::new()) }
+    }
+
+    pub(crate) fn get(&self, key: &K) -> Option<V> {
+        let map = self.map.lock().unwrap();
+        map.get(key).filter(|(at, _)| at.elapsed() < self.ttl).map(|(_, v)| v.clone())
+    }
+
+    pub(crate) fn put(&self, key: K, value: V) {
+        self.map.lock().unwrap().insert(key, (Instant::now(), value));
+    }
+
+    pub(crate) fn clear(&self) {
+        self.map.lock().unwrap().clear();
+    }
+}
+
+/// Validita' della cache delle distro installate.
+const DISTROS_CACHE_TTL: Duration = Duration::from_secs(60);
+/// `wsl -l -q` non deve poter bloccare l'app se WSL e' appeso.
+const LIST_DISTROS_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn distros_cache() -> &'static TtlCache<(), Vec<String>> {
+    static C: OnceLock<TtlCache<(), Vec<String>>> = OnceLock::new();
+    C.get_or_init(|| TtlCache::new(DISTROS_CACHE_TTL))
+}
+
+/// Svuota la cache delle distro (dopo install/remove).
+pub(crate) fn invalidate_distros_cache() {
+    distros_cache().clear();
+}
+
+/// Distro installate, con cache di breve durata (solo gli esiti positivi).
 pub fn installed_distros() -> Result<Vec<String>, String> {
-    let output = wsl_command()
-        .args(["-l", "-q"])
-        .output()
+    if let Some(v) = distros_cache().get(&()) {
+        return Ok(v);
+    }
+    let v = installed_distros_uncached()?;
+    distros_cache().put((), v.clone());
+    Ok(v)
+}
+
+fn installed_distros_uncached() -> Result<Vec<String>, String> {
+    let output = output_with_timeout(wsl_command().args(["-l", "-q"]), LIST_DISTROS_TIMEOUT)
         .map_err(|e| format!("wsl.exe non disponibile: {e}"))?;
     let text = decode_output(&output.stdout);
     let mut names: Vec<String> = text
@@ -155,6 +267,34 @@ pub async fn check_wsl_path(distro: String, path: String) -> Result<bool, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn output_with_timeout_kills_hung_child_and_captures_output() {
+        let mut slow = Command::new("ping");
+        slow.args(["-n", "30", "127.0.0.1"]);
+        let t = Instant::now();
+        let err = output_with_timeout(&mut slow, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < Duration::from_secs(5));
+
+        let mut ok = Command::new("cmd");
+        ok.args(["/c", "echo ciao"]);
+        let out = output_with_timeout(&mut ok, Duration::from_secs(10)).unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ciao"));
+    }
+
+    #[test]
+    fn ttl_cache_expires_and_clears() {
+        let c = TtlCache::new(Duration::from_millis(50));
+        c.put(1, Some("a".to_string()));
+        assert_eq!(c.get(&1), Some(Some("a".to_string())));
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(c.get(&1), None);
+        c.put(2, None);
+        c.clear();
+        assert_eq!(c.get(&2), None);
+    }
 
     #[test]
     fn wsl_to_windows_converts_mnt_and_distro_paths() {

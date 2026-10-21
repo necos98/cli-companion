@@ -14,7 +14,7 @@
 //! disco finche' il plugin e' installato.
 
 use super::{
-    claude_usage, parse_version, resolve_wsl_command, AgentProvider, AutomationRequest, Detection, Env, InputEvent,
+    claude_usage, parse_version, DETECT_TIMEOUT, PLUGIN_LIST_TIMEOUT, resolve_wsl_command_cached, AgentProvider, AutomationRequest, Detection, Env, InputEvent,
     InputProfile, InputRule, InstallCtx, PermissionMode, SessionUsage, TranscriptCache, UsageLimitsReply,
 };
 
@@ -267,12 +267,12 @@ impl AgentProvider for ClaudeCode {
     fn detect(&self, env: &Env) -> Detection {
         let path = match env {
             Env::Windows => Some("claude".to_string()),
-            Env::Wsl(d) => resolve_wsl_command(d, "claude"),
+            Env::Wsl(d) => resolve_wsl_command_cached(d, "claude"),
         };
         let Some(path) = path else {
             return Detection::default();
         };
-        match env.run(&path, &["--version"]) {
+        match env.run_timeout(&path, &["--version"], DETECT_TIMEOUT) {
             Ok(out) => Detection {
                 found: true,
                 version: parse_version(&out),
@@ -286,7 +286,7 @@ impl AgentProvider for ClaudeCode {
         let Some(program) = det.path.as_deref() else {
             return false;
         };
-        env.run(program, &["plugin", "list", "--json"])
+        env.run_timeout(program, &["plugin", "list", "--json"], PLUGIN_LIST_TIMEOUT)
             .map(|out| plugin_listed(&out, PLUGIN_ID))
             .unwrap_or(false)
     }

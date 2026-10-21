@@ -35,7 +35,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Eventi Tauri verso il frontend.
 const SPAWN_EVENT: &str = "automation-spawn";
@@ -1546,6 +1546,93 @@ fn rpc_spawn<H: Host>(
 // Host reale + comandi Tauri
 // ---------------------------------------------------------------------------
 
+/// Timer di `Host::defer`: un solo thread con coda a priorita' al posto di un
+/// thread per timer. Il job gira su un thread del pool bloccante (puo' fare
+/// git e I/O) cosi' non ritarda gli altri timer.
+mod timer {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+    use std::sync::{Condvar, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    struct Entry {
+        at: Instant,
+        seq: u64,
+        job: Box<dyn FnOnce() + Send>,
+    }
+
+    // BinaryHeap e' un max-heap: ordine invertito, scade prima il piu' vicino.
+    impl Ord for Entry {
+        fn cmp(&self, other: &Self) -> Ordering {
+            (other.at, other.seq).cmp(&(self.at, self.seq))
+        }
+    }
+    impl PartialOrd for Entry {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl PartialEq for Entry {
+        fn eq(&self, other: &Self) -> bool {
+            (self.at, self.seq) == (other.at, other.seq)
+        }
+    }
+    impl Eq for Entry {}
+
+    #[derive(Default)]
+    struct Queue {
+        heap: BinaryHeap<Entry>,
+        seq: u64,
+    }
+
+    struct Timer {
+        queue: Mutex<Queue>,
+        wake: Condvar,
+    }
+
+    static TIMER: OnceLock<&'static Timer> = OnceLock::new();
+
+    fn timer() -> &'static Timer {
+        TIMER.get_or_init(|| {
+            let t: &'static Timer = Box::leak(Box::new(Timer { queue: Mutex::new(Queue::default()), wake: Condvar::new() }));
+            std::thread::Builder::new()
+                .name("automation-timer".to_string())
+                .spawn(move || t.run())
+                .expect("thread timer automazione");
+            t
+        })
+    }
+
+    impl Timer {
+        fn run(&self) {
+            let mut q = self.queue.lock().unwrap();
+            loop {
+                let now = Instant::now();
+                match q.heap.peek().map(|e| e.at) {
+                    None => q = self.wake.wait(q).unwrap(),
+                    Some(at) if at > now => q = self.wake.wait_timeout(q, at - now).unwrap().0,
+                    Some(_) => {
+                        let job = q.heap.pop().unwrap().job;
+                        drop(q);
+                        tauri::async_runtime::spawn_blocking(job);
+                        q = self.queue.lock().unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn schedule(delay: Duration, job: Box<dyn FnOnce() + Send>) {
+        let t = timer();
+        let mut q = t.queue.lock().unwrap();
+        q.seq += 1;
+        let seq = q.seq;
+        q.heap.push(Entry { at: Instant::now() + delay, seq, job });
+        drop(q);
+        t.wake.notify_one();
+    }
+}
+
 #[derive(Clone)]
 pub struct TauriHost(pub AppHandle);
 
@@ -1596,10 +1683,7 @@ impl Host for TauriHost {
     }
 
     fn defer(&self, delay: Duration, job: Box<dyn FnOnce() + Send>) {
-        std::thread::spawn(move || {
-            std::thread::sleep(delay);
-            job();
-        });
+        timer::schedule(delay, job);
     }
 
     fn workspace(&self, id: &str) -> Option<Workspace> {
@@ -1703,31 +1787,35 @@ pub fn on_hook_event(
 
 /// Il frontend ha chiuso un tab automatico (utente, app o shell uscita).
 #[tauri::command]
-pub fn automation_tab_closed(
-    app: AppHandle,
-    state: State<AutomationState>,
-    tab_id: String,
-) -> Result<(), String> {
+pub async fn automation_tab_closed(app: AppHandle, tab_id: String) -> Result<(), String> {
     if !is_valid_tab_id(&tab_id) {
         return Err("id tab non valido".to_string());
     }
-    state.run(&TauriHost(app), |r| r.tab_closed(&tab_id, now_millis()));
-    Ok(())
+    // Il registro puo' essere occupato (callback dell'host): fuori dal main thread.
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        st.run(&TauriHost(app.clone()), |r| r.tab_closed(&tab_id, now_millis()));
+        Ok(())
+    })
+    .await
 }
 
 /// Un tab dell'avvio integrato "Orchestratore" sta per aprirsi: al massimo un
 /// orchestratore (automatico o manuale) per workspace.
 #[tauri::command]
-pub fn automation_orchestrator_open(
+pub async fn automation_orchestrator_open(
     app: AppHandle,
-    state: State<AutomationState>,
     workspace_id: String,
     tab_id: String,
 ) -> Result<(), String> {
     if !is_valid_tab_id(&tab_id) {
         return Err("id tab non valido".to_string());
     }
-    state.orchestrator_open(&TauriHost(app), &workspace_id, &tab_id, now_millis())
+    crate::blocking(move || {
+        let st = app.state::<AutomationState>();
+        st.orchestrator_open(&TauriHost(app.clone()), &workspace_id, &tab_id, now_millis())
+    })
+    .await
 }
 
 /// Il pty di un tab e' terminato da solo (chiamato dal thread di lettura
@@ -1772,8 +1860,8 @@ pub fn load_boards(app: &tauri::App) {
 
 /// Board del workspace (vuota se non esiste).
 #[tauri::command]
-pub fn board_get(state: State<AutomationState>, workspace_id: String) -> BoardView {
-    state.inner.lock().unwrap().board_view(&workspace_id)
+pub async fn board_get(app: AppHandle, workspace_id: String) -> Result<BoardView, String> {
+    crate::blocking(move || Ok(app.state::<AutomationState>().inner.lock().unwrap().board_view(&workspace_id))).await
 }
 
 /// Imposta `max_parallel` e/o la pausa della board.
@@ -1823,8 +1911,8 @@ pub async fn board_task_action(
 
 /// Worker con tab aperto: il frontend ricostruisce lo stato (hot reload).
 #[tauri::command]
-pub fn automation_sessions(state: State<AutomationState>) -> Vec<AutomationTabInfo> {
-    state.inner.lock().unwrap().open_tabs()
+pub async fn automation_sessions(app: AppHandle) -> Result<Vec<AutomationTabInfo>, String> {
+    crate::blocking(move || Ok(app.state::<AutomationState>().inner.lock().unwrap().open_tabs())).await
 }
 
 #[cfg(test)]

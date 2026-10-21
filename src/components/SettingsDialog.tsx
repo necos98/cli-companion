@@ -97,14 +97,25 @@ export default function SettingsDialog({
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [workspaceId, setWorkspaceId] = useState<string>("");
+  const [prevOpen, setPrevOpen] = useState(isOpen);
 
-  // All'apertura: pagina e workspace richiesti.
+  // All'apertura: pagina e workspace richiesti, impostati durante il render
+  // cosi' la primissima pagina montata e' quella giusta (non l'ultima visitata,
+  // i cui effetti di mount chiamerebbero il backend inutilmente).
+  if (isOpen !== prevOpen) {
+    setPrevOpen(isOpen);
+    if (isOpen) {
+      setTab(initialTab);
+      setWorkspaceId(initialWorkspaceId ?? workspaces[0]?.id ?? "");
+    }
+  }
+  // Cambi di richiesta a dialogo gia' aperto (es. altra pagina dal menu).
   useEffect(() => {
     if (!isOpen) return;
     setTab(initialTab);
     setWorkspaceId(initialWorkspaceId ?? workspaces[0]?.id ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, initialTab, initialWorkspaceId]);
+  }, [initialTab, initialWorkspaceId]);
 
   // Se il workspace selezionato sparisce, ripiega sul primo disponibile.
   const selected =

@@ -582,30 +582,29 @@ pub(super) fn workflows_dir(app: &AppHandle) -> Result<std::path::PathBuf, Strin
 }
 
 #[tauri::command]
-pub fn schedule_get(app: AppHandle, state: State<AutomationState>) -> ScheduleState {
-    state.schedule_state(&TauriHost(app), now_millis())
+pub async fn schedule_get(app: AppHandle) -> Result<ScheduleState, String> {
+    crate::blocking(move || Ok(app.state::<AutomationState>().schedule_state(&TauriHost(app.clone()), now_millis()))).await
 }
 
 #[tauri::command]
-pub fn schedule_set(app: AppHandle, state: State<AutomationState>, schedule: Schedule) -> Result<ScheduleState, String> {
-    state.schedule_set(&TauriHost(app), schedule, now_millis())
+pub async fn schedule_set(app: AppHandle, schedule: Schedule) -> Result<ScheduleState, String> {
+    crate::blocking(move || app.state::<AutomationState>().schedule_set(&TauriHost(app.clone()), schedule, now_millis()))
+        .await
 }
 
 /// Workflow del workspace (None se non esiste).
 #[tauri::command]
-pub fn workflow_get(app: AppHandle, workspace_id: String) -> Result<Option<String>, String> {
-    TauriHost(app).workflow_read(&workspace_id)
+pub async fn workflow_get(app: AppHandle, workspace_id: String) -> Result<Option<String>, String> {
+    crate::blocking(move || TauriHost(app).workflow_read(&workspace_id)).await
 }
 
 /// Salva il workflow del workspace (None o vuoto = elimina).
 #[tauri::command]
-pub fn workflow_save(
-    app: AppHandle,
-    state: State<AutomationState>,
-    workspace_id: String,
-    content: Option<String>,
-) -> Result<(), String> {
-    state.workflow_save(&TauriHost(app), &workspace_id, content.as_deref())
+pub async fn workflow_save(app: AppHandle, workspace_id: String, content: Option<String>) -> Result<(), String> {
+    crate::blocking(move || {
+        app.state::<AutomationState>().workflow_save(&TauriHost(app.clone()), &workspace_id, content.as_deref())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------

@@ -313,9 +313,22 @@ struct FileState {
     last_main: Option<(String, Option<String>)>,
 }
 
-/// Cache dei transcript letti, condivisa (stato gestito da Tauri).
+/// Cache dei transcript letti, condivisa (stato gestito da Tauri). Un lock
+/// per file: quello globale serve solo a prendere/inserire/sfrattare le voci,
+/// la lettura del disco non serializza le sessioni.
 #[derive(Clone, Default)]
-pub struct TranscriptCache(Arc<Mutex<HashMap<PathBuf, FileState>>>);
+pub struct TranscriptCache(Arc<Mutex<HashMap<PathBuf, Arc<Mutex<FileState>>>>>);
+
+impl TranscriptCache {
+    /// Stato del file `path` (creato se manca); sfratta tutto oltre il limite.
+    fn entry(&self, path: &Path) -> Arc<Mutex<FileState>> {
+        let mut files = self.0.lock().unwrap();
+        if files.len() > CACHE_MAX_FILES {
+            files.clear();
+        }
+        files.entry(path.to_path_buf()).or_default().clone()
+    }
+}
 
 fn token_field(usage: &Value, key: &str) -> u64 {
     usage.get(key).and_then(Value::as_u64).unwrap_or(0)
@@ -401,12 +414,9 @@ fn add(a: &mut TokenTotals, b: &TokenTotals) {
 /// Consumi di `transcript` (e dei sub-agent nella cartella accanto),
 /// aggiornando `cache` in modo incrementale.
 fn read_usage(cache: &TranscriptCache, transcript: &Path) -> Result<SessionUsage, String> {
-    let mut files = cache.0.lock().unwrap();
-    if files.len() > CACHE_MAX_FILES {
-        files.clear();
-    }
-    let main = files.entry(transcript.to_path_buf()).or_default();
-    refresh(main, transcript).map_err(|e| format!("Transcript non leggibile: {e}"))?;
+    let main = cache.entry(transcript);
+    let mut main = main.lock().unwrap();
+    refresh(&mut main, transcript).map_err(|e| format!("Transcript non leggibile: {e}"))?;
 
     let mut usage = SessionUsage::default();
     let mut count = 0u32;
@@ -432,8 +442,9 @@ fn read_usage(cache: &TranscriptCache, transcript: &Path) -> Result<SessionUsage
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let state = files.entry(path.clone()).or_default();
-            if refresh(state, &path).is_err() {
+            let state = cache.entry(&path);
+            let mut state = state.lock().unwrap();
+            if refresh(&mut state, &path).is_err() {
                 continue;
             }
             for m in state.msgs.values() {

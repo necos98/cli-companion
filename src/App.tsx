@@ -345,19 +345,24 @@ export default function App() {
   }, [loading, loadError, workspaces]);
 
   // Salvataggio della sessione (debounce) a ogni modifica rilevante.
-  const sessionJson = useMemo(
-    () =>
-      serializeSession({
-        activeWorkspaceId: layout.activeWorkspaceId,
-        activeView: layout.activeView,
-        groups: layout.groups,
-        global: layout.global,
-        tabs: persistableTabs(tabs).map(toSessionTab),
+  // La chiave di confronto NON include i titoli (cambiano di continuo con lo
+  // spinner degli agenti): da sola una variazione di titolo non fa salvare.
+  // Il JSON scritto su disco viene invece costruito al momento del salvataggio
+  // (anche in chiusura) con i titoli piu' recenti.
+  const buildSession = (withTitles: boolean) =>
+    serializeSession({
+      activeWorkspaceId: layout.activeWorkspaceId,
+      activeView: layout.activeView,
+      groups: layout.groups,
+      global: layout.global,
+      tabs: persistableTabs(tabs).map((t) => {
+        const st = toSessionTab(t);
+        return withTitles ? st : { ...st, title: undefined };
       }),
-    [tabs, layout],
-  );
-  const sessionJsonRef = useRef(sessionJson);
-  sessionJsonRef.current = sessionJson;
+    });
+  const sessionJson = useMemo(() => buildSession(false), [tabs, layout]);
+  const buildSessionRef = useRef(buildSession);
+  buildSessionRef.current = buildSession;
   const savedJsonRef = useRef<string | null>(null);
   // Debounce con attesa massima: le modifiche frequenti (titoli OSC dello
   // spinner) non rimandano il salvataggio oltre SESSION_SAVE_MAX_MS.
@@ -378,7 +383,7 @@ export default function App() {
     const id = setTimeout(() => {
       pendingSinceRef.current = null;
       savedJsonRef.current = sessionJson;
-      void api.saveSession(sessionJson).catch(() => {
+      void api.saveSession(buildSessionRef.current(true)).catch(() => {
         savedJsonRef.current = null;
       });
     }, delay);
@@ -410,7 +415,7 @@ export default function App() {
           closingRef.current = true;
           const work = Promise.all([
             saveEnabledRef.current
-              ? api.saveSession(sessionJsonRef.current)
+              ? api.saveSession(buildSessionRef.current(true))
               : Promise.resolve(),
             ...[...flushersRef.current.values()].map((f) => f()),
           ]).catch(() => undefined);
@@ -824,7 +829,13 @@ export default function App() {
   }, []);
 
   const handleTitle = useCallback((key: string, title: string) => {
-    setTabs((prev) => prev.map((t) => (t.key === key ? { ...t, title } : t)));
+    setTabs((prev) => {
+      const i = prev.findIndex((t) => t.key === key);
+      if (i < 0 || prev[i].title === title) return prev;
+      const copy = prev.slice();
+      copy[i] = { ...prev[i], title };
+      return copy;
+    });
   }, []);
 
   // Input dell'utente: Invio => l'agente lavora, altro input toglie ✓/❗.
@@ -852,6 +863,20 @@ export default function App() {
     dragFromRef.current = id;
     setDrag({ from: id, over: null });
   }, []);
+
+  const handleActivate = useCallback(
+    (key: string) => setLayout((l) => setActivePane(l, key)),
+    [],
+  );
+  const handleToggleMaximize = useCallback(
+    (key: string) => setLayout((l) => toggleMaximize(l, key)),
+    [],
+  );
+  const handleTogglePin = useCallback((key: string) => setLayout((l) => togglePin(l, key)), []);
+  const handlePaneDragLeave = useCallback(
+    (key: string) => setDrag((d) => (d.over === key ? { ...d, over: null } : d)),
+    [],
+  );
 
   const handlePaneDragEnd = useCallback(() => {
     dragFromRef.current = null;
@@ -1156,22 +1181,20 @@ export default function App() {
                     maximized={pl?.maximized ?? false}
                     pinned={pl?.pinned ?? false}
                     dropTarget={drag.over === t.key}
-                    onActivate={() => setLayout((l) => setActivePane(l, t.key))}
-                    onClose={() => closeTab(t.key)}
-                    onToggleMaximize={() => setLayout((l) => toggleMaximize(l, t.key))}
-                    onTogglePin={() => setLayout((l) => togglePin(l, t.key))}
-                    onPaneDragStart={() => handlePaneDragStart(t.key)}
-                    onPaneDragOver={() => handlePaneDragOver(t.key)}
-                    onPaneDragLeave={() =>
-                      setDrag((d) => (d.over === t.key ? { ...d, over: null } : d))
-                    }
-                    onPaneDrop={() => handlePaneDrop(t.key)}
+                    onActivate={handleActivate}
+                    onClose={closeTab}
+                    onToggleMaximize={handleToggleMaximize}
+                    onTogglePin={handleTogglePin}
+                    onPaneDragStart={handlePaneDragStart}
+                    onPaneDragOver={handlePaneDragOver}
+                    onPaneDragLeave={handlePaneDragLeave}
+                    onPaneDrop={handlePaneDrop}
                     onPaneDragEnd={handlePaneDragEnd}
                     registerFlush={registerFlush}
-                    onExit={() => handleExit(t.key)}
-                    onTitle={(title) => handleTitle(t.key, title)}
-                    onStatus={(busy) => handleStatus(t.key, busy)}
-                    onInput={(enter) => handleInput(t.key, enter)}
+                    onExit={handleExit}
+                    onTitle={handleTitle}
+                    onStatus={handleStatus}
+                    onInput={handleInput}
                   />
                 );
               })}

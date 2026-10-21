@@ -2,7 +2,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -27,10 +28,16 @@ struct PtySession {
     tab_id: String,
     /// Workspace in cui e' stato aperto il tab.
     workspace_id: String,
-    master: Box<dyn MasterPty + Send>,
-    /// Arc: pty_write lo clona e scrive senza tenere il lock della mappa,
-    /// cosi' una shell che non legge non blocca le altre sessioni.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Arc: il resize clona il master e lo esegue senza tenere il lock della
+    /// mappa (ResizePseudoConsole puo' bloccarsi).
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    /// Ultima richiesta di resize: i resize girano su thread diversi e uno
+    /// vecchio arrivato dopo non deve sovrascrivere la dimensione piu' recente.
+    resize_seq: Arc<AtomicU64>,
+    /// Coda verso il thread di scrittura dedicato: chi scrive accoda soltanto,
+    /// non fa mai I/O (una shell che non legge non blocca ne' la UI ne' le
+    /// altre sessioni). L'ordine dei byte e' quello di accodamento.
+    writer: Sender<Vec<u8>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
 }
 
@@ -46,6 +53,20 @@ impl Default for PtyState {
             next_id: AtomicU32::new(1),
         }
     }
+}
+
+/// Avvia il thread che svuota la coda verso `writer`, nell'ordine di arrivo.
+/// Termina quando il canale si chiude (sessione rimossa) o una scrittura fallisce.
+fn spawn_writer(mut writer: Box<dyn Write + Send>) -> Sender<Vec<u8>> {
+    let (tx, rx) = channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(data) = rx.recv() {
+            if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    tx
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -232,6 +253,29 @@ mod tests {
     let wslenv = w.get_env("WSLENV").unwrap().to_string_lossy().into_owned();
     assert!(wslenv.split(':').any(|e| e == "CLI_COMPANION_SESSION/u"), "{wslenv}");
     assert!(wslenv.split(':').any(|e| e == "CLI_COMPANION_TOKEN/u"), "{wslenv}");
+  }
+
+  #[test]
+  fn writer_queue_preserves_order_and_stops_on_close() {
+    struct Sink(std::sync::mpsc::Sender<Vec<u8>>);
+    impl Write for Sink {
+      fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.send(b.to_vec()).unwrap();
+        Ok(b.len())
+      }
+      fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+      }
+    }
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let tx = spawn_writer(Box::new(Sink(out_tx)));
+    for i in 0..50u8 {
+      tx.send(vec![i]).unwrap();
+    }
+    drop(tx);
+    // Chiuso il canale il thread esce e chiude anche `out_tx`.
+    let got: Vec<u8> = out_rx.iter().flatten().collect();
+    assert_eq!(got, (0..50u8).collect::<Vec<_>>());
   }
 
   #[test]
@@ -439,8 +483,9 @@ fn spawn_blocking_session(
         PtySession {
             tab_id: tab_id.to_string(),
             workspace_id: workspace_id.to_string(),
-            master: pair.master,
-            writer: Arc::new(Mutex::new(writer)),
+            master: Arc::new(Mutex::new(pair.master)),
+            resize_seq: Arc::new(AtomicU64::new(0)),
+            writer: spawn_writer(writer),
             child: Mutex::new(child),
         },
     );
@@ -488,11 +533,11 @@ fn spawn_blocking_session(
 }
 
 /// Scrive nel terminale del tab `tab_id` (usato dall'automazione per
-/// digitare messaggi nei prompt degli agenti). Come `pty_write`, non tiene il
-/// lock della mappa durante la scrittura.
+/// digitare messaggi nei prompt degli agenti). Accoda soltanto: la scrittura
+/// vera la fa il thread della sessione.
 pub fn write_to_tab(app: &AppHandle, tab_id: &str, data: &str) -> Result<(), String> {
     let pty = app.state::<PtyState>();
-    let writer = pty
+    let tx = pty
         .sessions
         .lock()
         .unwrap()
@@ -500,10 +545,8 @@ pub fn write_to_tab(app: &AppHandle, tab_id: &str, data: &str) -> Result<(), Str
         .find(|sess| sess.tab_id == tab_id)
         .map(|sess| sess.writer.clone())
         .ok_or_else(|| "terminale del tab non trovato".to_string())?;
-    let mut writer = writer.lock().unwrap();
-    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    tx.send(data.as_bytes().to_vec())
+        .map_err(|_| "terminale chiuso".to_string())
 }
 
 /// Id del workspace in cui e' aperto il tab `tab_id` (None se non ha un pty vivo).
@@ -516,44 +559,59 @@ pub fn workspace_of_tab(app: &AppHandle, tab_id: &str) -> Option<String> {
         .map(|sess| sess.workspace_id.clone())
 }
 
+/// Sincrono ma O(1): accoda e basta, quindi sul main thread non blocca.
 #[tauri::command]
 pub fn pty_write(pty: State<PtyState>, session_id: u32, data: String) -> Result<(), String> {
-    let writer = pty
+    let tx = pty
         .sessions
         .lock()
         .unwrap()
         .get(&session_id)
         .map(|sess| sess.writer.clone())
         .ok_or_else(|| "sessione non trovata".to_string())?;
-    let mut writer = writer.lock().unwrap();
-    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    tx.send(data.into_bytes())
+        .map_err(|_| "sessione chiusa".to_string())
 }
 
 #[tauri::command]
-pub fn pty_resize(
-    pty: State<PtyState>,
+pub async fn pty_resize(
+    pty: State<'_, PtyState>,
     session_id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let sessions = pty.sessions.lock().unwrap();
-    let sess = sessions
+    // Il lock della mappa e' rilasciato prima del resize (puo' essere lento).
+    let (master, seq) = pty
+        .sessions
+        .lock()
+        .unwrap()
         .get(&session_id)
+        .map(|sess| (sess.master.clone(), sess.resize_seq.clone()))
         .ok_or_else(|| "sessione non trovata".to_string())?;
-    sess.master
-        .resize(pty_size(cols, rows))
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mine = seq.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::blocking(move || {
+        let master = master.lock().unwrap();
+        // Superato da un resize piu' recente: lo applichera' quello.
+        if seq.load(Ordering::SeqCst) != mine {
+            return Ok(());
+        }
+        master.resize(pty_size(cols, rows)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn pty_close(pty: State<PtyState>, session_id: u32) -> Result<(), String> {
+pub async fn pty_close(pty: State<'_, PtyState>, session_id: u32) -> Result<(), String> {
     let session = pty.sessions.lock().unwrap().remove(&session_id);
     if let Some(sess) = session {
-        let mut child = sess.child.lock().unwrap();
-        let _ = child.kill();
+        // kill e drop del master (ClosePseudoConsole) possono bloccarsi:
+        // fuori dal main thread.
+        crate::blocking(move || {
+            let _ = sess.child.lock().unwrap().kill();
+            drop(sess);
+            Ok(())
+        })
+        .await?;
     }
     Ok(())
 }

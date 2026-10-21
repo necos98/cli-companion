@@ -15,16 +15,29 @@ mod claude_usage;
 pub use claude_usage::TranscriptCache;
 
 use crate::launch_settings::LaunchSettingsStore;
-use crate::wsl::{installed_distros, windows_to_wsl_path};
+use crate::wsl::{
+    installed_distros, invalidate_distros_cache, output_with_timeout, windows_to_wsl_path, TtlCache,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Timeout di un comando generico (installazione/rimozione del plugin).
+const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+/// Timeout della risoluzione del path (shell login/interattiva) e di `--version`.
+pub(crate) const DETECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout di `plugin list` (l'agente puo' consultare i marketplace).
+pub(crate) const PLUGIN_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+/// Validita' della cache dei path risolti.
+const RESOLVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Registro degli agenti supportati.
 static PROVIDERS: &[&dyn AgentProvider] = &[&claude_code::ClaudeCode];
@@ -113,7 +126,12 @@ impl Env {
     /// Esegue `program args...`; ritorna lo stdout, o in errore lo stderr
     /// (o lo stdout, o l'exit code).
     pub fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        run_command(self.command(program), args, program)
+        self.run_timeout(program, args, RUN_TIMEOUT)
+    }
+
+    /// Come `run` con un timeout esplicito (il figlio viene ucciso allo scadere).
+    pub fn run_timeout(&self, program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+        run_command(self.command(program), args, program, timeout)
     }
 
     /// Path di una cartella locale come lo vede l'agente nell'ambiente:
@@ -140,10 +158,8 @@ pub fn forward_slashes(p: &str) -> String {
     p.replace('\\', "/").trim_start_matches("//?/").to_string()
 }
 
-fn run_command(mut cmd: Command, args: &[&str], label: &str) -> Result<String, String> {
-    let out = cmd
-        .args(args)
-        .output()
+fn run_command(mut cmd: Command, args: &[&str], label: &str, timeout: Duration) -> Result<String, String> {
+    let out = output_with_timeout(cmd.args(args), timeout)
         .map_err(|e| format!("{label} non avviabile: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -190,13 +206,35 @@ pub fn resolve_wsl_command(distro: &str, name: &str) -> Option<String> {
     for flag in ["-lc", "-ic"] {
         let mut cmd = Env::Wsl(distro.to_string()).command("bash");
         // Lo stdout basta (anche con exit != 0 per il rumore); lo stderr si ignora.
-        if let Ok(out) = cmd.args([flag, &script]).output() {
+        if let Ok(out) = output_with_timeout(cmd.args([flag, &script]), DETECT_TIMEOUT) {
             if let Some(p) = parse_command_path(&String::from_utf8_lossy(&out.stdout)) {
                 return Some(p);
             }
         }
     }
     None
+}
+
+/// `resolve_wsl_command` con cache di breve durata (anche gli esiti `None`).
+pub fn resolve_wsl_command_cached(distro: &str, name: &str) -> Option<String> {
+    let key = (distro.to_string(), name.to_string());
+    if let Some(v) = resolve_cache().get(&key) {
+        return v;
+    }
+    let v = resolve_wsl_command(distro, name);
+    resolve_cache().put(key, v.clone());
+    v
+}
+
+fn resolve_cache() -> &'static TtlCache<(String, String), Option<String>> {
+    static C: OnceLock<TtlCache<(String, String), Option<String>>> = OnceLock::new();
+    C.get_or_init(|| TtlCache::new(RESOLVE_CACHE_TTL))
+}
+
+/// Dimentica distro e path risolti: il rilevamento successivo e' fresco.
+fn invalidate_detection_cache() {
+    invalidate_distros_cache();
+    resolve_cache().clear();
 }
 
 /// Esito del rilevamento di un agente in un ambiente.
@@ -702,6 +740,7 @@ pub async fn install_agent_plugin(
     env_key: String,
 ) -> Result<String, String> {
     crate::blocking(move || {
+        invalidate_detection_cache();
         let (provider, env, det, ctx) = prepare(&app, &agent_id, &env_key)?;
         if !det.found {
             return Err(format!(
@@ -721,6 +760,7 @@ pub async fn remove_agent_plugin(
     env_key: String,
 ) -> Result<String, String> {
     crate::blocking(move || {
+        invalidate_detection_cache();
         let (provider, env, det, ctx) = prepare(&app, &agent_id, &env_key)?;
         provider.uninstall(&ctx, &env, &det)
     })
@@ -965,7 +1005,7 @@ mod tests {
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
 
         // Spawn diretto per nome: non risolve. Via Env::run (cmd /c): si'.
-        let direct = run_command(Command::new("mc-fake-shim"), &[], "shim");
+        let direct = run_command(Command::new("mc-fake-shim"), &[], "shim", RUN_TIMEOUT);
         let via_cmd = Env::Windows.run("mc-fake-shim", &[]);
 
         std::env::set_var("PATH", &prev_path);

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -54,22 +54,24 @@ interface Props {
   pinned: boolean;
   /** Evidenzia il pannello come bersaglio di un trascinamento. */
   dropTarget: boolean;
-  onActivate: () => void;
-  onClose: () => void;
-  onToggleMaximize: () => void;
-  onTogglePin: () => void;
-  onPaneDragStart: () => void;
-  onPaneDragOver: () => void;
-  onPaneDragLeave: () => void;
-  onPaneDrop: () => void;
+  // Callback stabili (le stesse per tutti i tab): ricevono il `tabId`, cosi'
+  // il componente memoizzato non si ri-renderizza a ogni render di App.
+  onActivate: (tabId: string) => void;
+  onClose: (tabId: string) => void;
+  onToggleMaximize: (tabId: string) => void;
+  onTogglePin: (tabId: string) => void;
+  onPaneDragStart: (tabId: string) => void;
+  onPaneDragOver: (tabId: string) => void;
+  onPaneDragLeave: (tabId: string) => void;
+  onPaneDrop: (tabId: string) => void;
   onPaneDragEnd: () => void;
   /** Registra (o rimuove, con null) il salvataggio dello scrollback di questo tab. */
   registerFlush?: (tabId: string, flush: (() => Promise<void>) | null) => void;
-  onExit: () => void;
-  onTitle?: (title: string) => void;
-  onStatus?: (busy: boolean) => void;
+  onExit: (tabId: string) => void;
+  onTitle?: (tabId: string, title: string) => void;
+  onStatus?: (tabId: string, busy: boolean) => void;
   /** Input dell'utente nel terminale (`enter` = contiene Invio). */
-  onInput?: (enter: boolean) => void;
+  onInput?: (tabId: string, enter: boolean) => void;
   /**
    * Sequenza da inviare al pty al posto di Ctrl+V quando gli appunti non
    * hanno testo (profilo di input dell'agente del tab, già risolto per
@@ -89,7 +91,7 @@ interface Props {
   usage?: { text: string; title: string };
 }
 
-export default function TerminalView({
+function TerminalView({
   tabId,
   workspace,
   initialCommand,
@@ -142,6 +144,9 @@ export default function TerminalView({
   const sessionRef = useRef(0);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Ultima dimensione inviata al pty (per sessione): evita ptyResize ridondanti.
+  const lastSizeRef = useRef({ session: 0, cols: 0, rows: 0 });
+  const syncSizeRef = useRef<((fit: FitAddon, term: Terminal) => void) | null>(null);
   // Catturato al mount: modifiche successive agli avvii valgono
   // solo per i terminali aperti dopo.
   const pendingCommandRef = useRef(initialCommand);
@@ -152,6 +157,19 @@ export default function TerminalView({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    // fit + ptyResize solo se righe/colonne sono cambiate rispetto all'ultimo
+    // invio per la sessione corrente (nuova sessione = dimensione azzerata).
+    const syncSize = (fit: FitAddon, term: Terminal) => {
+      const s = sessionRef.current;
+      if (s === 0) return;
+      fit.fit();
+      const last = lastSizeRef.current;
+      if (last.session === s && last.cols === term.cols && last.rows === term.rows) return;
+      lastSizeRef.current = { session: s, cols: term.cols, rows: term.rows };
+      void api.ptyResize(s, term.cols, term.rows).catch(() => undefined);
+    };
+    syncSizeRef.current = syncSize;
 
     const term = new Terminal({
       fontSize: 13,
@@ -209,7 +227,7 @@ export default function TerminalView({
 
     const status = createBusyTracker({
       idleMs: 2000,
-      onChange: (busy) => onStatusRef.current?.(busy),
+      onChange: (busy) => onStatusRef.current?.(tabId, busy),
     });
 
     // Iniezione del comando di avvio: al primo output della shell
@@ -235,7 +253,7 @@ export default function TerminalView({
 
     const titleDisp = term.onTitleChange((t) => {
       const next = sanitizeTerminalTitle(t);
-      if (next !== null) onTitleRef.current?.(next);
+      if (next !== null) onTitleRef.current?.(tabId, next);
     });
 
     term.onData((data) => {
@@ -244,7 +262,7 @@ export default function TerminalView({
       const enter = data.includes("\r") || data.includes("\n");
       if (enter) status.markEnter();
       // Le risposte automatiche del terminale (focus, CPR...) non sono input.
-      if (!isTerminalReply(data)) onInputRef.current?.(enter);
+      if (!isTerminalReply(data)) onInputRef.current?.(tabId, enter);
     });
 
     // Copia/incolla da tastiera: xterm non li gestisce da solo (senza
@@ -307,10 +325,7 @@ export default function TerminalView({
         if (disposed) return;
         if (!activeRef.current || sessionRef.current === 0) return;
         try {
-          fit.fit();
-          void api
-            .ptyResize(sessionRef.current, term.cols, term.rows)
-            .catch(() => undefined);
+          syncSize(fit, term);
         } catch {
           // ignora: succede durante lo smontaggio
         }
@@ -340,7 +355,7 @@ export default function TerminalView({
           if (disposed) return;
           if (e.kind === "exit") {
             status.markIdle();
-            onExitRef.current();
+            onExitRef.current(tabId);
             return;
           }
           term.write(e.data);
@@ -376,6 +391,8 @@ export default function TerminalView({
           return;
         }
         sessionRef.current = id;
+        // Lo spawn e' avvenuto con la dimensione iniziale: e' gia' quella nota al pty.
+        lastSizeRef.current = { session: id, cols: initialCols, rows: initialRows };
         if (shouldInjectLaunch(wantedCommand)) {
           fallbackTimer = setTimeout(
             injectLaunch,
@@ -387,10 +404,7 @@ export default function TerminalView({
         // al contenitore reale e risincronizza il PTY.
         if (activeRef.current) {
           try {
-            fit.fit();
-            void api
-              .ptyResize(id, term.cols, term.rows)
-              .catch(() => undefined);
+            syncSize(fit, term);
           } catch {
             // ignora: succede durante lo smontaggio
           }
@@ -400,16 +414,19 @@ export default function TerminalView({
       }
     })();
 
+    // Le notifiche vengono coalizzate in un solo fit per frame.
+    let roFrame: number | undefined;
     const ro = new ResizeObserver(() => {
-      if (!activeRef.current || sessionRef.current === 0) return;
-      try {
-        fit.fit();
-        void api
-          .ptyResize(sessionRef.current, term.cols, term.rows)
-          .catch(() => undefined);
-      } catch {
-        // ignora: succede durante lo smontaggio
-      }
+      if (roFrame !== undefined) return;
+      roFrame = requestAnimationFrame(() => {
+        roFrame = undefined;
+        if (disposed || !activeRef.current || sessionRef.current === 0) return;
+        try {
+          syncSize(fit, term);
+        } catch {
+          // ignora: succede durante lo smontaggio
+        }
+      });
     });
     ro.observe(el);
 
@@ -418,6 +435,8 @@ export default function TerminalView({
       registerFlushRef.current?.(tabId, null);
       if (saveTimer !== undefined) clearTimeout(saveTimer);
       ro.disconnect();
+      if (roFrame !== undefined) cancelAnimationFrame(roFrame);
+      syncSizeRef.current = null;
       if (injectTimer !== undefined) clearTimeout(injectTimer);
       if (fallbackTimer !== undefined) clearTimeout(fallbackTimer);
       titleDisp.dispose();
@@ -440,8 +459,7 @@ export default function TerminalView({
     if (!term || !fit || s === 0) return;
     requestAnimationFrame(() => {
       try {
-        fit.fit();
-        void api.ptyResize(s, term.cols, term.rows).catch(() => undefined);
+        syncSizeRef.current?.(fit, term);
       } catch {
         // ignora
       }
@@ -473,14 +491,14 @@ export default function TerminalView({
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
-        onPaneDragOver();
+        onPaneDragOver(tabId);
       }}
       onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onPaneDragLeave();
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onPaneDragLeave(tabId);
       }}
       onDrop={(e) => {
         e.preventDefault();
-        onPaneDrop();
+        onPaneDrop(tabId);
       }}
     >
       <div
@@ -491,7 +509,7 @@ export default function TerminalView({
         )}
         data-focused={focused}
         onMouseDown={() => {
-          onActivate();
+          onActivate(tabId);
           termRef.current?.focus();
         }}
       >
@@ -505,13 +523,13 @@ export default function TerminalView({
           usage={usage}
           maximized={maximized}
           pinned={pinned}
-          onTogglePin={onTogglePin}
-          onToggleMaximize={onToggleMaximize}
-          onClose={onClose}
+          onTogglePin={() => onTogglePin(tabId)}
+          onToggleMaximize={() => onToggleMaximize(tabId)}
+          onClose={() => onClose(tabId)}
           onDragStart={(e) => {
             e.dataTransfer.setData("text/plain", tabId);
             e.dataTransfer.effectAllowed = "move";
-            onPaneDragStart();
+            onPaneDragStart(tabId);
           }}
           onDragEnd={onPaneDragEnd}
         />
@@ -529,3 +547,32 @@ export default function TerminalView({
     </div>
   );
 }
+
+/**
+ * Memoizzato: App si ri-renderizza spesso (eventi agente, titoli). `status`, `usage` e
+ * `automation` sono oggetti ricreati a ogni render, quindi si confrontano per
+ * campo; tutte le altre prop per identita'.
+ */
+export default memo(TerminalView, (a, b) => {
+  const keys = Object.keys(b) as Array<keyof Props>;
+  if (keys.length !== Object.keys(a).length) return false;
+  for (const k of keys) {
+    if (k === "usage") {
+      if (a.usage?.text !== b.usage?.text || a.usage?.title !== b.usage?.title) return false;
+    } else if (k === "status") {
+      const x = a.status;
+      const y = b.status;
+      if (x.icon !== y.icon || x.tone !== y.tone || x.label !== y.label) return false;
+    } else if (k === "automation") {
+      const x = a.automation;
+      const y = b.automation;
+      if (x !== y) {
+        if (!x || !y) return false;
+        if (x.role !== y.role || x.status !== y.status || x.tooltip !== y.tooltip) return false;
+      }
+    } else if (a[k] !== b[k]) {
+      return false;
+    }
+  }
+  return true;
+});
