@@ -83,6 +83,8 @@ interface Props {
    * lo scrollback non viene salvato (il tab non e' mai ripristinato).
    */
   automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
+  /** Avvio del tab (per il badge dell'orchestratore manuale). */
+  launchId?: string;
 }
 
 export default function TerminalView({
@@ -116,6 +118,7 @@ export default function TerminalView({
   imagePasteSeq = null,
   cwd = null,
   automation,
+  launchId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -495,6 +498,7 @@ export default function TerminalView({
           focused={focused}
           status={paneStatus}
           automation={automation}
+          launchId={launchId}
           maximized={maximized}
           pinned={pinned}
           onTogglePin={onTogglePin}

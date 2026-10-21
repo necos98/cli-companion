@@ -1715,6 +1715,21 @@ pub fn automation_tab_closed(
     Ok(())
 }
 
+/// Un tab dell'avvio integrato "Orchestratore" sta per aprirsi: al massimo un
+/// orchestratore (automatico o manuale) per workspace.
+#[tauri::command]
+pub fn automation_orchestrator_open(
+    app: AppHandle,
+    state: State<AutomationState>,
+    workspace_id: String,
+    tab_id: String,
+) -> Result<(), String> {
+    if !is_valid_tab_id(&tab_id) {
+        return Err("id tab non valido".to_string());
+    }
+    state.orchestrator_open(&TauriHost(app), &workspace_id, &tab_id, now_millis())
+}
+
 /// Il pty di un tab e' terminato da solo (chiamato dal thread di lettura
 /// solo se nessuno aveva chiamato `pty_close`: non e' una chiusura
 /// dell'utente). Per l'orchestratore automatico significa crash/uscita.

@@ -120,6 +120,7 @@ pub fn run() {
             updater::install_update,
             agent_notify::test_agent_notify,
             automation::automation_tab_closed,
+            automation::automation_orchestrator_open,
             automation::automation_sessions,
             automation::board_get,
             automation::board_set,

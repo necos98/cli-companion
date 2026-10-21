@@ -8,6 +8,8 @@ use crate::schedule::{parse_hhmm, Schedule, Window};
 use crate::workspaces::AutoOrchestrate;
 
 const NOW: i64 = 1_700_000_000_000;
+/// Uguale a `SPAWN_GRACE_MS` di auto.rs.
+const GRACE_MS: i64 = 60_000;
 
 fn night() -> Schedule {
     Schedule {
@@ -708,5 +710,85 @@ fn a_user_close_still_dismisses_while_an_exit_during_drain_is_harmless() {
     at(&h, "13:00");
     tick(&st, &h);
     st.run(&h, |r| r.auto_tab_exited("auto-sconosciuto", NOW));
+    assert_eq!(orch_tabs(&h).len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestratore manuale: al massimo uno per workspace
+// ---------------------------------------------------------------------------
+
+fn open_manual(st: &AutomationState, h: &FakeHost, ws: &str, tab: &str, now: i64) -> Result<(), String> {
+    st.orchestrator_open(h, ws, tab, now)
+}
+
+#[test]
+fn a_manual_orchestrator_blocks_the_automatic_spawn() {
+    let (st, h) = setup("20:00");
+    load_work(&st, &h, vec![t("a")]);
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    pty_up(&h, "man-1");
+    tick(&st, &h);
+    assert!(orch_tabs(&h).is_empty());
+    // Anche molto dopo, finche' il suo pty e' vivo.
+    st.tick(&h, NOW + 10 * GRACE_MS);
+    assert!(orch_tabs(&h).is_empty());
+}
+
+#[test]
+fn a_second_orchestrator_in_the_same_workspace_fails_but_another_workspace_is_free() {
+    let (st, h) = setup("20:00");
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    pty_up(&h, "man-1");
+    let err = open_manual(&st, &h, "ws-1", "man-2", NOW + 1).unwrap_err();
+    assert!(err.contains("gia' attivo"));
+    // Lo stesso tab puo' registrarsi di nuovo (ripristino).
+    open_manual(&st, &h, "ws-1", "man-1", NOW + 2).unwrap();
+    open_manual(&st, &h, "ws-2", "man-3", NOW + 3).unwrap();
+}
+
+#[test]
+fn registration_fails_while_the_automatic_orchestrator_is_open() {
+    let (st, h) = setup("20:00");
+    load_work(&st, &h, vec![t("a")]);
+    tick(&st, &h);
+    let auto = orch_tabs(&h);
+    assert_eq!(auto.len(), 1);
+    pty_up(&h, &auto[0]);
+    assert!(open_manual(&st, &h, "ws-1", "man-1", NOW + 1).is_err());
+    // Chiuso l'automatico (tab sparito) il posto si libera.
+    pty_down(&h, &auto[0]);
+    st.run(&h, |r| r.tab_closed(&auto[0], NOW + 2));
+    assert!(open_manual(&st, &h, "ws-1", "man-1", NOW + 3).is_ok());
+}
+
+#[test]
+fn closing_or_exiting_the_manual_orchestrator_frees_the_workspace() {
+    let (st, h) = setup("20:00");
+    load_work(&st, &h, vec![t("a")]);
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    pty_up(&h, "man-1");
+    tick(&st, &h);
+    assert!(orch_tabs(&h).is_empty());
+    // Chiusura dal frontend.
+    pty_down(&h, "man-1");
+    st.run(&h, |r| r.tab_closed("man-1", NOW + 1));
+    tick(&st, &h);
+    assert_eq!(orch_tabs(&h).len(), 1);
+
+    // Uscita del pty: la registrazione sparisce.
+    let (st, h) = setup("20:00");
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    pty_up(&h, "man-1");
+    pty_down(&h, "man-1");
+    st.run(&h, |r| r.auto_tab_exited("man-1", NOW + 1));
+    assert!(open_manual(&st, &h, "ws-1", "man-2", NOW + 2).is_ok());
+}
+
+#[test]
+fn a_registration_whose_tab_never_appeared_expires() {
+    let (st, h) = setup("20:00");
+    load_work(&st, &h, vec![t("a")]);
+    open_manual(&st, &h, "ws-1", "man-1", NOW).unwrap();
+    st.tick(&h, NOW + GRACE_MS + 1);
     assert_eq!(orch_tabs(&h).len(), 1);
 }

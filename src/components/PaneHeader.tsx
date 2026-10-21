@@ -1,6 +1,6 @@
 import { Bot, Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
-import { automationBadge, statusWord as workerStatusWord } from "../lib/automation";
+import { tabBadge, statusWord as workerStatusWord } from "../lib/automation";
 import { cn } from "../lib/utils";
 import StatusIcon from "./StatusIcon";
 
@@ -11,6 +11,8 @@ interface Props {
   status: TabStatus;
   /** Sessione automatica (worker): stato e tooltip; assente = tab normale. */
   automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
+  /** Avvio da cui e' nato il tab (l'orchestratore manuale ha il badge ORCH). */
+  launchId?: string;
   /** Il pannello riceve la tastiera. */
   focused?: boolean;
   maximized: boolean;
@@ -39,6 +41,7 @@ export default function PaneHeader({
   prefix,
   status,
   automation,
+  launchId,
   focused = false,
   maximized,
   pinned,
@@ -50,6 +53,7 @@ export default function PaneHeader({
 }: Props) {
   // Per un worker la parola di stato e' quella del task, non quella dell'agente.
   const word = automation ? workerStatusWord(automation.status) : statusWord(status);
+  const badge = tabBadge({ automation, launchId });
   const baseTitle = prefix ? `${prefix} / ${label}` : label;
   return (
     <div
@@ -81,18 +85,16 @@ export default function PaneHeader({
       >
         {label}
       </span>
-      {automation && (
+      {badge && (
         <span
-          title={automationBadge(automation.role).title}
+          title={badge.title}
           className={cn(
             "flex flex-shrink-0 items-center gap-0.5 rounded-[4px] border px-1 font-mono text-[9px] font-medium leading-[14px] tracking-wide",
-            automation.role === "orchestrator"
-              ? "border-primary/50 text-primary"
-              : "text-muted-foreground",
+            badge.orchestrator ? "border-primary/50 text-primary" : "text-muted-foreground",
           )}
         >
-          {automation.role === "orchestrator" && <Bot className="h-[10px] w-[10px]" />}
-          {automationBadge(automation.role).text}
+          {badge.orchestrator && <Bot className="h-[10px] w-[10px]" />}
+          {badge.text}
         </span>
       )}
       {word && (

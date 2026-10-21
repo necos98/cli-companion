@@ -110,7 +110,9 @@ Qualunque sessione Claude Code aperta in un tab di cli-companion può fare da
 **orchestratore**: con i tool MCP di cli-companion avvia altre sessioni, i
 **worker**, e ne segue il lavoro. Un worker è un tab marcato **AUTO** (badge e
 stato nell'intestazione, tooltip con titolo del task, padre e ultimo report)
-che comunica solo tramite tool: nessuno legge il suo terminale.
+che comunica solo tramite tool: nessuno legge il suo terminale. Gli orchestratori
+(quello automatico e un tab dell'avvio "Orchestratore") hanno il badge **ORCH**, e ce n'è
+al massimo uno per workspace.
 
 Setup: reinstalla il plugin da **Impostazioni → Coding agent** (per ogni
 ambiente: Windows e ogni distro WSL). Il plugin ora dichiara anche il server MCP

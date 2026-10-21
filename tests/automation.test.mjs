@@ -9,6 +9,8 @@ import {
   isAutomated,
   persistableTabs,
   statusWord,
+  tabBadge,
+  ORCHESTRATOR_LAUNCH_ID,
   truncateReport,
 } from "../src/lib/automation.ts";
 import { EMPTY_LAYOUT, openTab, openTabBackground } from "../src/lib/layout.ts";
@@ -169,5 +171,28 @@ describe("automazione: orchestratore automatico", () => {
   it("l'aggiornamento conserva il ruolo", () => {
     const next = applyAutomationUpdate(meta({ role: "orchestrator" }), { status: "running", title: "" });
     assert.equal(next.role, "orchestrator");
+  });
+});
+
+describe("automazione: badge del tab", () => {
+  it("l'orchestratore automatico e quello manuale hanno entrambi ORCH", () => {
+    const auto = tabBadge({ automation: meta({ role: "orchestrator" }) });
+    assert.deepEqual(auto, { text: "ORCH", title: "Orchestratore automatico", orchestrator: true });
+    const manual = tabBadge({ launchId: ORCHESTRATOR_LAUNCH_ID });
+    assert.deepEqual(manual, { text: "ORCH", title: "Orchestratore", orchestrator: true });
+    assert.equal(ORCHESTRATOR_LAUNCH_ID, "builtin:orchestrator");
+  });
+
+  it("i worker hanno AUTO, gli altri tab nessun badge", () => {
+    assert.equal(tabBadge({ automation: meta() }).text, "AUTO");
+    assert.equal(tabBadge({ automation: meta() }).orchestrator, false);
+    assert.equal(tabBadge({}), null);
+    assert.equal(tabBadge({ launchId: "builtin:claude-code" }), null);
+  });
+
+  it("l'orchestratore manuale non e' un tab automatico: resta persistibile", () => {
+    const tab = { key: "t", launchId: ORCHESTRATOR_LAUNCH_ID };
+    assert.equal(isAutomated(tab), false);
+    assert.equal(persistableTabs([tab]).length, 1);
   });
 });

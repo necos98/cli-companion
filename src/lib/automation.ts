@@ -50,6 +50,30 @@ export function automationBadge(role: AutomationRole | undefined): { text: strin
     : { text: "AUTO", title: "Sessione automatica" };
 }
 
+/** Id dell'avvio integrato "Orchestratore" (vedi agents/mod.rs). */
+export const ORCHESTRATOR_LAUNCH_ID = "builtin:orchestrator";
+
+/** Etichetta del badge di un orchestratore avviato a mano. */
+export const MANUAL_ORCHESTRATOR_LABEL = "Orchestratore";
+
+/**
+ * Badge dell'intestazione di un tab: ORCH per l'orchestratore automatico e per
+ * quello avviato a mano (avvio integrato), AUTO per i worker, nessuno per gli
+ * altri tab.
+ */
+export function tabBadge(tab: {
+  automation?: { role?: AutomationRole } | null;
+  launchId?: string;
+}): { text: string; title: string; orchestrator: boolean } | null {
+  if (tab.automation) {
+    return { ...automationBadge(tab.automation.role), orchestrator: isOrchestrator(tab.automation) };
+  }
+  if (tab.launchId === ORCHESTRATOR_LAUNCH_ID) {
+    return { text: "ORCH", title: MANUAL_ORCHESTRATOR_LABEL, orchestrator: true };
+  }
+  return null;
+}
+
 /** Lunghezza massima dell'ultimo report nel tooltip. */
 export const REPORT_TOOLTIP_MAX = 240;
 

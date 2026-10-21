@@ -55,6 +55,7 @@ import {
   isAutomated,
   normalizeRole,
   ORCHESTRATOR_LABEL,
+  ORCHESTRATOR_LAUNCH_ID,
   persistableTabs,
 } from "./lib/automation";
 import type { AutomationMeta } from "./lib/automation";
@@ -160,6 +161,9 @@ export default function App() {
   // TerminalView (mai riordinato: smontarli ucciderebbe la sessione pty).
   // L'ordine nella griglia vive solo in `layout`.
   const [tabs, setTabs] = useState<Tab[]>([]);
+  // Avviso temporaneo (es. orchestratore gia' attivo), mostrato nella sidebar.
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [layout, setLayout] = useState<LayoutState>(EMPTY_LAYOUT);
   const [busyByKey, setBusyByKey] = useState<Record<string, boolean>>({});
   const [drag, setDrag] = useState<{ from: string | null; over: string | null }>({
@@ -314,6 +318,13 @@ export default function App() {
           global: data.global,
           activeView: data.activeView,
         });
+      }
+      // Orchestratori manuali ripristinati: registrati ignorando l'errore
+      // (un duplicato di una vecchia sessione semplicemente non e' tracciato).
+      for (const t of data?.tabs ?? []) {
+        if (t.launchId === ORCHESTRATOR_LAUNCH_ID) {
+          void api.automationOrchestratorOpen(t.workspaceId, t.tabId).catch(() => undefined);
+        }
       }
       // Via lo scrollback dei tab che non esistono più (solo se la lettura è riuscita).
       if (loaded) {
@@ -580,9 +591,21 @@ export default function App() {
 
   // Senza `launch` parte l'avvio predefinito del workspace, se esiste;
   // altrimenti una shell semplice. Il nuovo terminale attiva il suo gruppo.
-  const spawnTab = useCallback((ws: Workspace, launch?: Launch | BuiltinLaunch) => {
+  // L'avvio "Orchestratore" va prima registrato nel backend (uno per workspace):
+  // se rifiutato si mostra l'avviso e non si apre niente.
+  const spawnTab = useCallback(async (ws: Workspace, launch?: Launch | BuiltinLaunch) => {
     const chosen = launch ?? resolveDefaultLaunch(ws, builtinLaunches, globalLaunch);
     const key = newTabKey();
+    if (chosen?.id === ORCHESTRATOR_LAUNCH_ID) {
+      try {
+        await api.automationOrchestratorOpen(ws.id, key);
+      } catch {
+        setNotice("Un orchestratore è già attivo in questo workspace");
+        clearTimeout(noticeTimerRef.current);
+        noticeTimerRef.current = setTimeout(() => setNotice(null), 6000);
+        return;
+      }
+    }
     // Per gli integrati si salva il comando di ripristino, si esegue quello di avvio.
     const { command, startCommand } = launchCommands(chosen);
     showTerminalsOf(ws.id);
@@ -679,7 +702,9 @@ export default function App() {
   const closeTab = useCallback((key: string) => {
     const closing = tabsRef.current.find((t) => t.key === key);
     const automated = closing !== undefined && isAutomated(closing);
-    if (automated && !reportedClosedRef.current.has(key)) {
+    // Anche l'orchestratore manuale va comunicato: libera il posto nel workspace.
+    const reportable = automated || closing?.launchId === ORCHESTRATOR_LAUNCH_ID;
+    if (reportable && !reportedClosedRef.current.has(key)) {
       reportedClosedRef.current.add(key);
       void api.automationTabClosed(key).catch(() => undefined);
     }
@@ -994,6 +1019,7 @@ export default function App() {
               builtinLaunches={builtinLaunches}
               globalLaunch={globalLaunch}
               onSpawn={spawnTab}
+              notice={notice}
               onManageLaunches={openLaunchSettings}
               onRename={handleRename}
               onRemove={handleRemove}
@@ -1080,6 +1106,7 @@ export default function App() {
                     }
                     status={statusOf(t)}
                     cwd={t.automation?.cwd}
+                    launchId={t.launchId}
                     automation={
                       t.automation
                         ? {

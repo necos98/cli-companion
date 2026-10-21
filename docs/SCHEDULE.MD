@@ -71,6 +71,14 @@ Alle transizioni, e al cambio di configurazione:
   piano (integra i task in review, gestisci i fallimenti), poi chiudi il turno.
 - Un orchestratore con tab vivo già owner della board (es. un tab aperto
   dall'utente) non viene duplicato.
+- **Un solo orchestratore per workspace**: l'orchestratore automatico non si
+  apre finché c'è un orchestratore manuale vivo (tab dell'avvio integrato
+  "Orchestratore", registrato col comando `automation_orchestrator_open` prima
+  di aprirlo, anche se non ha ancora chiamato nessun tool della board). Il
+  comando fallisce ("Un orchestratore è già attivo in questo workspace") se il
+  workspace ha già l'orchestratore automatico o un altro manuale, e il tab non
+  si apre. La registrazione cade alla chiusura/uscita del tab. Entrambi
+  mostrano il badge **ORCH** nell'intestazione.
 
 **Chiusura**:
 - lo scheduler non avvia più task; i worker in corso finiscono il loro task;

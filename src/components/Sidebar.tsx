@@ -67,6 +67,8 @@ interface Props {
   onRename: (id: string, name: string) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onAdd: () => void;
+  /** Avviso dell'app (es. avvio rifiutato), mostrato come gli errori della lista. */
+  notice?: string | null;
 }
 
 const ICON_BTN =
@@ -160,6 +162,7 @@ export default function Sidebar({
   onRename,
   onRemove,
   onAdd,
+  notice = null,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -528,7 +531,9 @@ export default function Sidebar({
         </button>
       </div>
 
-      {error && <p className="px-4 pb-2 text-xs text-destructive">{error}</p>}
+      {(error ?? notice) && (
+        <p className="px-4 pb-2 text-xs text-destructive">{error ?? notice}</p>
+      )}
 
       <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2">
         {workspaces.length === 0 && (

@@ -76,6 +76,12 @@ struct AutoTab {
     closing_since: Option<i64>,
 }
 
+/// Orchestratore avviato a mano (avvio integrato) registrato dal frontend.
+struct ManualOrch {
+    ws: String,
+    registered_at: i64,
+}
+
 #[derive(Default)]
 struct AutoWs {
     /// Ultimo gate applicato (finestra aperta per questo workspace).
@@ -99,6 +105,9 @@ pub(super) struct AutoCore {
     /// Ultimo stato emesso (`schedule-state`).
     last_state: Option<ScheduleState>,
     ws: HashMap<String, AutoWs>,
+    /// Orchestratori manuali aperti (tab -> workspace): al massimo uno vivo
+    /// per workspace, insieme a quello automatico.
+    manual: HashMap<String, ManualOrch>,
     /// `automation` esposto per ogni workspace automatico.
     pub(super) info: HashMap<String, AutomationInfo>,
     /// Workspace con l'orchestratore automatico attivo (ultimo giro).
@@ -152,6 +161,35 @@ impl Registry {
                 _ => false,
             })
         })
+    }
+
+    /// Il tab manuale e' ancora vivo (pty presente o appena registrato:
+    /// il pty compare solo quando il terminale e' montato).
+    fn manual_alive(m: &ManualOrch, tab: &str, env: &TickEnv, now: i64) -> bool {
+        (env.live)(tab) || now - m.registered_at <= SPAWN_GRACE_MS
+    }
+
+    /// C'e' un orchestratore manuale vivo in questo workspace?
+    fn manual_orchestrator_alive(&self, ws: &str, env: &TickEnv, now: i64) -> bool {
+        self.auto.manual.iter().any(|(tab, m)| m.ws == ws && Self::manual_alive(m, tab, env, now))
+    }
+
+    /// Registra un orchestratore manuale. Errore se il workspace ne ha gia'
+    /// uno vivo (l'automatico o un altro manuale). I tab spariti si scartano.
+    pub fn manual_orchestrator_open(&mut self, ws: &str, tab: &str, env: &TickEnv, now: i64) -> Result<(), String> {
+        self.auto.manual.retain(|t, m| Self::manual_alive(m, t, env, now));
+        let auto_alive = self
+            .auto
+            .ws
+            .get(ws)
+            .and_then(|e| e.tab.as_ref())
+            .is_some_and(|t| (env.live)(&t.id) || now - t.spawned_at <= SPAWN_GRACE_MS);
+        let other = self.auto.manual.iter().any(|(t, m)| m.ws == ws && t != tab);
+        if auto_alive || other {
+            return Err("Un orchestratore e' gia' attivo in questo workspace".to_string());
+        }
+        self.auto.manual.insert(tab.to_string(), ManualOrch { ws: ws.to_string(), registered_at: now });
+        Ok(())
     }
 
     fn owner_alive(&self, ws: &str, env: &TickEnv) -> bool {
@@ -234,6 +272,7 @@ impl Registry {
     /// lo riapre se c'e' ancora lavoro.
     pub(super) fn auto_tab_exited(&mut self, tab: &str, _now: i64) {
         self.last_hook.remove(tab);
+        self.auto.manual.remove(tab);
         for e in self.auto.ws.values_mut() {
             if e.tab.as_ref().is_some_and(|t| t.id == tab) {
                 if e.tab.as_ref().is_some_and(|t| !t.closing) {
@@ -250,6 +289,7 @@ impl Registry {
     /// spontanea arriva prima via `auto_tab_exited` e qui non c'e' piu').
     pub(super) fn auto_tab_closed(&mut self, tab: &str) {
         self.last_hook.remove(tab);
+        self.auto.manual.remove(tab);
         for e in self.auto.ws.values_mut() {
             if e.tab.as_ref().is_some_and(|t| t.id == tab) {
                 if e.tab.as_ref().is_some_and(|t| !t.closing) {
@@ -263,6 +303,7 @@ impl Registry {
     /// Il workspace non esiste piu'.
     pub fn auto_forget(&mut self, ws: &str) {
         self.auto.ws.remove(ws);
+        self.auto.manual.retain(|_, m| m.ws != ws);
         if self.auto.info.remove(ws).is_some() {
             self.mark_dirty(ws);
         }
@@ -328,6 +369,7 @@ impl Registry {
         now: i64,
     ) {
         let active = open && cfg.is_some();
+        self.auto.manual.retain(|t, m| Self::manual_alive(m, t, env, now));
         let mut e = self.auto.ws.remove(id).unwrap_or_default();
         // Gate dello scheduler: a ogni transizione la board riparte.
         if active != e.gate {
@@ -371,6 +413,7 @@ impl Registry {
         // Apertura: lavoro in board e nessun owner con tab vivo.
         if let (true, Some((ws, a))) = (active, cfg) {
             if e.tab.is_none() && !e.dismissed && e.fails < MAX_SPAWN_FAILS && self.has_work(id) && !self.owner_alive(id, env)
+                && !self.manual_orchestrator_alive(id, env, now)
             {
                 match (env.command)(ws, a) {
                     Ok(command) => {
@@ -454,6 +497,18 @@ impl AutomationState {
         };
         let env = TickEnv { minute, workspaces: &workspaces, live: &live, command: &command };
         self.run(host, |r| r.auto_tick(&env, now, force_emit));
+    }
+
+    /// Un tab dell'avvio "Orchestratore" sta per aprirsi: registrato se il
+    /// workspace non ha gia' un orchestratore vivo (automatico o manuale).
+    pub fn orchestrator_open<H: Host>(&self, host: &H, ws: &str, tab: &str, now: i64) -> Result<(), String> {
+        if host.workspace(ws).is_none() {
+            return Err("workspace non trovato".to_string());
+        }
+        let live = |t: &str| host.tab_workspace(t).is_some();
+        let command = |_: &Workspace, _: &AutoOrchestrate| Err(String::new());
+        let env = TickEnv { minute: 0, workspaces: &[], live: &live, command: &command };
+        self.run(host, |r| r.manual_orchestrator_open(ws, tab, &env, now))
     }
 
     /// Cambio di configurazione (schedule o workspace): giro immediato.

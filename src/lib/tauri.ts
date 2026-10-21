@@ -225,6 +225,13 @@ export const api = {
   /** Un tab automatico e' stato chiuso (utente, app o shell uscita). */
   automationTabClosed: (tabId: string) => invoke<void>("automation_tab_closed", { tabId }),
 
+  /**
+   * Registra un tab dell'avvio "Orchestratore" prima di aprirlo: fallisce se il
+   * workspace ha gia' un orchestratore (automatico o manuale).
+   */
+  automationOrchestratorOpen: (workspaceId: string, tabId: string) =>
+    invoke<void>("automation_orchestrator_open", { workspaceId, tabId }),
+
   automationSessions: () => invoke<AutomationTabInfo[]>("automation_sessions"),
 
   // Board dei task (backend: src-tauri, contratto in docs/BOARD.MD).

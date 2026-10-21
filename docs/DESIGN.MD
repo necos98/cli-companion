@@ -371,7 +371,11 @@ Dettagli completi: [SCHEDULE.MD](SCHEDULE.MD). Si appoggia alla board.
   task, i worker in corso finiscono, all'orchestratore si digita `WINDOW_CLOSED_TEXT`; in
   **drain** il suo tab si chiude quando e' idle (hook `finished`), nessun task e' `running` e la
   coda non ha eventi azionabili. Un orchestratore aperto dall'utente non viene mai chiuso ne'
-  duplicato. Testi per il modello in inglese.
+  duplicato. Al massimo un orchestratore per workspace: i tab dell'avvio `builtin:orchestrator`
+  si registrano nel `Registry` con `automation_orchestrator_open(workspace_id, tab_id)` (rifiuto se
+  c'e' gia' quello automatico o un altro manuale vivo; chiusura via `automation_tab_closed` /
+  `pty_exited`) e finche' uno e' vivo l'automatico non parte. Il badge ORCH vale per entrambi
+  (`tabBadge` in `src/lib/automation.ts`). Testi per il modello in inglese.
 - **Keep-awake**: con `keep_awake` l'app impedisce lo standby (Windows
   `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` da un thread dedicato) finche'
   un workspace automatico ha finestra aperta con lavoro, o task in esecuzione/drain.
@@ -525,7 +529,7 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `automation-close` (stesso percorso di `closeTab`) e `automation-update` (stato e
   ultimo report); alla chiusura di un tab automatico chiama `automation_tab_closed`.
   All'avvio `automation_sessions()` riallinea lo stato. `PaneHeader` mostra il badge AUTO
-  e la parola di stato. I tab automatici sono esclusi dal salvataggio di sessione e
+  (ORCH per gli orchestratori, anche quello manuale) e la parola di stato. I tab automatici sono esclusi dal salvataggio di sessione e
   scrollback e non vengono ripristinati.
 - **Board** (`components/BoardView.tsx`, `lib/board.ts`, `lib/boardLayout.ts`, v0.7): vista a grafo
   per workspace con `@xyflow/react` (nodi = task, archi = `depends_on`) e auto-layout sinistra ->
