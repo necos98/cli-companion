@@ -16,7 +16,22 @@ export interface Launch {
   id: string;
   name: string;
   command: string;
-  is_default: boolean;
+}
+
+/** Avvio integrato (vedi `BuiltinLaunch` in workspaces.rs). */
+export interface BuiltinLaunch {
+  id: string;
+  name: string;
+  /** Comando eseguito ora. */
+  command: string;
+  /** Comando da salvare nel tab (ripristino/ripresa). */
+  restore_command: string;
+  agent_id: string;
+}
+
+/** Impostazioni globali degli avvii (null = shell vuota). */
+export interface LaunchSettings {
+  default_launch: string | null;
 }
 
 export interface Workspace {
@@ -28,6 +43,8 @@ export interface Workspace {
   shell?: string | null;
   created_at: number;
   launches: Launch[];
+  /** Avvio predefinito: assente/null = eredita il globale; "shell" = shell vuota; altrimenti id. */
+  default_launch?: string | null;
   /** Tetto dei permessi dei worker automatici (vedi `Workspace` in workspaces.rs). */
   worker_permission: WorkerPermission;
   /** Modello dei worker automatici; assente/null = predefinito dell'agente. */
@@ -145,20 +162,18 @@ export const api = {
   addLaunch: (workspaceId: string, name: string, command: string, isDefault: boolean) =>
     invoke<Workspace>("add_launch", { workspaceId, name, command, isDefault }),
 
-  updateLaunch: (
-    workspaceId: string,
-    launchId: string,
-    name: string,
-    command: string,
-    isDefault: boolean,
-  ) =>
-    invoke<Workspace>("update_launch", {
-      workspaceId,
-      launchId,
-      name,
-      command,
-      isDefault,
-    }),
+  updateLaunch: (workspaceId: string, launchId: string, name: string, command: string) =>
+    invoke<Workspace>("update_launch", { workspaceId, launchId, name, command }),
+
+  setDefaultLaunch: (workspaceId: string, launchId: string | null) =>
+    invoke<Workspace>("set_default_launch", { workspaceId, launchId }),
+
+  builtinLaunches: () => invoke<BuiltinLaunch[]>("builtin_launches"),
+
+  getLaunchSettings: () => invoke<LaunchSettings>("get_launch_settings"),
+
+  setGlobalDefaultLaunch: (launchId: string | null) =>
+    invoke<LaunchSettings>("set_global_default_launch", { launchId }),
 
   removeLaunch: (workspaceId: string, launchId: string) =>
     invoke<Workspace>("remove_launch", { workspaceId, launchId }),

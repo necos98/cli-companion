@@ -7,7 +7,13 @@ export interface LaunchLike {
   id: string;
   name: string;
   command: string;
-  is_default?: boolean;
+}
+
+/** Avvio integrato (rispecchia `BuiltinLaunch` del backend). */
+export interface BuiltinLaunchLike extends LaunchLike {
+  /** Comando da salvare nel tab (ripristino/ripresa della sessione). */
+  restore_command: string;
+  agent_id: string;
 }
 
 /** Lunghezza massima del comando di un avvio. */
@@ -49,9 +55,47 @@ export function buildLaunchInput(cmd: string): string {
   return `${cmd}\r`;
 }
 
-/** Avvio predefinito del workspace, se ce n'è uno. */
-export function defaultLaunch<T extends LaunchLike>(ws: {
-  launches?: T[];
-}): T | undefined {
-  return ws.launches?.find((l) => l.is_default);
+/** Valore di `default_launch` per la shell vuota. */
+export const SHELL_LAUNCH_ID = "shell";
+
+/** Tutti gli avvii di un workspace: prima gli integrati, poi i suoi. */
+export function allLaunches<T extends LaunchLike, B extends LaunchLike>(
+  ws: { launches?: T[] },
+  builtins: B[],
+): (T | B)[] {
+  return [...builtins, ...(ws.launches ?? [])];
+}
+
+/**
+ * Avvio predefinito effettivo: `default_launch` del workspace se punta a un
+ * avvio noto ("shell" = nessuno), altrimenti (assente o id sparito) quello
+ * globale, che deve essere un integrato noto; altrimenti nessuno (shell vuota).
+ */
+export function resolveDefaultLaunch<T extends LaunchLike, B extends LaunchLike>(
+  ws: { launches?: T[]; default_launch?: string | null },
+  builtins: B[],
+  globalDefault: string | null | undefined,
+): T | B | undefined {
+  const own = ws.default_launch;
+  if (own === SHELL_LAUNCH_ID) return undefined;
+  if (own) {
+    const found = allLaunches(ws, builtins).find((l) => l.id === own);
+    if (found) return found;
+  }
+  if (globalDefault) return builtins.find((b) => b.id === globalDefault);
+  return undefined;
+}
+
+/**
+ * Comandi di un avvio: `command` è ciò che si salva nel tab (per gli
+ * integrati il `restore_command`), `startCommand` ciò che si esegue ora.
+ */
+export function launchCommands(
+  launch: (LaunchLike & { restore_command?: string }) | undefined,
+): { command: string; startCommand: string } {
+  if (!launch) return { command: "", startCommand: "" };
+  if (launch.restore_command !== undefined) {
+    return { command: launch.restore_command, startCommand: launch.command };
+  }
+  return { command: launch.command, startCommand: launch.command };
 }

@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import {
   LAUNCH_COMMAND_MAX,
   buildLaunchInput,
-  defaultLaunch,
+  SHELL_LAUNCH_ID,
+  allLaunches,
+  launchCommands,
+  resolveDefaultLaunch,
   sanitizeLaunchCommand,
   shouldInjectLaunch,
 } from "../src/lib/launch.ts";
@@ -26,12 +29,42 @@ describe("launch: comando di avvio", () => {
     assert.equal(buildLaunchInput("ls"), "ls\r");
   });
 
-  it("defaultLaunch trova l'avvio predefinito o undefined", () => {
-    const a = { id: "a", name: "A", command: "ls", is_default: false };
-    const b = { id: "b", name: "B", command: "pwd", is_default: true };
-    assert.equal(defaultLaunch({ launches: [a, b] }), b);
-    assert.equal(defaultLaunch({ launches: [a] }), undefined);
-    assert.equal(defaultLaunch({ launches: [] }), undefined);
-    assert.equal(defaultLaunch({}), undefined);
+  const a = { id: "a", name: "A", command: "ls" };
+  const b = { id: "b", name: "B", command: "pwd" };
+  const cc = {
+    id: "builtin:claude-code",
+    name: "Claude Code",
+    command: "claude",
+    restore_command: "claude --resume",
+    agent_id: "claude-code",
+  };
+  const orch = { ...cc, id: "builtin:orchestrator", name: "Orchestratore" };
+
+  it("allLaunches: prima gli integrati, poi i personalizzati", () => {
+    assert.deepEqual(allLaunches({ launches: [a, b] }, [cc]), [cc, a, b]);
+    assert.deepEqual(allLaunches({}, []), []);
+  });
+
+  it("resolveDefaultLaunch: workspace > globale > nessuno", () => {
+    const ws = (d) => ({ launches: [a, b], default_launch: d });
+    assert.equal(resolveDefaultLaunch(ws("b"), [cc], "builtin:claude-code"), b);
+    assert.equal(resolveDefaultLaunch(ws("builtin:orchestrator"), [cc, orch], null), orch);
+    // "shell" forza la shell vuota anche con default globale.
+    assert.equal(resolveDefaultLaunch(ws(SHELL_LAUNCH_ID), [cc], "builtin:claude-code"), undefined);
+    // Ereditato: null/assente => globale.
+    assert.equal(resolveDefaultLaunch(ws(null), [cc], "builtin:claude-code"), cc);
+    assert.equal(resolveDefaultLaunch({ launches: [a] }, [cc], "builtin:claude-code"), cc);
+    // Id sparito => ripiega sul globale.
+    assert.equal(resolveDefaultLaunch(ws("gone"), [cc], "builtin:claude-code"), cc);
+    // Globale sconosciuto o assente => nessuno.
+    assert.equal(resolveDefaultLaunch(ws(null), [cc], "builtin:nope"), undefined);
+    assert.equal(resolveDefaultLaunch(ws(null), [cc], null), undefined);
+    assert.equal(resolveDefaultLaunch({}, [], undefined), undefined);
+  });
+
+  it("launchCommands: integrato salva restore_command, custom uguale", () => {
+    assert.deepEqual(launchCommands(cc), { command: "claude --resume", startCommand: "claude" });
+    assert.deepEqual(launchCommands(a), { command: "ls", startCommand: "ls" });
+    assert.deepEqual(launchCommands(undefined), { command: "", startCommand: "" });
   });
 });

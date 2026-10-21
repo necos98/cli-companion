@@ -16,8 +16,8 @@ pub struct Launch {
     pub id: String,
     pub name: String,
     pub command: String,
-    /// Al massimo un avvio per workspace e' quello predefinito.
-    #[serde(default)]
+    /// Solo per i file vecchi: letto e migrato in `Workspace::default_launch`.
+    #[serde(default, skip_serializing)]
     pub is_default: bool,
 }
 
@@ -54,6 +54,21 @@ pub struct Workspace {
     /// Orchestratore automatico nelle finestre di esecuzione (vedi `schedule`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_orchestrate: Option<AutoOrchestrate>,
+    /// Avvio predefinito dei nuovi terminali: `None` = eredita il predefinito
+    /// globale; "shell" = shell semplice; altrimenti l'id di un avvio del
+    /// workspace o di uno integrato (`builtin:...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_launch: Option<String>,
+}
+
+/// Migra il vecchio flag `is_default` degli avvii in `default_launch`.
+fn migrate_default(ws: &mut Workspace) {
+    if ws.default_launch.is_none() {
+        ws.default_launch = ws.launches.iter().find(|l| l.is_default).map(|l| l.id.clone());
+    }
+    for l in ws.launches.iter_mut() {
+        l.is_default = false;
+    }
 }
 
 /// Configurazione dell'orchestratore automatico di un workspace.
@@ -122,7 +137,8 @@ pub fn load_from_disk(app: &tauri::App) {
         Err(_) => return,
     };
     match serde_json::from_str::<Vec<Workspace>>(&raw) {
-        Ok(workspaces) => {
+        Ok(mut workspaces) => {
+            workspaces.iter_mut().for_each(migrate_default);
             let store = app.state::<WorkspaceStore>();
             let mut data = store.inner.lock().unwrap();
             data.workspaces = workspaces;
@@ -246,6 +262,7 @@ fn add_workspace_blocking(
         worktree_setup: None,
         worker_model: None,
         auto_orchestrate: None,
+        default_launch: None,
     };
     data.workspaces.push(ws.clone());
     save_to_disk(app, &data.workspaces)?;
@@ -463,43 +480,13 @@ fn validate_launch(name: &str, command: &str) -> Result<(String, String), String
     Ok((name.to_string(), command))
 }
 
-/// Imposta il flag predefinito di `id`; se `is_default` e' vero toglie il
-/// flag a tutti gli altri (al massimo un predefinito per workspace).
-fn set_default(launches: &mut [Launch], id: &str, is_default: bool) {
-    for l in launches.iter_mut() {
-        if l.id == id {
-            l.is_default = is_default;
-        } else if is_default {
-            l.is_default = false;
-        }
-    }
-}
-
-fn push_launch(
-    launches: &mut Vec<Launch>,
-    id: String,
-    name: &str,
-    command: &str,
-    is_default: bool,
-) -> Result<(), String> {
+fn push_launch(launches: &mut Vec<Launch>, id: String, name: &str, command: &str) -> Result<(), String> {
     let (name, command) = validate_launch(name, command)?;
-    launches.push(Launch {
-        id: id.clone(),
-        name,
-        command,
-        is_default: false,
-    });
-    set_default(launches, &id, is_default);
+    launches.push(Launch { id, name, command, is_default: false });
     Ok(())
 }
 
-fn edit_launch(
-    launches: &mut [Launch],
-    launch_id: &str,
-    name: &str,
-    command: &str,
-    is_default: bool,
-) -> Result<(), String> {
+fn edit_launch(launches: &mut [Launch], launch_id: &str, name: &str, command: &str) -> Result<(), String> {
     let (name, command) = validate_launch(name, command)?;
     let l = launches
         .iter_mut()
@@ -507,8 +494,13 @@ fn edit_launch(
         .ok_or_else(|| "avvio non trovato".to_string())?;
     l.name = name;
     l.command = command;
-    set_default(launches, launch_id, is_default);
     Ok(())
+}
+
+/// Id ammesso come predefinito del workspace: "shell", un suo avvio o uno
+/// integrato.
+fn valid_default_launch(ws: &Workspace, id: &str, builtin: &[crate::agents::BuiltinLaunch]) -> bool {
+    id == "shell" || ws.launches.iter().any(|l| l.id == id) || builtin.iter().any(|b| b.id == id)
 }
 
 #[tauri::command]
@@ -528,7 +520,10 @@ pub fn add_launch(
         .iter_mut()
         .find(|w| w.id == workspace_id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
-    push_launch(&mut ws.launches, id, &name, &command, is_default)?;
+    push_launch(&mut ws.launches, id.clone(), &name, &command)?;
+    if is_default {
+        ws.default_launch = Some(id);
+    }
     let out = ws.clone();
     save_to_disk(&app, &data.workspaces)?;
     Ok(out)
@@ -542,7 +537,6 @@ pub fn update_launch(
     launch_id: String,
     name: String,
     command: String,
-    is_default: bool,
 ) -> Result<Workspace, String> {
     let mut data = state.inner.lock().unwrap();
     let ws = data
@@ -550,7 +544,7 @@ pub fn update_launch(
         .iter_mut()
         .find(|w| w.id == workspace_id)
         .ok_or_else(|| "workspace non trovato".to_string())?;
-    edit_launch(&mut ws.launches, &launch_id, &name, &command, is_default)?;
+    edit_launch(&mut ws.launches, &launch_id, &name, &command)?;
     let out = ws.clone();
     save_to_disk(&app, &data.workspaces)?;
     Ok(out)
@@ -574,6 +568,35 @@ pub fn remove_launch(
     if ws.launches.len() == before {
         return Err("avvio non trovato".to_string());
     }
+    if ws.default_launch.as_deref() == Some(launch_id.as_str()) {
+        ws.default_launch = None;
+    }
+    let out = ws.clone();
+    save_to_disk(&app, &data.workspaces)?;
+    Ok(out)
+}
+
+/// Imposta l'avvio predefinito del workspace (None = eredita il globale).
+#[tauri::command]
+pub fn set_default_launch(
+    app: AppHandle,
+    state: State<WorkspaceStore>,
+    workspace_id: String,
+    launch_id: Option<String>,
+) -> Result<Workspace, String> {
+    let builtin = crate::agents::builtin_launch_list();
+    let mut data = state.inner.lock().unwrap();
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == workspace_id)
+        .ok_or_else(|| "workspace non trovato".to_string())?;
+    if let Some(id) = launch_id.as_deref() {
+        if !valid_default_launch(ws, id, &builtin) {
+            return Err("avvio predefinito non valido".to_string());
+        }
+    }
+    ws.default_launch = launch_id;
     let out = ws.clone();
     save_to_disk(&app, &data.workspaces)?;
     Ok(out)
@@ -665,29 +688,64 @@ mod tests {
         assert_eq!(MAX_COMMAND_LEN, 1000);
     }
 
-    #[test]
-    fn setting_default_clears_the_others() {
-        let mut v = vec![launch("a", true), launch("b", false), launch("c", false)];
-        set_default(&mut v, "b", true);
-        let defaults: Vec<_> = v.iter().filter(|l| l.is_default).map(|l| &l.id).collect();
-        assert_eq!(defaults, vec!["b"]);
-        // Togliere il predefinito non tocca gli altri.
-        set_default(&mut v, "b", false);
-        assert!(v.iter().all(|l| !l.is_default));
+    fn ws_with(launches: Vec<Launch>) -> Workspace {
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        ws.launches = launches;
+        ws
     }
 
     #[test]
-    fn push_and_edit_keep_single_default() {
+    fn migrate_default_moves_flag_to_workspace() {
+        let mut ws = ws_with(vec![launch("a", false), launch("b", true)]);
+        migrate_default(&mut ws);
+        assert_eq!(ws.default_launch.as_deref(), Some("b"));
+        assert!(ws.launches.iter().all(|l| !l.is_default));
+        // Un valore gia' presente non viene sovrascritto.
+        let mut ws = ws_with(vec![launch("a", true)]);
+        ws.default_launch = Some("shell".into());
+        migrate_default(&mut ws);
+        assert_eq!(ws.default_launch.as_deref(), Some("shell"));
+        assert!(!ws.launches[0].is_default);
+        // Nessun flag: resta None.
+        let mut ws = ws_with(vec![launch("a", false)]);
+        migrate_default(&mut ws);
+        assert_eq!(ws.default_launch, None);
+    }
+
+    #[test]
+    fn old_file_with_is_default_is_read_but_not_written_back() {
+        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,
+            "launches":[{"id":"l1","name":"n","command":"ls","is_default":true}]}"#;
+        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
+        assert!(ws.launches[0].is_default);
+        migrate_default(&mut ws);
+        let out = serde_json::to_string(&ws).unwrap();
+        assert!(!out.contains("is_default"));
+        assert!(out.contains(r#""default_launch":"l1""#));
+    }
+
+    #[test]
+    fn default_launch_validation() {
+        let ws = ws_with(vec![launch("l1", false)]);
+        let builtin = crate::agents::builtin_launch_list();
+        assert!(valid_default_launch(&ws, "shell", &builtin));
+        assert!(valid_default_launch(&ws, "l1", &builtin));
+        assert!(valid_default_launch(&ws, "builtin:claude-code", &builtin));
+        assert!(!valid_default_launch(&ws, "l2", &builtin));
+        assert!(!valid_default_launch(&ws, "builtin:nope", &builtin));
+    }
+
+    #[test]
+    fn push_and_edit_launches() {
         let mut v = Vec::new();
-        push_launch(&mut v, "a".into(), "A", "ls", true).unwrap();
-        push_launch(&mut v, "b".into(), "B", "pwd", true).unwrap();
-        assert!(!v[0].is_default && v[1].is_default);
-        edit_launch(&mut v, "a", "A2", "dir", true).unwrap();
+        push_launch(&mut v, "a".into(), "A", "ls").unwrap();
+        push_launch(&mut v, "b".into(), "B", "pwd").unwrap();
+        edit_launch(&mut v, "a", "A2", "dir").unwrap();
         assert_eq!(v[0].name, "A2");
-        assert!(v[0].is_default && !v[1].is_default);
-        assert!(edit_launch(&mut v, "zzz", "X", "ls", false).is_err());
+        assert!(edit_launch(&mut v, "zzz", "X", "ls").is_err());
         // Input non valido: nessuna modifica.
-        assert!(push_launch(&mut v, "c".into(), "", "ls", false).is_err());
+        assert!(push_launch(&mut v, "c".into(), "", "ls").is_err());
         assert_eq!(v.len(), 2);
     }
 

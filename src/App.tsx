@@ -25,8 +25,14 @@ import {
 import { activeCount, mergeBoard } from "./lib/board";
 import type { BoardView as BoardData } from "./lib/board";
 import BoardView from "./components/BoardView";
-import type { AgentEnvStatus, AgentProfile, Launch, Workspace } from "./lib/tauri";
-import { defaultLaunch } from "./lib/launch";
+import type {
+  AgentEnvStatus,
+  AgentProfile,
+  BuiltinLaunch,
+  Launch,
+  Workspace,
+} from "./lib/tauri";
+import { allLaunches, launchCommands, resolveDefaultLaunch } from "./lib/launch";
 import { WORKFLOW_WIZARD_COMMAND, WORKFLOW_WIZARD_TITLE, isAutoWorkspace } from "./lib/workflow";
 import { automationBadgeText } from "./lib/schedule";
 import {
@@ -111,12 +117,12 @@ interface Tab {
 }
 
 /** Etichetta mostrata per un tab (titolo OSC > nome avvio > nome workspace). */
-function tabLabel(t: Tab): string {
+function tabLabel(t: Tab, builtins: BuiltinLaunch[]): string {
   if (t.automation?.role === "orchestrator") return t.automation.title || ORCHESTRATOR_LABEL;
   // Un worker mostra il titolo del task: il titolo OSC dell'agente cambia di continuo.
   if (t.automation?.title) return t.automation.title;
   const launchName = t.launchId
-    ? t.workspace.launches.find((l) => l.id === t.launchId)?.name
+    ? allLaunches(t.workspace, builtins).find((l) => l.id === t.launchId)?.name
     : undefined;
   return t.title ?? launchName ?? t.workspace.name;
 }
@@ -148,7 +154,7 @@ export default function App() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("launches");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general-launches");
   const [settingsWorkspaceId, setSettingsWorkspaceId] = useState<string | undefined>();
   // `tabs` resta nell'ordine di creazione ed è l'ordine di render dei
   // TerminalView (mai riordinato: smontarli ucciderebbe la sessione pty).
@@ -161,6 +167,10 @@ export default function App() {
     over: null,
   });
   // Profili di input degli agenti (statici): letti una volta all'avvio.
+  const [builtinLaunches, setBuiltinLaunches] = useState<BuiltinLaunch[]>([]);
+  const builtinsRef = useRef(builtinLaunches);
+  builtinsRef.current = builtinLaunches;
+  const [globalLaunch, setGlobalLaunch] = useState<string | null>(null);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [sessionReady, setSessionReady] = useState(false);
   // Salvataggio abilitato solo se la lettura della sessione e' riuscita (file
@@ -530,7 +540,7 @@ export default function App() {
         void notifyIfUnfocused(
           tab.key,
           tab.workspace.name,
-          notificationBody(ev.event, tabLabel(tab), ev.message),
+          notificationBody(ev.event, tabLabel(tab, builtinsRef.current), ev.message),
         );
       }
     })
@@ -570,17 +580,18 @@ export default function App() {
 
   // Senza `launch` parte l'avvio predefinito del workspace, se esiste;
   // altrimenti una shell semplice. Il nuovo terminale attiva il suo gruppo.
-  const spawnTab = useCallback((ws: Workspace, launch?: Launch) => {
-    const chosen = launch ?? defaultLaunch(ws);
+  const spawnTab = useCallback((ws: Workspace, launch?: Launch | BuiltinLaunch) => {
+    const chosen = launch ?? resolveDefaultLaunch(ws, builtinLaunches, globalLaunch);
     const key = newTabKey();
-    const command = chosen?.command ?? "";
+    // Per gli integrati si salva il comando di ripristino, si esegue quello di avvio.
+    const { command, startCommand } = launchCommands(chosen);
     showTerminalsOf(ws.id);
     setTabs((prev) => [
       ...prev,
-      { key, workspace: ws, launchId: chosen?.id, command, startCommand: command },
+      { key, workspace: ws, launchId: chosen?.id, command, startCommand },
     ]);
     setLayout((l) => openTab(l, ws.id, key));
-  }, [showTerminalsOf]);
+  }, [showTerminalsOf, builtinLaunches, globalLaunch]);
 
   // Wizard del workflow: chiude le impostazioni e apre in primo piano un
   // terminale del workspace che esegue Claude Code con la skill del plugin.
@@ -616,6 +627,15 @@ export default function App() {
         /* silenzioso */
       }
     })();
+  }, []);
+
+  // Avvii integrati e avvio predefinito globale: una volta, errori silenziosi.
+  useEffect(() => {
+    api.builtinLaunches().then(setBuiltinLaunches).catch(() => undefined);
+    api
+      .getLaunchSettings()
+      .then((s) => setGlobalLaunch(s.default_launch))
+      .catch(() => undefined);
   }, []);
 
   // Versione dell'app (footer della sidebar).
@@ -907,7 +927,7 @@ export default function App() {
       return [
         {
           key,
-          label: tabLabel(t),
+          label: tabLabel(t, builtinLaunches),
           status: statusByKey.get(key)!,
           pinned: layout.global.order.includes(key),
           active: g.activeTabId === key,
@@ -971,6 +991,8 @@ export default function App() {
                 showTerminalsOf(tabsRef.current.find((t) => t.key === key)?.workspace.id);
                 setLayout((l) => focusTab(l, key));
               }}
+              builtinLaunches={builtinLaunches}
+              globalLaunch={globalLaunch}
               onSpawn={spawnTab}
               onManageLaunches={openLaunchSettings}
               onRename={handleRename}
@@ -982,7 +1004,7 @@ export default function App() {
             <Button
               variant="ghost"
               onClick={() => {
-                setSettingsTab(updateAvailable ? "updates" : "launches");
+                setSettingsTab(updateAvailable ? "updates" : "general-launches");
                 setSettingsWorkspaceId(undefined);
                 setSettingsOpen(true);
               }}
@@ -1052,7 +1074,7 @@ export default function App() {
                     rect={pl?.rect ?? null}
                     active={pl?.visible ?? false}
                     focused={(pl?.focused ?? false) && !boardShown}
-                    label={tabLabel(t)}
+                    label={tabLabel(t, builtinLaunches)}
                     labelPrefix={
                       pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
                     }
@@ -1066,7 +1088,7 @@ export default function App() {
                             tooltip: automationTooltip(
                               t.automation,
                               tabByKey.get(t.automation.parentTabId)
-                                ? tabLabel(tabByKey.get(t.automation.parentTabId)!)
+                                ? tabLabel(tabByKey.get(t.automation.parentTabId)!, builtinLaunches)
                                 : undefined,
                             ),
                           }
@@ -1132,9 +1154,13 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onWorkspaceUpdated={handleWorkspaceUpdated}
         onUpdateAvailable={setUpdateAvailable}
+        updateAvailable={updateAvailable}
         onAgentEnvs={setAgentEnvs}
         agentProfiles={agentProfiles}
         agentEnvs={agentEnvs}
+        builtinLaunches={builtinLaunches}
+        globalLaunch={globalLaunch}
+        onGlobalLaunchChange={setGlobalLaunch}
         onCreateWorkflow={startWorkflowWizard}
       />
     </div>

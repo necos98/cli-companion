@@ -243,6 +243,14 @@ impl AgentProvider for ClaudeCode {
         Some(cmd)
     }
 
+    fn interactive_command(&self) -> Option<&'static str> {
+        Some("claude --dangerously-skip-permissions")
+    }
+
+    fn orchestrator_command(&self) -> Option<&'static str> {
+        Some("claude --dangerously-skip-permissions \"/cli-companion-notify:orchestrate\"")
+    }
+
     fn detect(&self, env: &Env) -> Detection {
         let path = match env {
             Env::Windows => Some("claude".to_string()),

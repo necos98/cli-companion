@@ -347,6 +347,73 @@ pub trait AgentProvider: Sync {
     fn automation_command(&self, _env_kind: &str, _req: &AutomationRequest) -> Option<String> {
         None
     }
+    /// Comando che avvia l'agente in modo interattivo (`None` = nessun avvio
+    /// integrato). Digitato nella shell del tab: valido in PowerShell, cmd e bash.
+    fn interactive_command(&self) -> Option<&'static str> {
+        None
+    }
+    /// Comando che avvia l'agente come orchestratore (`None` = non supportato).
+    fn orchestrator_command(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Avvio integrato (disponibile in ogni workspace) derivato dal registro.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct BuiltinLaunch {
+    /// `builtin:<agent_id>` oppure `builtin:orchestrator`.
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    /// Comando salvato nella sessione del tab per il ripristino: per
+    /// l'orchestratore e' quello interattivo (riprende la conversazione
+    /// invece di rieseguire la skill).
+    pub restore_command: String,
+    pub agent_id: String,
+}
+
+fn collect_builtin_launches(providers: &[&dyn AgentProvider], default_agent: &str) -> Vec<BuiltinLaunch> {
+    let mut out: Vec<BuiltinLaunch> = providers
+        .iter()
+        .filter_map(|p| {
+            let cmd = p.interactive_command()?;
+            Some(BuiltinLaunch {
+                id: format!("builtin:{}", p.id()),
+                name: p.display_name().to_string(),
+                command: cmd.to_string(),
+                restore_command: cmd.to_string(),
+                agent_id: p.id().to_string(),
+            })
+        })
+        .collect();
+    // Orchestratore: l'agente di default se lo supporta, altrimenti il primo che puo'.
+    let orch = providers
+        .iter()
+        .find(|p| p.id() == default_agent && p.orchestrator_command().is_some())
+        .or_else(|| providers.iter().find(|p| p.orchestrator_command().is_some()));
+    if let Some(p) = orch {
+        if let Some(cmd) = p.orchestrator_command() {
+            out.push(BuiltinLaunch {
+                id: "builtin:orchestrator".to_string(),
+                name: "Orchestratore".to_string(),
+                command: cmd.to_string(),
+                restore_command: p.interactive_command().unwrap_or(cmd).to_string(),
+                agent_id: p.id().to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Avvii integrati di tutti gli agenti (usata anche per validare gli id).
+pub fn builtin_launch_list() -> Vec<BuiltinLaunch> {
+    collect_builtin_launches(PROVIDERS, crate::automation::DEFAULT_AGENT)
+}
+
+/// Comando Tauri `builtin_launches`: economico, nessun processo.
+#[tauri::command]
+pub fn builtin_launches() -> Vec<BuiltinLaunch> {
+    builtin_launch_list()
 }
 
 /// Comando di avvio di una sessione automatica per l'agente `agent_id`.
@@ -612,6 +679,71 @@ mod tests {
                 && r["env_kind"] == kind
                 && r["send"] == "\u{1b}v"));
         }
+    }
+
+    struct Fake {
+        id: &'static str,
+        interactive: Option<&'static str>,
+        orchestrator: Option<&'static str>,
+    }
+
+    impl AgentProvider for Fake {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn display_name(&self) -> &'static str {
+            "Fake"
+        }
+        fn detect(&self, _: &Env) -> Detection {
+            Detection::default()
+        }
+        fn is_installed(&self, _: &Env, _: &Detection) -> bool {
+            false
+        }
+        fn install(&self, _: &InstallCtx, _: &Env, _: &Detection) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn uninstall(&self, _: &InstallCtx, _: &Env, _: &Detection) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn interactive_command(&self) -> Option<&'static str> {
+            self.interactive
+        }
+        fn orchestrator_command(&self) -> Option<&'static str> {
+            self.orchestrator
+        }
+    }
+
+    #[test]
+    fn builtin_launches_from_registry() {
+        let l = builtin_launch_list();
+        assert_eq!(l[0].id, "builtin:claude-code");
+        assert_eq!(l[0].name, "Claude Code");
+        assert_eq!(l[0].command, l[0].restore_command);
+        let o = l.iter().find(|b| b.id == "builtin:orchestrator").unwrap();
+        assert_eq!(o.name, "Orchestratore");
+        assert_eq!(o.agent_id, "claude-code");
+        assert_eq!(o.restore_command, l[0].command);
+        assert!(o.command.contains("cli-companion-notify:orchestrate"));
+    }
+
+    #[test]
+    fn builtin_orchestrator_prefers_default_agent_and_may_be_absent() {
+        let a = Fake { id: "a", interactive: Some("a-cli"), orchestrator: Some("a-orch") };
+        let b = Fake { id: "b", interactive: Some("b-cli"), orchestrator: Some("b-orch") };
+        let c = Fake { id: "c", interactive: None, orchestrator: None };
+        let l = collect_builtin_launches(&[&a, &b, &c], "b");
+        let ids: Vec<_> = l.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, vec!["builtin:a", "builtin:b", "builtin:orchestrator"]);
+        assert_eq!(l[2].command, "b-orch");
+        assert_eq!(l[2].restore_command, "b-cli");
+        // Default senza orchestratore: il primo che ce l'ha.
+        let l = collect_builtin_launches(&[&c, &a], "c");
+        assert_eq!(l.last().unwrap().agent_id, "a");
+        // Nessun orchestratore: nessuna voce.
+        let n = Fake { id: "n", interactive: Some("n-cli"), orchestrator: None };
+        assert_eq!(collect_builtin_launches(&[&n], "n").len(), 1);
+        assert!(collect_builtin_launches(&[&c], "c").is_empty());
     }
 
     #[test]

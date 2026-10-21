@@ -205,7 +205,7 @@ export default function BoardView({
 
         {badge && (
           <span
-            title="Workspace con orchestratore automatico (Impostazioni › Esecuzione automatica)"
+            title="Workspace con orchestratore automatico (Impostazioni › Fasce orarie)"
             className={cn(
               "flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px]",
               tone === "open" ? "border-status-running/50 text-status-running" : tone === "waiting" ? "border-primary/40 text-primary" : "text-muted-foreground",

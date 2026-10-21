@@ -22,8 +22,8 @@ import { Input } from "./ui/input";
 import StatusIcon from "./StatusIcon";
 import { api } from "../lib/tauri";
 import { cn } from "../lib/utils";
-import type { Launch, Workspace } from "../lib/tauri";
-import { defaultLaunch } from "../lib/launch";
+import type { BuiltinLaunch, Launch, Workspace } from "../lib/tauri";
+import { resolveDefaultLaunch } from "../lib/launch";
 import { GROUP_STATUS } from "../lib/agents";
 import type { TabStatus } from "../lib/agents";
 import { groupIndicator } from "../lib/layout";
@@ -57,7 +57,11 @@ interface Props {
   /** Click su un terminale della lista: lo porta in primo piano. */
   onFocusTerminal: (key: string) => void;
   /** Apre un terminale; senza `launch` esegue l'avvio predefinito (se c'è). */
-  onSpawn: (ws: Workspace, launch?: Launch) => void;
+  onSpawn: (ws: Workspace, launch?: Launch | BuiltinLaunch) => void;
+  /** Avvii integrati (in cima al menu di ogni workspace). */
+  builtinLaunches: BuiltinLaunch[];
+  /** Avvio predefinito globale (id di un integrato; null = shell vuota). */
+  globalLaunch: string | null;
   /** Apre le impostazioni sugli avvii del workspace. */
   onManageLaunches: (ws: Workspace) => void;
   onRename: (id: string, name: string) => Promise<void>;
@@ -94,37 +98,46 @@ function wsPath(ws: Workspace): string {
 /** Voci dei menu di avvio (⋯ e caret del pulsante diviso). */
 function LaunchItems({
   ws,
+  builtins,
+  globalLaunch,
   onSpawn,
 }: {
   ws: Workspace;
-  onSpawn: (ws: Workspace, launch?: Launch) => void;
+  builtins: BuiltinLaunch[];
+  globalLaunch: string | null;
+  onSpawn: (ws: Workspace, launch?: Launch | BuiltinLaunch) => void;
 }) {
+  const defId = resolveDefaultLaunch(ws, builtins, globalLaunch)?.id;
+  const item = (l: Launch | BuiltinLaunch) => (
+    <DropdownMenuItem
+      key={l.id}
+      title={l.command}
+      onSelect={() => onSpawn(ws, l)}
+      className={MENU_ITEM}
+    >
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{l.name}</span>
+      {l.id === defId && (
+        <span className="flex items-center gap-1 text-[10px] text-primary">
+          <Star className="!size-3 fill-current" />
+          predefinito
+        </span>
+      )}
+    </DropdownMenuItem>
+  );
   return (
     <>
       <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-faint">
         Avvii
       </DropdownMenuLabel>
-      {ws.launches.length === 0 ? (
+      {builtins.map(item)}
+      {builtins.length > 0 && ws.launches.length > 0 && (
+        <DropdownMenuSeparator className="mx-1.5 bg-border" />
+      )}
+      {ws.launches.map(item)}
+      {builtins.length === 0 && ws.launches.length === 0 && (
         <DropdownMenuItem disabled className={MENU_ITEM}>
           Nessun avvio
         </DropdownMenuItem>
-      ) : (
-        ws.launches.map((l) => (
-          <DropdownMenuItem
-            key={l.id}
-            title={l.command}
-            onSelect={() => onSpawn(ws, l)}
-            className={MENU_ITEM}
-          >
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">{l.name}</span>
-            {l.is_default && (
-              <span className="flex items-center gap-1 text-[10px] text-primary">
-                <Star className="!size-3 fill-current" />
-                predefinito
-              </span>
-            )}
-          </DropdownMenuItem>
-        ))
       )}
     </>
   );
@@ -140,6 +153,8 @@ export default function Sidebar({
   onToggleBoard,
   onSelect,
   onFocusTerminal,
+  builtinLaunches,
+  globalLaunch,
   onSpawn,
   onManageLaunches,
   onRename,
@@ -217,7 +232,12 @@ export default function Sidebar({
         // prendere il focus sull'input.
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
-        <LaunchItems ws={ws} onSpawn={onSpawn} />
+        <LaunchItems
+          ws={ws}
+          builtins={builtinLaunches}
+          globalLaunch={globalLaunch}
+          onSpawn={onSpawn}
+        />
         <DropdownMenuSeparator className="mx-1.5 bg-border" />
         <DropdownMenuItem onSelect={() => manage(ws)} className={MENU_ITEM}>
           Gestisci avvii…
@@ -241,7 +261,7 @@ export default function Sidebar({
   const renderRow = (ws: Workspace) => {
     const list = terminals[ws.id] ?? [];
     const expanded = expandedId === ws.id;
-    const def = defaultLaunch(ws);
+    const def = resolveDefaultLaunch(ws, builtinLaunches, globalLaunch);
     const indicator = groupIndicator(list.map((t) => t.status));
 
     if (editingId === ws.id) {
@@ -472,7 +492,12 @@ export default function Sidebar({
                   className={MENU_CONTENT}
                   onCloseAutoFocus={(e) => e.preventDefault()}
                 >
-                  <LaunchItems ws={ws} onSpawn={onSpawn} />
+                  <LaunchItems
+          ws={ws}
+          builtins={builtinLaunches}
+          globalLaunch={globalLaunch}
+          onSpawn={onSpawn}
+        />
                   <DropdownMenuSeparator className="mx-1.5 bg-border" />
                   <DropdownMenuItem onSelect={() => manage(ws)} className={MENU_ITEM}>
                     Gestisci avvii…

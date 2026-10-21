@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "cli-companion"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "portable-pty",

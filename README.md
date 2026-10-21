@@ -58,6 +58,19 @@ Alla chiusura l'app salva schede, gruppi, layout e cronologia dei terminali
 i processi non sopravvivono, ma ogni terminale riparte con la cronologia di prima
 e, per Claude Code, riprende la conversazione (`claude --resume`).
 
+## Avvii
+
+Ogni workspace ha due avvii integrati, forniti dal registry dei coding agent:
+**Claude Code** (`claude --dangerously-skip-permissions`) e **Orchestratore** (lo stesso
+comando con la skill `/cli-companion-notify:orchestrate`; al ripristino il tab riprende la
+conversazione senza rilanciare la skill). Non si modificano né si eliminano: si possono solo
+scegliere come predefiniti. A questi si aggiungono gli avvii personalizzati del workspace.
+
+L'avvio predefinito (quello di “+ Terminale”) si sceglie in **Impostazioni → Generale → Avvii**
+per tutti i workspace (shell vuota o un integrato) e in **Impostazioni → Workspace → Avvii**
+per il singolo workspace (eredita, shell vuota, un integrato o un avvio personalizzato): il
+workspace vince sul globale.
+
 ## Coding agent: notifiche di fine lavoro
 
 cli-companion sa quando un agente avviato in uno dei suoi terminali ha finito
@@ -135,7 +148,7 @@ Chi fa cosa:
   (`.worktrees/<task>`, branch `task/<task>`), raccoglie i report strutturati e sveglia
   l'orchestratore solo quando serve una decisione.
 
-Setup del worktree: in **Impostazioni → Avvii personalizzati** puoi indicare per workspace un
+Setup del worktree: in **Impostazioni → Workspace → Worker** puoi indicare per workspace un
 comando (es. `npm ci`) che il worker esegue per primo in un worktree nuovo. I task con
 `isolation: none` lavorano nella cartella del workspace (solo lettura o modifiche minime). Al
 riavvio dell'app i task in corso risultano falliti e si possono rilanciare. Dettagli in
@@ -202,7 +215,7 @@ inglese, e `spawn_session` chiede all'orchestratore di scrivere `task` e `send_m
 in inglese. Interfaccia e messaggi dell'app restano in italiano.
 
 Permessi del worker: li decide un'impostazione per workspace (Impostazioni ->
-Avvii personalizzati -> "Permessi dei worker automatici", default `accept-edits`).
+Workspace -> Worker -> "Permessi dei worker automatici", default `accept-edits`).
 L'orchestratore può solo restringerli: `permission_mode` di `spawn_session`, se
 assente, vale l'impostazione; se più permissivo del massimo la chiamata fallisce.
 Ordine dal più restrittivo: `plan` (sola lettura), `default` (chiede conferma per ogni azione: il worker resta fermo in
@@ -234,7 +247,7 @@ Per far lavorare i workspace da soli (ad esempio di notte, evitando le ore di pu
 definire delle **fasce orarie** e un **orchestratore automatico** per workspace. Dettagli in
 [docs/SCHEDULE.MD](docs/SCHEDULE.MD).
 
-- **Fasce orarie**: in **Impostazioni → Esecuzione automatica** attivi la funzione e aggiungi
+- **Fasce orarie**: in **Impostazioni → Generale → Fasce orarie** attivi la funzione e aggiungi
   una o più fasce (ora di inizio e fine, ora locale; una fascia come 20:00–13:00 attraversa la
   mezzanotte). Vedi se la finestra è aperta e quando cambia.
 - **Orchestratore automatico**: nelle impostazioni del workspace lo attivi scegliendo agente e
@@ -271,5 +284,5 @@ L'app si chiamava `muse-companion`. Con la rinomina in `cli-companion`:
   codice 0) e si possono togliere a mano con
   `muse plugins remove cli-companion-notify` (e `muse-companion-notify`);
 - il comando di default globale non esiste più: gli avvii sono per workspace
-  (menu “⋯” della card, Impostazioni → Avvii personalizzati);
+  (menu “⋯” della card, Impostazioni → Workspace → Avvii);
 - le variabili d'ambiente dell'updater ora iniziano con `CLI_COMPANION_`.

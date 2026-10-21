@@ -84,7 +84,7 @@ export default function AgentSettingsTab({ onEnvs }: Props) {
     );
 
   return (
-    <div className="flex max-h-[420px] flex-col gap-3 overflow-y-auto">
+    <div className="flex flex-col gap-3">
       <p className="text-[11px] text-muted-foreground">
         Il plugin è globale: avvisa cli-companion quando un agente avviato in un
         suo terminale finisce o aspetta una risposta. Va installato in ogni

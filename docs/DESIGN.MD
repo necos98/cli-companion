@@ -39,13 +39,18 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 
 ### `workspaces.rs` — store JSON + CRUD
 
-- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches, worker_permission, worker_model?, worktree_setup? }`
+- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches, default_launch?, worker_permission, worker_model?, worktree_setup? }`
   - `kind`: `"windows"` o `"wsl"`
   - `path`: percorso Windows (`C:\...`) oppure percorso Linux assoluto (`/...`)
   - `distro`: solo per WSL; `shell`: override opzionale
-  - `launches`: `Launch { id, name, command, is_default }` (`#[serde(default)]`,
-    id `ln-<millis>-<n>`), salvati dentro `workspaces.json`; al massimo uno
-    predefinito per workspace; rimossi insieme al workspace.
+  - `launches`: `Launch { id, name, command }` (`#[serde(default)]`,
+    id `ln-<millis>-<n>`), salvati dentro `workspaces.json`; rimossi insieme al
+    workspace. Il vecchio `is_default` si legge solo per la migrazione.
+  - `default_launch`: avvio predefinito del workspace. Assente = eredita il
+    predefinito globale (`launch_settings.json`, solo integrati); `"shell"` =
+    shell vuota; altrimenti l'id di un avvio del workspace o di un integrato
+    (`builtin:<agent_id>`, `builtin:orchestrator`, da `agents::builtin_launches`).
+    Al caricamento `migrate_default` converte il vecchio `is_default`.
   - `worker_permission`: tetto dei permessi dei worker automatici, `"plan" | "default" |
     "accept-edits" | "bypass"` (vocabolario di `agents::PermissionMode`);
     `#[serde(default)]` -> `"accept-edits"`, cosi' i vecchi `workspaces.json` non diventano
@@ -377,7 +382,7 @@ Dettagli completi: [SCHEDULE.MD](SCHEDULE.MD). Si appoggia alla board.
   `set_auto_orchestrate`, `workflow_get`, `workflow_save` (None o vuoto = elimina).
   **Eventi**: `schedule-state` (`{schedule, window_open, next_change_at}`) a ogni transizione o
   modifica; `get_board` (compatto) e `BoardView` includono `automation` per i workspace automatici.
-- **UI**: sezione "Esecuzione automatica" nelle Impostazioni globali; "Orchestratore
+- **UI**: pagina "Fasce orarie" nelle Impostazioni generali; "Orchestratore
   automatico" e "Workflow" (editor, "Crea con il wizard") nelle impostazioni del workspace;
   badge nella Board.
 

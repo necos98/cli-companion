@@ -3,6 +3,7 @@ mod agents;
 pub mod automation;
 mod awake;
 pub mod board;
+mod launch_settings;
 pub mod mcp;
 mod pty;
 pub mod schedule;
@@ -79,10 +80,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(WorkspaceStore::default())
         .manage(PtyState::default())
+        .manage(launch_settings::LaunchSettingsStore::default())
         .manage(AutomationState::default())
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
+            launch_settings::load_from_disk(app);
             automation::load_boards(app);
             automation::auto::init(app);
             agent_notify::start_listener(app.handle());
@@ -100,6 +103,10 @@ pub fn run() {
             workspaces::add_launch,
             workspaces::update_launch,
             workspaces::remove_launch,
+            workspaces::set_default_launch,
+            launch_settings::get_launch_settings,
+            launch_settings::set_global_default_launch,
+            agents::builtin_launches,
             workspaces::open_workspace_folder,
             wsl::list_wsl_distros,
             wsl::check_wsl_path,

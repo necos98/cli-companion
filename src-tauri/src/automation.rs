@@ -2471,6 +2471,7 @@ mod tests {
             worktree_setup: None,
             worker_model: None,
             auto_orchestrate: None,
+            default_launch: None,
         }
     }
 
