@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
 import { Loader2, SlidersHorizontal } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import type { SidebarTerminal } from "./components/Sidebar";
@@ -649,15 +650,12 @@ export default function App() {
     setLayout((l) => openTab(l, ws.id, key));
   }, [showTerminalsOf]);
 
-  // Controllo silenzioso all'avvio: se c'e' un update compare il pallino su
-  // "Impostazioni". Errori e repo non configurato non fanno rumore.
+  // Controllo silenzioso all'avvio (plugin updater): se c'e' un update compare
+  // il pallino su "Impostazioni". Gli errori (rete, release assente) non fanno rumore.
   useEffect(() => {
     void (async () => {
       try {
-        const cfg = await api.getUpdateConfig();
-        if (!cfg.configured) return;
-        const st = await api.checkUpdate();
-        setUpdateAvailable(st.update_available);
+        setUpdateAvailable((await check()) !== null);
       } catch {
         /* silenzioso */
       }

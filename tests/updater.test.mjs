@@ -7,22 +7,17 @@ import {
   compareVersions,
   isNewerVersion,
   normalizeVersion,
-  pickInstallerAsset,
 } from "../src/lib/updater.ts";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (p) => readFileSync(path.join(root, p), "utf8");
 
-describe("updater: config repo GitHub", () => {
-  it("updater.config.json esiste con owner/repo/assetPatterns documentati", () => {
+describe("updater: config repo GitHub (CLI --check-update)", () => {
+  it("updater.config.json esiste con owner/repo documentati", () => {
     const raw = read("updater.config.json");
     const cfg = JSON.parse(raw);
     assert.ok(typeof cfg.owner === "string" && cfg.owner.length > 0, "owner mancante");
     assert.ok(typeof cfg.repo === "string" && cfg.repo.length > 0, "repo mancante");
-    assert.ok(
-      Array.isArray(cfg.assetPatterns) && cfg.assetPatterns.length > 0,
-      "assetPatterns mancanti",
-    );
     assert.match(raw, /REPLACE_ME/, "placeholder repo-non-ancora-esistente non documentato");
   });
 
@@ -44,30 +39,39 @@ describe("updater: versioni sincronizzate", () => {
 });
 
 describe("updater: modulo backend e integrazione", () => {
-  it("updater.rs espone check/download/install + rollback + sha256 + feed releases", () => {
+  it("updater.rs tiene solo il check leggero per la CLI", () => {
     const rs = read("src-tauri/src/updater.rs");
-    for (const id of [
-      "pub fn check_blocking",
-      "pub fn download_update_blocking",
-      "pub fn install_update_blocking",
-      "fn sha256_bytes",
-      "remove_file",
-      "releases/latest",
-    ]) {
-      assert.ok(rs.includes(id), `${id} non trovato in updater.rs`);
+    assert.ok(rs.includes("pub fn check_blocking"), "check_blocking non trovato");
+    assert.ok(rs.includes("releases/latest"), "feed releases non trovato");
+    for (const gone of ["download_update_blocking", "install_update_blocking", "fn sha256_bytes"]) {
+      assert.ok(!rs.includes(gone), `${gone} non dovrebbe piu esistere in updater.rs`);
     }
   });
 
-  it("lib.rs registra i comandi updater", () => {
+  it("lib.rs registra i plugin updater/process e non i vecchi comandi", () => {
     const lib = read("src-tauri/src/lib.rs");
-    for (const c of [
-      "updater::get_update_config",
-      "updater::check_update",
-      "updater::download_update",
-      "updater::install_update",
-    ]) {
-      assert.ok(lib.includes(c), `${c} non registrato in lib.rs`);
-    }
+    assert.ok(lib.includes("tauri_plugin_updater::Builder::new().build()"));
+    assert.ok(lib.includes("tauri_plugin_process::init()"));
+    assert.ok(!lib.includes("updater::check_update"), "vecchio comando check_update ancora registrato");
+  });
+
+  it("tauri.conf.json: bundle NSIS firmato e endpoint latest.json", () => {
+    const conf = JSON.parse(read("src-tauri/tauri.conf.json"));
+    assert.deepEqual(conf.bundle.targets, ["nsis"]);
+    assert.equal(conf.bundle.createUpdaterArtifacts, true);
+    const up = conf.plugins.updater;
+    assert.ok(typeof up.pubkey === "string" && up.pubkey.length > 0, "pubkey mancante");
+    assert.equal(up.windows.installMode, "passive");
+    assert.ok(
+      up.endpoints.every((e) => e.startsWith("https://") && e.endsWith("/latest.json")),
+      "endpoint latest.json non valido",
+    );
+  });
+
+  it("capability default abilita updater e riavvio", () => {
+    const cap = JSON.parse(read("src-tauri/capabilities/default.json"));
+    assert.ok(cap.permissions.includes("updater:default"));
+    assert.ok(cap.permissions.includes("process:allow-restart"));
   });
 
   it("main.rs offre --check-update/--version/--help", () => {
@@ -77,12 +81,11 @@ describe("updater: modulo backend e integrazione", () => {
     assert.match(main, /--help/);
   });
 
-  it("tauri-args copre updater.rs e la GUI invoca i comandi", () => {
-    assert.match(read("tests/tauri-args.test.mjs"), /updater\.rs/);
-    const ts = read("src/lib/tauri.ts");
-    for (const c of ["get_update_config", "check_update", "download_update", "install_update"]) {
-      assert.ok(ts.includes(`"${c}"`), `invoke "${c}" mancante in tauri.ts`);
-    }
+  it("la GUI usa il plugin updater nelle impostazioni", () => {
+    const ui = read("src/components/UpdateCheck.tsx");
+    assert.match(ui, /plugin-updater/);
+    assert.match(ui, /downloadAndInstall/);
+    assert.match(ui, /relaunch/);
     assert.match(read("src/components/SettingsDialog.tsx"), /UpdateCheck/);
   });
 });
@@ -113,15 +116,5 @@ describe("updater: confronto versioni (parità TS/Rust)", () => {
     assert.equal(isNewerVersion("0.1.0", "0.2.0"), true);
     assert.equal(isNewerVersion("0.2.0", "0.1.0"), false);
     assert.equal(isNewerVersion("0.1.0", "0.1.0"), false);
-  });
-});
-
-describe("updater: scelta asset installer", () => {
-  it("preferisce .msi a .exe secondo i pattern, case-insensitive", () => {
-    const names = ["app-0.2.0.exe", "app-0.2.0.msi", "app.AppImage"];
-    assert.equal(pickInstallerAsset(names, [".msi", ".exe"]), "app-0.2.0.msi");
-    assert.equal(pickInstallerAsset(names, [".exe"]), "app-0.2.0.exe");
-    assert.equal(pickInstallerAsset(["a.zip"], [".msi"]), null);
-    assert.equal(pickInstallerAsset(names, ["MSI"]), "app-0.2.0.msi");
   });
 });

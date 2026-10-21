@@ -1,7 +1,7 @@
 # Release su GitHub (repo + CI Windows + updater)
 
 Questa guida copre, nell'ordine: (1) creare il repository GitHub mancante,
-(2) come la CI compila l'eseguibile Windows, (3) come l'updater consuma
+(2) come la CI compila l'eseguibile Windows, (3) come l'updater (firmato) consuma
 le release. Per il dettaglio del meccanismo di update vedi
 [docs/UPDATER.MD](UPDATER.MD).
 
@@ -62,8 +62,11 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Il push del tag `v0.1.0` fa partire la CI che compila e crea
-automaticamente la Release `v0.1.0` con installer + checksum.
+Il push del tag `v0.1.0` fa partire la CI che compila, firma e crea
+automaticamente la Release `v0.1.0` con installer firmato, `latest.json` e checksum.
+Prima della prima release firmata servono i due secret GitHub
+`TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+(vedi [docs/UPDATER.MD](UPDATER.MD)): la chiave privata non va mai committata.
 Controlla l'avanzamento con `gh run watch` oppure nella tab Actions.
 
 Release successive: aggiorna le 3 versioni → commit → push →
@@ -82,39 +85,41 @@ Runner `windows-latest`, build system reale del progetto:
    `Cargo.toml`/`Cargo.lock`/workflow, o avvio manuale): fa solo
    `cargo build --release` con dist segnaposto, senza Release ne' artifact;
 1. `npm ci` + `npm test` (`node --test tests/*.test.mjs`);
-2. installa WiX 3.14 via choco (serve per l'MSI; NSIS e' scaricato
-   da tauri-bundler automaticamente);
-3. `npx tauri build --ci` → prima `npm run build` (`tsc && vite build`),
-   poi backend Rust in release + bundle (`targets=all` = MSI + NSIS);
-4. genera `<asset>.sha256` (singolo hash) per ogni asset;
-5. carica exe + MSI + NSIS-setup + checksum come artifact CI;
+2. `npx tauri build --ci` con i secret di firma → prima `npm run build`
+   (`tsc && vite build`), poi backend Rust in release + bundle NSIS
+   (`targets=["nsis"]`; NSIS e' scaricato da tauri-bundler automaticamente,
+   niente piu' WiX/MSI) e `<setup>.exe.sig`;
+3. genera `latest.json` (manifest del plugin updater, UTF-8 senza BOM; fallisce
+   se manca la firma);
+4. genera `<asset>.sha256` (singolo hash) per exe e setup;
+5. carica exe + setup + `.sig` + `latest.json` + checksum come artifact CI;
 6. **solo su tag `v*`**: `gh release create` con gli stessi file.
 
 Asset pubblicati in ogni Release:
 
 | Asset | Note |
 |---|---|
-| `cli-companion_<ver>_x64.msi` | Installer MSI (preferito dall'updater) |
-| `cli-companion_<ver>_x64-setup.exe` | Installer NSIS |
+| `cli-companion_<ver>_x64-setup.exe` | Installer NSIS (quello scaricato dall'updater) |
+| `cli-companion_<ver>_x64-setup.exe.sig` | Firma minisign dell'installer |
+| `latest.json` | Manifest letto da `tauri-plugin-updater` |
 | `cli-companion.exe` | Eseguibile portable (fallback) |
-| `<asset>.sha256` ciascuno | Checksum verificato dall'updater |
+| `<asset>.sha256` | Checksum per download manuali (non usato dall'updater) |
 
 ## 4. Come l'updater consuma le release
 
-Flusso (backend `src-tauri/src/updater.rs`, GUI `UpdateCheck.tsx`):
+Flusso della GUI (`tauri-plugin-updater`, `UpdateCheck.tsx`):
 
-1. `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`
-   con `owner`/`repo` da `updater.config.json`
-   (override: env `CLI_COMPANION_UPDATE_OWNER` / `_REPO` / `_API_URL`);
-2. confronta `tag_name` (es. `v0.2.0`) con la versione locale
-   (semver tollerante: `1.10 > 1.9`, `1.2 == 1.2.0`);
-3. se il tag e' piu' nuovo, sceglie l'asset via `assetPatterns`
-   (`.msi` prima di `setup.exe`, poi `.exe`; fallback: primo asset);
-4. scarica in `%TEMP%`, verifica dimensione + SHA256 se `<asset>.sha256`
-   (o `*SHA256SUMS*`) e' presente nella release; su mismatch elimina
-   il file (rollback) e non tocca l'installazione;
-5. installa avviando l'installer scaricato (detached), oppure ne mostra
-   il percorso per installazione manuale.
+1. `check()` scarica
+   `https://github.com/necos98/cli-companion/releases/latest/download/latest.json`
+   (endpoint in `src-tauri/tauri.conf.json`) e confronta `version` con
+   quella installata;
+2. se e' piu' nuova, `downloadAndInstall` scarica il setup NSIS e verifica la
+   firma con la `pubkey` in `tauri.conf.json` (firma errata = update rifiutato);
+3. l'installer parte in modalita' `passive`, l'app si chiude e si riapre da
+   sola. I server MCP delle sessioni agent aperte vengono riavviati.
+
+La CLI `--check-update` (`src-tauri/src/updater.rs`) fa solo un controllo
+leggero su `releases/latest` via curl, senza scaricare nulla.
 
 Comandi utili senza GUI:
 
@@ -123,8 +128,8 @@ cargo run -p cli-companion -- --check-update   # exit 0 ok / 2 disponibile / 1 e
 cargo run -p cli-companion -- --check-update --json
 ```
 
-Finche' `owner` resta `REPLACE_ME_OWNER`, check e download rispondono
-con un messaggio guida e non toccano la rete.
+Finche' `owner` resta `REPLACE_ME_OWNER`, la CLI risponde con un messaggio
+guida e non tocca la rete.
 
 ## 5. Checklist release
 
@@ -134,5 +139,8 @@ con un messaggio guida e non toccano la rete.
       sincronizzate` fallisce se divergono)
 - [ ] `npm test` verde in locale
 - [ ] tag `vX.Y.Z` creato e pushato, Release apparsa su GitHub
-- [ ] asset attesi presenti (MSI + NSIS + exe + `.sha256`)
-- [ ] smoke test: `--check-update` dalla versione precedente rileva la nuova
+- [ ] secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` presenti su GitHub
+- [ ] asset attesi presenti (setup + `.sig` + `latest.json` + exe + `.sha256`)
+- [ ] `latest.json` raggiungibile da `releases/latest/download/latest.json`
+- [ ] smoke test: da un'installazione precedente, «Controlla aggiornamenti»
+      rileva la nuova versione e «Aggiorna e riavvia» la installa
