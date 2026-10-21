@@ -2,8 +2,9 @@ name: build-windows
 
 # Build reale del progetto (frontend: npm/tsc/vite, backend: Tauri v2/Rust):
 # - su ogni push/PR produce l'eseguibile + i bundle Windows come artifact CI;
-# - su tag v* crea anche la GitHub Release con installer + checksum .sha256,
-#   che e' esattamente cio' che consuma l'updater (vedi docs/UPDATER.MD).
+# - su tag v* crea anche la GitHub Release con installer NSIS firmato (.sig),
+#   latest.json e checksum .sha256: latest.json e' il manifest che consuma
+#   tauri-plugin-updater (vedi docs/UPDATER.MD).
 # La cache Rust (rust-cache) viene salvata solo da cache-rust-main.yml su main:
 # le cache create in un run su tag non sono ripristinabili da altri tag, mentre
 # un run puo' ripristinare quelle del proprio ref o del branch di default.
@@ -45,20 +46,6 @@ jobs:
           shared-key: release
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install WiX Toolset (per bundle MSI)
-        # NSIS viene scaricato automaticamente da tauri-bundler;
-        # WiX invece deve essere nel PATH (candle.exe/light.exe).
-        # I runner windows-latest spesso lo hanno gia' preinstallato
-        # (versione >= quella pinnata): in quel caso si salta l'install
-        # perche' choco fallirebbe chiedendo un downgrade.
-        run: |
-          $wix = Get-Command candle.exe, light.exe -ErrorAction SilentlyContinue
-          if ($wix) {
-            Write-Host "WiX gia' presente: $($wix[0].Source), salto installazione."
-          } else {
-            choco install wixtoolset -y --no-progress
-          }
-
       - name: Install frontend deps
         run: npm ci
 
@@ -67,17 +54,56 @@ jobs:
 
       - name: Build Tauri app + bundle Windows
         # Esegue beforeBuildCommand (npm run build = tsc && vite build)
-        # poi compila il backend Rust in release e crea i bundle
-        # (targets=all -> su Windows: MSI via WiX + NSIS setup.exe).
+        # poi compila il backend Rust in release e crea il bundle NSIS
+        # (targets=["nsis"]; niente piu' MSI: due installer diversi creavano
+        # installazioni e collegamenti duplicati). createUpdaterArtifacts
+        # produce anche <setup>.exe.sig, firmato con la chiave privata minisign:
+        # senza TAURI_SIGNING_PRIVATE_KEY la build fallisce.
         # --ci evita prompt interattivi.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --ci
 
+      - name: Generate latest.json (manifest updater)
+        # Formato statico di tauri-plugin-updater: l'endpoint in tauri.conf.json
+        # punta a releases/latest/download/latest.json. La firma e' il contenuto
+        # del .sig; se manca la build non e' firmata e la release romperebbe
+        # gli aggiornamenti, quindi il passo fallisce. UTF-8 SENZA BOM: il
+        # plugin fa il parse JSON e un BOM lo manderebbe in errore.
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer NSIS non trovato: build fallita?" }
+          $sigFile = $setup.FullName + ".sig"
+          if (-not (Test-Path $sigFile)) { throw "Firma mancante ($sigFile): TAURI_SIGNING_PRIVATE_KEY non impostata?" }
+          $signature = (Get-Content $sigFile -Raw).Trim()
+          $tag = "v$version"
+          $entry = [ordered]@{
+            signature = $signature
+            url       = "https://github.com/necos98/cli-companion/releases/download/$tag/$($setup.Name)"
+          }
+          $manifest = [ordered]@{
+            version  = $version
+            notes    = "cli-companion $tag"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64"      = $entry
+              "windows-x86_64-nsis" = $entry
+            }
+          }
+          $json = $manifest | ConvertTo-Json -Depth 5
+          $out = Join-Path $setup.DirectoryName "latest.json"
+          [System.IO.File]::WriteAllText($out, $json, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "latest.json:"
+          Write-Host $json
+
       - name: Generate SHA256 checksums
-        # L'updater verifica '<asset>.sha256' (singolo hash, vedi docs/UPDATER.MD).
+        # Checksum di comodo per chi scarica a mano (l'updater verifica la firma
+        # minisign, non questi file).
         run: |
           $files = @(
             "src-tauri/target/release/cli-companion.exe",
-            "src-tauri/target/release/bundle/msi/*.msi",
             "src-tauri/target/release/bundle/nsis/*-setup.exe"
           ) | ForEach-Object { Get-Item $_ -ErrorAction SilentlyContinue } | Where-Object { $_ -is [System.IO.FileInfo] }
           if (-not $files) { throw "Nessun eseguibile/bundle trovato: build fallita?" }
@@ -95,10 +121,10 @@ jobs:
           path: |
             src-tauri/target/release/cli-companion.exe
             src-tauri/target/release/cli-companion.exe.sha256
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.sha256
             src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
             src-tauri/target/release/bundle/nsis/*.sha256
+            src-tauri/target/release/bundle/nsis/latest.json
           if-no-files-found: error
 
       - name: Create GitHub Release (solo su tag v*)
@@ -108,10 +134,10 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $assets = @(
-            "src-tauri/target/release/bundle/msi/*.msi",
-            "src-tauri/target/release/bundle/msi/*.sha256",
             "src-tauri/target/release/bundle/nsis/*-setup.exe",
+            "src-tauri/target/release/bundle/nsis/*-setup.exe.sig",
             "src-tauri/target/release/bundle/nsis/*.sha256",
+            "src-tauri/target/release/bundle/nsis/latest.json",
             "src-tauri/target/release/cli-companion.exe",
             "src-tauri/target/release/cli-companion.exe.sha256"
           ) | ForEach-Object { Get-Item $_ -ErrorAction SilentlyContinue } | Where-Object { $_ -is [System.IO.FileInfo] } | Select-Object -ExpandProperty FullName

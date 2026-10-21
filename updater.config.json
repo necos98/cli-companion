@@ -1,9 +1,6 @@
 {
-  "_comment": "Config updater GitHub Releases: SINGLE SOURCE OF TRUTH per owner/repo. Letto dal backend Rust a compile-time (src-tauri/src/updater.rs via include_str!) ed esposto al frontend tramite comando get_update_config. Se il repository GitHub NON esiste ancora, lascia owner=REPLACE_ME_OWNER: l'updater lo rileva e risponde con un messaggio chiaro invece di fallire (vedi docs/UPDATER.MD). Override runtime (hanno precedenza): CLI_COMPANION_UPDATE_OWNER, CLI_COMPANION_UPDATE_REPO, CLI_COMPANION_UPDATE_API_URL.",
+  "_comment": "Config del controllo aggiornamenti da CLI (cli-companion --check-update): SINGLE SOURCE OF TRUTH per owner/repo. Letto dal backend Rust a compile-time (src-tauri/src/updater.rs via include_str!). La GUI NON lo usa: l'aggiornamento in-app passa da tauri-plugin-updater, configurato in src-tauri/tauri.conf.json (plugins.updater). Se il repository GitHub NON esiste ancora, lascia owner=REPLACE_ME_OWNER: il check lo rileva e risponde con un messaggio chiaro invece di fallire (vedi docs/UPDATER.MD). Override runtime (hanno precedenza): CLI_COMPANION_UPDATE_OWNER, CLI_COMPANION_UPDATE_REPO, CLI_COMPANION_UPDATE_API_URL.",
   "owner": "necos98",
   "repo": "cli-companion",
-  "apiUrl": "https://api.github.com",
-  "assetPatterns": [".msi", "setup.exe", "win-x64.exe", "windows-x86_64.exe", ".exe"],
-  "assetPatternsNote": "Ordine di preferenza (substring, case-insensitive) per scegliere l'installer dalla release. Se nessun asset matcha, l'updater usa il primo asset disponibile oppure chiede di specificarne il nome.",
-  "checksumNote": "Se la release contiene '<asset>.sha256' (o un file *SHA256SUMS*), l'updater lo scarica e verifica il digest; in caso di mismatch il file viene eliminato (rollback) e l'installazione corrente resta intatta."
+  "apiUrl": "https://api.github.com"
 }

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, RefreshCw, Rocket } from "lucide-react";
+import { Download, RefreshCw } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { api } from "../lib/tauri";
-import type { DownloadResult, UpdateConfig, UpdateStatus } from "../lib/updater";
 import { cn } from "../lib/utils";
 
 type Phase =
@@ -12,12 +13,19 @@ type Phase =
   | "available"
   | "uptodate"
   | "downloading"
-  | "downloaded"
+  | "installing"
   | "error";
 
 function shortNotes(notes: string, max = 220): string {
   const oneLine = notes.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+/** Data della release in formato locale; stringa vuota se assente o non valida. */
+function formatDate(raw?: string): string {
+  if (!raw) return "";
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString();
 }
 
 interface Props {
@@ -26,34 +34,27 @@ interface Props {
 }
 
 export default function UpdateCheck({ onAvailable }: Props) {
-  const [config, setConfig] = useState<UpdateConfig | null>(null);
-  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<Update | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
-  const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [download, setDownload] = useState<DownloadResult | null>(null);
+  // Percentuale di download; null finché la dimensione totale non è nota.
+  const [percent, setPercent] = useState<number | null>(null);
 
-  const check = useCallback(async (silent: boolean) => {
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => undefined);
+  }, []);
+
+  const checkNow = useCallback(async (silent: boolean) => {
     setError(null);
-    setInfo(null);
     if (!silent) setPhase("checking");
     try {
-      const cfg = await api.getUpdateConfig();
-      setConfig(cfg);
-      if (!cfg.configured) {
-        // Repo non ancora esistente: nessun allarme all'avvio, messaggio chiaro
-        // solo se l'utente preme il pulsante.
-        if (!silent) {
-          setPhase("error");
-          setError(cfg.message);
-        }
-        return;
-      }
-      const st = await api.checkUpdate();
-      setStatus(st);
-      setPhase(st.update_available ? "available" : "uptodate");
-      onAvailable?.(st.update_available);
+      const found = await check();
+      setUpdate(found);
+      setPhase(found ? "available" : "uptodate");
+      onAvailable?.(found !== null);
     } catch (e) {
+      // Controllo silenzioso: rete assente o nessuna release non fanno rumore.
       if (!silent) {
         setPhase("error");
         setError(String(e));
@@ -63,37 +64,41 @@ export default function UpdateCheck({ onAvailable }: Props) {
 
   // Controllo silenzioso all'avvio: mostra il badge solo se c'è un update.
   useEffect(() => {
-    void check(true);
-  }, [check]);
+    void checkNow(true);
+  }, [checkNow]);
 
-  const downloadNow = async () => {
+  const installNow = async () => {
+    if (!update) return;
     setError(null);
-    setInfo(null);
+    setPercent(null);
     setPhase("downloading");
+    let total = 0;
+    let done = 0;
     try {
-      const d = await api.downloadUpdate(null);
-      setDownload(d);
-      setPhase("downloaded");
-      setInfo(d.message);
+      await update.downloadAndInstall((ev) => {
+        if (ev.event === "Started") {
+          total = ev.data.contentLength ?? 0;
+          setPercent(total > 0 ? 0 : null);
+        } else if (ev.event === "Progress") {
+          done += ev.data.chunkLength;
+          if (total > 0) setPercent(Math.min(100, Math.round((done / total) * 100)));
+        } else {
+          setPercent(100);
+          setPhase("installing");
+        }
+      });
+      // Su Windows l'app esce da sola quando parte l'installer: il relaunch
+      // serve solo se il processo è ancora vivo (altre piattaforme).
+      await relaunch();
     } catch (e) {
       setPhase("error");
       setError(String(e));
     }
   };
 
-  const installNow = async (launch: boolean) => {
-    if (!download) return;
-    setError(null);
-    setInfo(null);
-    try {
-      const r = await api.installUpdate(download.file_path, launch);
-      setInfo(r.message);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const busy = phase === "checking" || phase === "downloading";
+  const busy =
+    phase === "checking" || phase === "downloading" || phase === "installing";
+  const date = formatDate(update?.date);
 
   return (
     <div className="flex flex-col gap-2">
@@ -101,7 +106,7 @@ export default function UpdateCheck({ onAvailable }: Props) {
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void check(false)}
+          onClick={() => void checkNow(false)}
           disabled={busy}
         >
           <RefreshCw className={cn("h-3.5 w-3.5", busy && "animate-spin")} />
@@ -109,75 +114,66 @@ export default function UpdateCheck({ onAvailable }: Props) {
             ? "Controllo…"
             : phase === "downloading"
               ? "Download…"
-              : "Controlla aggiornamenti"}
+              : phase === "installing"
+                ? "Installazione…"
+                : "Controlla aggiornamenti"}
         </Button>
-        {config && (
-          <span className="text-[11px] text-muted-foreground">
-            v{config.current_version}
-          </span>
+        {version && (
+          <span className="text-[11px] text-muted-foreground">v{version}</span>
         )}
-        {phase === "available" && status && (
-          <Badge>Nuova: {status.latest_version}</Badge>
+        {update && phase !== "uptodate" && (
+          <Badge>Nuova: {update.version}</Badge>
         )}
       </div>
 
-      {phase === "uptodate" && status && (
+      {phase === "uptodate" && (
         <p className="text-xs text-muted-foreground">
-          Aggiornato alla versione {status.current_version}.
+          Aggiornato alla versione {version}.
         </p>
       )}
 
-      {phase === "available" && status && (
+      {update && (phase === "available" || busy) && (
         <div className="flex flex-col gap-2 rounded-lg border bg-card p-2.5">
           <p className="text-xs font-semibold">
-            {status.release_name || `Versione ${status.latest_version}`} disponibile
+            Versione {update.version} disponibile
+            {date && (
+              <span className="font-normal text-muted-foreground"> · {date}</span>
+            )}
           </p>
-          {status.asset && (
+          {update.body && (
             <p className="text-[11px] text-muted-foreground">
-              Installer: {status.asset.name}
+              {shortNotes(update.body)}
             </p>
           )}
-          {status.release_notes && (
-            <p className="text-[11px] text-muted-foreground">
-              {shortNotes(status.release_notes)}
-            </p>
+          <p className="text-[11px] text-muted-foreground">
+            L'app si chiuderà e si riaprirà da sola. I server MCP delle sessioni
+            agent aperte verranno riavviati.
+          </p>
+          {(phase === "downloading" || phase === "installing") && (
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn(
+                    "h-full bg-primary transition-[width]",
+                    percent === null && "w-1/3 animate-pulse",
+                  )}
+                  style={percent === null ? undefined : { width: `${percent}%` }}
+                />
+              </div>
+              <span className="w-9 text-right text-[11px] text-muted-foreground">
+                {percent === null ? "…" : `${percent}%`}
+              </span>
+            </div>
           )}
           <div>
-            <Button size="sm" onClick={() => void downloadNow()}>
+            <Button size="sm" onClick={() => void installNow()} disabled={busy}>
               <Download className="h-3.5 w-3.5" />
-              Scarica aggiornamento
+              Aggiorna e riavvia
             </Button>
           </div>
         </div>
       )}
 
-      {phase === "downloaded" && download && (
-        <div className="flex flex-col gap-2 rounded-lg border bg-card p-2.5">
-          <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate text-xs font-semibold">
-              {download.file_name}
-            </p>
-            <Badge variant={download.verified ? "default" : "secondary"}>
-              {download.verified ? "verificato" : "non verificato"}
-            </Badge>
-          </div>
-          <div className="flex flex-row gap-1.5">
-            <Button size="sm" onClick={() => void installNow(true)}>
-              <Rocket className="h-3.5 w-3.5" />
-              Avvia installer
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => void installNow(false)}
-            >
-              Istruzioni manuali
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {info && <p className="text-[11px] text-muted-foreground">{info}</p>}
       {error && <p className="text-[11px] text-destructive">{error}</p>}
     </div>
   );

@@ -17,7 +17,7 @@ Altri comandi:
 ```powershell
 npm test              # node --test tests/*.test.mjs
 npm run build         # tsc && vite build (solo frontend, in dist/)
-npx tauri build       # build completa + bundle Windows (MSI + NSIS)
+npx tauri build       # build completa + bundle Windows (NSIS, firmato: servono i secret TAURI_SIGNING_*)
 cargo check           # da src-tauri/: solo backend
 ```
 
@@ -35,9 +35,9 @@ Versione corrente: **0.7.0**.
 ## Release e aggiornamenti
 
 - [docs/RELEASE.MD](docs/RELEASE.MD) — creare la repo GitHub, CI Windows,
-  pubblicare una release (tag `v*` → Release automatica con installer + SHA256).
-- [docs/UPDATER.MD](docs/UPDATER.MD) — come l'updater interroga
-  `releases/latest`, sceglie l'installer e verifica i checksum.
+  pubblicare una release (tag `v*` → Release automatica con installer firmato, latest.json + SHA256).
+- [docs/UPDATER.MD](docs/UPDATER.MD) — come funziona l'updater firmato (`tauri-plugin-updater`),
+  `latest.json` e chiavi di firma.
 - [docs/DESIGN.MD](docs/DESIGN.MD) — note di design del progetto.
 - [docs/BOARD.MD](docs/BOARD.MD) — la Board dei task: modello dati, scheduler, worktree, tool MCP.
 - [docs/SCHEDULE.MD](docs/SCHEDULE.MD) — finestre di esecuzione, orchestratore automatico e workflow per workspace.

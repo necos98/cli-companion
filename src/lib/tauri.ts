@@ -4,12 +4,6 @@ import type { WorkerPermission } from "./workerPermission";
 import type { BoardView, TaskAction } from "./board";
 import type { Schedule, ScheduleState } from "./schedule";
 import type { AutoOrchestrate } from "./workflow";
-import type {
-  DownloadResult,
-  InstallResult,
-  UpdateConfig,
-  UpdateStatus,
-} from "./updater";
 
 /** Avvio personalizzato di un workspace (vedi `Launch` in workspaces.rs). */
 export interface Launch {
@@ -273,17 +267,6 @@ export const api = {
   deleteScrollback: (tabId: string) => invoke<void>("delete_scrollback", { tabId }),
 
   pruneScrollback: (keep: string[]) => invoke<void>("prune_scrollback", { keep }),
-
-  // Updater GitHub Releases (backend: src-tauri/src/updater.rs).
-  getUpdateConfig: () => invoke<UpdateConfig>("get_update_config"),
-
-  checkUpdate: () => invoke<UpdateStatus>("check_update"),
-
-  downloadUpdate: (assetName: string | null) =>
-    invoke<DownloadResult>("download_update", { assetName }),
-
-  installUpdate: (filePath: string, launch: boolean) =>
-    invoke<InstallResult>("install_update", { filePath, launch }),
 };
 
 export function onNotificationActivated(cb: (tabId: string) => void) {

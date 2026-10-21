@@ -78,6 +78,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(WorkspaceStore::default())
         .manage(PtyState::default())
         .manage(launch_settings::LaunchSettingsStore::default())
@@ -114,10 +116,6 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_close,
-            updater::get_update_config,
-            updater::check_update,
-            updater::download_update,
-            updater::install_update,
             agent_notify::test_agent_notify,
             automation::automation_tab_closed,
             automation::automation_orchestrator_open,
