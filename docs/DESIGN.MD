@@ -257,9 +257,12 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     (`command` = exe come sopra, `args` = `["--mcp"]`) e una skill per ogni preset di
     `agents/presets.rs` (`Preset { id, name, skill }`): `skills/<id>/SKILL.md`, sorgente
     `agents/presets/<id>.md` inclusa con `include_str!` e normalizzata a LF, in inglese,
-    invocabile come `/cli-companion-notify:<id>`. Oggi un solo preset, `task-intake` (il
-    metodo dell'agente Intake: vedi [BOARD.MD](BOARD.MD)); aggiungere un preset = una voce
-    in `PRESETS` + un file md. Le skill `orchestrate` e `workflow` non esistono piu': a ogni
+    invocabile come `/cli-companion-notify:<id>`. Oggi due preset: `task-intake` (il
+    metodo dell'agente Intake: vedi [BOARD.MD](BOARD.MD)) e `skill-wizard` (intervista l'utente
+    e crea una skill globale con i tool MCP `save_skill`, `list_skills`, `delete_skill`; le skill
+    utente sono archiviate in `<app data>/user-skills` e sincronizzate come destinazione in
+    `~/.claude/skills`, dove le cartelle gestite portano il marcatore `.cli-companion-managed`);
+    aggiungere un preset = una voce in `PRESETS` + un file md. Le skill `orchestrate` e `workflow` non esistono piu': a ogni
     installazione `remove_obsolete_skills` toglie da `skills/` le cartelle che non sono
     preset. Passi: `plugin validate`,
     pulizia best-effort, `plugin marketplace add`, `plugin install --scope user`. La

@@ -1131,7 +1131,13 @@ mod tests {
         assert_eq!(l[0].command, l[0].restore_command);
         assert!(!l.iter().any(|b| b.id == "builtin:orchestrator"));
         let ids: Vec<_> = l.iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, vec!["builtin:claude-code", "builtin:preset:task-intake"]);
+        assert_eq!(
+            ids,
+            vec!["builtin:claude-code", "builtin:preset:task-intake", "builtin:preset:skill-wizard"]
+        );
+        let w = l.iter().find(|b| b.id == "builtin:preset:skill-wizard").unwrap();
+        assert_eq!(w.name, "Skill Wizard");
+        assert_eq!(w.command, "claude --dangerously-skip-permissions \"/cli-companion-notify:skill-wizard\"");
         let p = l.iter().find(|b| b.id == "builtin:preset:task-intake").unwrap();
         assert_eq!(p.name, "Task Intake");
         assert_eq!(p.agent_id, "claude-code");

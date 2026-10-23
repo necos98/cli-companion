@@ -64,7 +64,10 @@ Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent:
 agente, oggi **Task Intake** (lo stesso comando con la skill `/cli-companion-notify:task-intake`,
 che trasforma le richieste in specifiche di task da proporre alla coda; al ripristino il tab
 riprende la conversazione senza rilanciare la skill; ogni apertura è un nuovo tab, così puoi
-tenere più chat Intake in parallelo). Non si modificano né si eliminano: si
+tenere più chat Intake in parallelo) e **Skill Wizard** (skill `/cli-companion-notify:skill-wizard`:
+intervista l'utente e crea una skill globale, valida in tutti i workspace, salvandola con i tool MCP
+`save_skill`, `list_skills`, `delete_skill`; le skill stanno in `<app data>/user-skills` e vengono
+copiate in `~/.claude/skills`, nelle cartelle col marcatore `.cli-companion-managed`). Non si modificano né si eliminano: si
 possono solo scegliere come predefiniti. A questi si aggiungono gli avvii personalizzati del
 workspace. Un `builtin:orchestrator` salvato come predefinito diventa Task Intake.
 

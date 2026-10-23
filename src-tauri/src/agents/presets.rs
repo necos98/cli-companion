@@ -31,11 +31,10 @@ pub const PRESET_LAUNCH_PREFIX: &str = "builtin:preset:";
 pub const LEGACY_ORCHESTRATOR_LAUNCH: &str = "builtin:orchestrator";
 
 /// Registro dei preset.
-pub static PRESETS: &[Preset] = &[Preset {
-    id: "task-intake",
-    name: "Task Intake",
-    skill: include_str!("presets/task-intake.md"),
-}];
+pub static PRESETS: &[Preset] = &[
+    Preset { id: "task-intake", name: "Task Intake", skill: include_str!("presets/task-intake.md") },
+    Preset { id: "skill-wizard", name: "Skill Wizard", skill: include_str!("presets/skill-wizard.md") },
+];
 
 /// Migra l'id del vecchio avvio dell'orchestratore a quello di Task Intake.
 pub fn migrate_launch_id(id: &mut Option<String>) {
@@ -74,6 +73,20 @@ mod tests {
         for t in [
             "propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "Goal", "Context",
             "Constraints", "Done when", "Verify", "depends_on", "Task panel",
+        ] {
+            assert!(skill.contains(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn skill_wizard_skill_covers_the_method() {
+        let p = PRESETS.iter().find(|p| p.id == "skill-wizard").unwrap();
+        assert_eq!(p.name, "Skill Wizard");
+        assert_eq!(p.launch_id(), "builtin:preset:skill-wizard");
+        let skill = p.skill_text();
+        for t in [
+            "save_skill", "list_skills", "delete_skill", "one question at a time", "1024", "third person",
+            "frontmatter", "confirmation", "/<name>", "all workspaces", "restarting",
         ] {
             assert!(skill.contains(t), "{t}");
         }
