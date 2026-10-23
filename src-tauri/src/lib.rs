@@ -10,6 +10,7 @@ pub mod schedule;
 mod session;
 mod toast;
 pub mod updater;
+pub mod user_skills;
 mod worker_permissions;
 mod workspaces;
 mod wsl;

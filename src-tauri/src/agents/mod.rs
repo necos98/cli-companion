@@ -14,7 +14,7 @@
 //! default "non supportato"); `claude_usage.rs` ne e' l'esempio.
 
 mod claude_code;
-mod claude_usage;
+pub(crate) mod claude_usage;
 pub mod presets;
 
 pub use claude_usage::TranscriptCache;
