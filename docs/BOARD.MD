@@ -371,7 +371,8 @@ Argomenti camelCase lato JS.
   `task-<n>`). Manuale, senza proposta.
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` ∈ `retry` (failed →
-  queued in fondo) | `stop` (running → failed, chiude il tab) | `delete` | `to_top`
+  queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i
+  dipendenti, non verifica né integra il lavoro) | `stop` (running → failed, chiude il tab) | `delete` | `to_top`
   (queued → primo della coda).
 - `task_move(workspace_id, task_id, before_id: Option<String>) -> BoardView`: riordina un
   `queued` (prima di `before_id`, o in fondo).

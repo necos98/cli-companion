@@ -436,6 +436,21 @@ fn a_dependency_must_be_done_not_failed() {
 }
 
 #[test]
+fn mark_done_unblocks_dependents_and_the_worker_picks_them_up() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    queue(&st, &h, vec![spec("a", &[]), spec("b", &["a"])]);
+    finish(&st, &h, &session_of(&st, &h, "a"), "failed");
+    assert_eq!(status_of(&st, &h, "b"), "queued");
+    assert!(boards::task_action(&st, &h, "ws-1", "b", "mark_done").unwrap_err().contains("only failed tasks can be marked done"));
+    let v = boards::task_action(&st, &h, "ws-1", "a", "mark_done").unwrap();
+    let a = v.tasks.iter().find(|t| t.task.id == "a").unwrap();
+    assert_eq!((a.task.status, a.task.note.as_deref()), (TaskStatus::Done, None));
+    // Lo scheduler vede subito il dipendente sbloccato, come dopo le altre azioni.
+    assert_eq!(status_of(&st, &h, "b"), "running");
+    assert!(boards::task_action(&st, &h, "ws-1", "a", "mark_done").unwrap_err().contains("is done"));
+}
+
+#[test]
 fn delete_removes_failed_tasks_and_cleans_their_worktree() {
     let (st, h) = pr_parallel();
     queue(&st, &h, vec![spec("a", &[]), spec("b", &["a"]), spec("c", &[])]);

@@ -128,6 +128,10 @@ impl Registry {
         self.edit(ws, |b| b.retry_task(id, now))
     }
 
+    pub fn mark_task_done(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
+        self.edit(ws, |b| b.mark_done(id, now))
+    }
+
     pub fn move_task(&mut self, ws: &str, id: &str, before: Option<&str>, now: i64) -> Result<(), String> {
         self.edit(ws, |b| b.move_task(id, before, now))
     }
@@ -477,10 +481,11 @@ pub(super) fn task_action<H: Host>(
     let now = now_millis();
     st.run(host, |r| match action {
         "retry" => r.retry_task(ws_id, task_id, now),
+        "mark_done" => r.mark_task_done(ws_id, task_id, now),
         "stop" => r.stop_task(ws_id, task_id, now),
         "delete" => r.delete_task(ws_id, task_id, now),
         "to_top" => r.task_to_top(ws_id, task_id, now),
-        _ => Err("azione non valida (usa retry, stop, delete o to_top)".to_string()),
+        _ => Err("azione non valida (usa retry, mark_done, stop, delete o to_top)".to_string()),
     })?;
     st.view(host, ws_id)
 }

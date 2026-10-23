@@ -14,7 +14,7 @@ export type TaskStatus = "queued" | "running" | "done" | "failed";
 export type DisplayStatus = TaskStatus | "attention";
 
 /** Azioni dell'utente sul task (`task_action`). */
-export type TaskAction = "retry" | "stop" | "delete" | "to_top";
+export type TaskAction = "retry" | "mark_done" | "stop" | "delete" | "to_top";
 
 export type DeliveryMode = "pr" | "local_merge" | "push" | "commit";
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -356,6 +356,7 @@ export function clampMaxParallel(n: number): number {
 
 export const ACTION_LABELS: Record<TaskAction, string> = {
   retry: "Riprova",
+  mark_done: "Segna come fatto",
   stop: "Ferma",
   delete: "Elimina",
   to_top: "In cima alla coda",
@@ -363,7 +364,7 @@ export const ACTION_LABELS: Record<TaskAction, string> = {
 
 /**
  * Azioni consentite per stato: Da fare = in cima alla coda ed elimina; In corso
- * = ferma; Fallito = riprova ed elimina; Fatto = nessuna.
+ * = ferma; Fallito = riprova, segna come fatto ed elimina; Fatto = nessuna.
  */
 export function allowedActions(task: Pick<Task, "status">): TaskAction[] {
   switch (task.status) {
@@ -372,7 +373,7 @@ export function allowedActions(task: Pick<Task, "status">): TaskAction[] {
     case "running":
       return ["stop"];
     case "failed":
-      return ["retry", "delete"];
+      return ["retry", "mark_done", "delete"];
     default:
       return [];
   }

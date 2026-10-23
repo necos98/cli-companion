@@ -321,6 +321,39 @@ fn retry_requeues_at_the_bottom_and_keeps_the_previous_outcome() {
 }
 
 #[test]
+fn mark_done_closes_a_failed_task_keeping_the_report_and_unblocking_dependents() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"])]);
+    for status in [TaskStatus::Queued, TaskStatus::Running, TaskStatus::Done] {
+        set_status(&mut b, "a", status);
+        let e = b.mark_done("a", 2).unwrap_err();
+        assert!(e.contains(&format!("is {}: only failed tasks can be marked done", status.as_str())), "{e}");
+    }
+    assert!(b.mark_done("zz", 2).unwrap_err().contains("task not found"));
+    {
+        let t = b.task_mut("a").unwrap();
+        t.status = TaskStatus::Failed;
+        t.note = Some("the session ended without a complete_task report".into());
+        t.previous_attempt = Some(PreviousAttempt { summary: Some("old".into()), note: None });
+        t.report = Some(build_report("completed", "all delivered", ReportFields::default(), None));
+        t.last_report = Some("all delivered".into());
+        t.worktree = Some(WorktreeInfo { path: "p".into(), branch: "task/a".into(), base: "main".into(), setup_done: true });
+        t.finished_at = Some(1);
+    }
+    assert!(!b.deps_done(b.task("b").unwrap()), "failed non sblocca");
+    b.mark_done("a", 5).unwrap();
+    let t = b.task("a").unwrap();
+    assert_eq!((t.status, t.finished_at, t.updated_at, b.updated_at), (TaskStatus::Done, Some(5), 5, 5));
+    assert!(t.note.is_none() && t.previous_attempt.is_none());
+    assert_eq!((t.last_report.as_deref(), t.report.as_ref().map(|r| r.summary.as_str())), (Some("all delivered"), Some("all delivered")));
+    assert!(t.worktree.is_some(), "worktree e branch restano");
+    assert!(b.deps_done(b.task("b").unwrap()));
+    assert!(b.task_view("b").unwrap().waiting_on.is_empty());
+    // Un secondo "segna come fatto" e' rifiutato; il dipendente ora sbloccato si elimina.
+    assert!(b.mark_done("a", 6).is_err());
+    b.delete_task("b", 7).unwrap();
+}
+
+#[test]
 fn reopen_failed_only_resumes_the_same_failure() {
     let mut b = board_with(vec![spec("a", &[])]);
     b.start_task("a", 1);

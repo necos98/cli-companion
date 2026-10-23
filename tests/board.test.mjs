@@ -182,12 +182,13 @@ describe("board: azioni", () => {
   it("azioni per stato", () => {
     assert.deepEqual(allowedActions(task()), ["to_top", "delete"]);
     assert.deepEqual(allowedActions(task({ status: "running" })), ["stop"]);
-    assert.deepEqual(allowedActions(task({ status: "failed" })), ["retry", "delete"]);
+    assert.deepEqual(allowedActions(task({ status: "failed" })), ["retry", "mark_done", "delete"]);
     assert.deepEqual(allowedActions(task({ status: "done" })), []);
   });
   it("ogni azione ha un'etichetta italiana", () => {
     assert.deepEqual(ACTION_LABELS, {
       retry: "Riprova",
+      mark_done: "Segna come fatto",
       stop: "Ferma",
       delete: "Elimina",
       to_top: "In cima alla coda",

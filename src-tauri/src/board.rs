@@ -602,6 +602,24 @@ impl Board {
         Ok(())
     }
 
+    /// "Segna come fatto": `failed` -> `done` a mano, per un lavoro consegnato
+    /// ma finito fallito. Il report resta; la nota del fallimento e il tentativo
+    /// precedente no. Worktree e branch non si toccano.
+    pub fn mark_done(&mut self, id: &str, now: i64) -> Result<(), String> {
+        let t = self.known(id)?;
+        if t.status != TaskStatus::Failed {
+            return Err(format!("task '{id}' is {}: only failed tasks can be marked done", t.status.as_str()));
+        }
+        let t = self.task_mut(id).expect("task presente");
+        t.status = TaskStatus::Done;
+        t.note = None;
+        t.previous_attempt = None;
+        t.finished_at = Some(now);
+        t.updated_at = now;
+        self.updated_at = now;
+        Ok(())
+    }
+
     /// Sposta un `queued` prima di `before` (un altro `queued`) o in fondo.
     pub fn move_task(&mut self, id: &str, before: Option<&str>, now: i64) -> Result<(), String> {
         self.require_queued(id, "reordered")?;

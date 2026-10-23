@@ -814,7 +814,7 @@ pub async fn task_update(app: AppHandle, workspace_id: String, task_id: String, 
     .await
 }
 
-/// Azione dell'utente su un task: `retry`, `stop`, `delete` o `to_top`.
+/// Azione dell'utente su un task: `retry`, `mark_done`, `stop`, `delete` o `to_top`.
 #[tauri::command]
 pub async fn task_action(app: AppHandle, workspace_id: String, task_id: String, action: String) -> Result<BoardView, String> {
     crate::blocking(move || {

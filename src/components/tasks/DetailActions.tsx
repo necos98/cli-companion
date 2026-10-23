@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpToLine, ExternalLink, Pencil, RotateCw, SquareTerminal, Trash2, OctagonX } from "lucide-react";
+import { ArrowUpToLine, CheckCheck, ExternalLink, Pencil, RotateCw, SquareTerminal, Trash2, OctagonX } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   ACTION_LABELS,
@@ -23,17 +23,18 @@ interface Props {
   onOpenPr: (url: string) => void;
 }
 
-type Confirm = "delete" | "stop";
+type Confirm = "delete" | "stop" | "mark_done";
 
 const CONFIRM_TEXT: Record<Confirm, string> = {
   delete: "Eliminare questo task? L'operazione non si può annullare.",
   stop: "Fermare il worker? Il task passa a Fallito e il terminale viene chiuso.",
+  mark_done: "Segnare il task come fatto? Il lavoro non viene verificato né integrato dall'app.",
 };
 
 const btn = "h-[30px] gap-1.5 px-3 text-[13px]";
 const ghost = `${btn} bg-transparent`;
 
-/** Azioni del task per stato; Elimina e Ferma chiedono conferma in linea. */
+/** Azioni del task per stato; Elimina, Ferma e Segna come fatto chiedono conferma in linea. */
 export default function DetailActions({
   task,
   board,
@@ -57,7 +58,7 @@ export default function DetailActions({
         <div className="flex gap-2">
           <Button
             type="button"
-            variant="destructive"
+            variant={confirm === "mark_done" ? "default" : "destructive"}
             disabled={busy}
             autoFocus
             onClick={() => {
@@ -66,7 +67,7 @@ export default function DetailActions({
             }}
             className={btn}
           >
-            {confirm === "delete" ? ACTION_LABELS.delete : ACTION_LABELS.stop}
+            {ACTION_LABELS[confirm]}
           </Button>
           <Button type="button" variant="outline" onClick={() => setConfirm(null)} className={ghost}>
             Annulla
@@ -145,6 +146,9 @@ export default function DetailActions({
         <>
           <Button type="button" disabled={busy} onClick={() => onAction("retry")} className={btn}>
             <RotateCw /> {ACTION_LABELS.retry}
+          </Button>
+          <Button type="button" variant="outline" disabled={busy} onClick={() => setConfirm("mark_done")} className={ghost}>
+            <CheckCheck /> {ACTION_LABELS.mark_done}
           </Button>
           {edit}
           {terminal && (
