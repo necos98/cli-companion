@@ -244,7 +244,7 @@ fn call(st: &AutomationState, h: &FakeHost, session: &str, method: &str, params:
 }
 
 fn spec(id: &str, deps: &[&str]) -> Value {
-    json!({"id": id, "title": format!("Task {id}"), "task": format!("do {id}"), "depends_on": deps})
+    json!({"id": id, "title": format!("Task {id}"), "task": format!("do {id}"), "depends_on": deps, "model": "sonnet"})
 }
 
 /// Propone e accetta (come l'utente) i task: finiscono in coda e, se lo

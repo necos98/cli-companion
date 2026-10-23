@@ -209,6 +209,9 @@ pub fn parse_proposal(p: &Value) -> Result<Vec<TaskSpec>, String> {
         if spec.id.is_empty() {
             return Err(format!("tasks[{i}]: id is missing"));
         }
+        if spec.model.is_none() {
+            return Err(format!("tasks[{i}]: task {}: model is required", spec.id));
+        }
         specs.push(spec);
     }
     Ok(specs)

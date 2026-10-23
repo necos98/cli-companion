@@ -135,7 +135,8 @@ fn schemas_match_the_rust_validation() {
     let propose = by("propose_tasks");
     let item = &propose["inputSchema"]["properties"]["tasks"]["items"];
     assert_eq!(keys(&item["properties"]), ["depends_on", "id", "model", "repo", "task", "title"]);
-    assert_eq!(item["required"], json!(["id", "title", "task"]));
+    assert_eq!(item["required"], json!(["id", "title", "task", "model"]));
+    assert_eq!(item["properties"]["model"]["type"], "string");
     assert_eq!(item["additionalProperties"], false);
     assert_eq!(propose["inputSchema"]["required"], json!(["tasks"]));
     assert_eq!(propose["inputSchema"]["properties"]["tasks"]["maxItems"], 20);
@@ -143,6 +144,7 @@ fn schemas_match_the_rust_validation() {
     let upd = by("update_task");
     assert_eq!(keys(&upd["inputSchema"]["properties"]), ["depends_on", "id", "model", "repo", "task", "title"]);
     assert_eq!(upd["inputSchema"]["required"], json!(["id"]));
+    assert_eq!(upd["inputSchema"]["properties"]["model"]["type"], json!(["string", "null"]));
     assert_eq!(keys(&by("list_tasks")["inputSchema"]["properties"]), ["status"]);
     assert_eq!(by("list_tasks")["inputSchema"]["properties"]["status"]["items"]["enum"], json!(["queued", "running", "done", "failed"]));
     assert_eq!(by("delete_task")["inputSchema"]["required"], json!(["id"]));

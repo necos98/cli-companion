@@ -52,10 +52,10 @@ own diff) and the workspace rules. Put only what is specific to this task.
 Do not put delivery steps in the specification (commit, push, pull request, merge, branch names).
 The worker delivers by itself according to the delivery mode of the workspace.
 
-## Optional fields
+## Model and optional fields
 
-- `model`: set it only when needed. `sonnet` for well-defined work; `opus` for design, risky or
-  cross-cutting changes and hard bugs. Otherwise omit it: the workspace default applies.
+- `model`: required, every task has one. `sonnet` for well-defined work; `opus` for design, risky
+  or cross-cutting changes and hard bugs. Ask the user only if the choice is truly ambiguous.
 - `repo`: only in multi-repository workspaces, the repository folder relative to the workspace
   root. Omit it for the root.
 - `depends_on`: ids of tasks of the same proposal or already in the queue. No cycles.
@@ -65,7 +65,7 @@ The worker delivers by itself according to the delivery mode of the workspace.
 1. Understand the request. Explore the repository. Call `list_tasks` to know the queue (avoid
    duplicates, find the ids to depend on) and `get_task_details` for the tasks you need to read.
 2. Ask the questions that matter, if any.
-3. Show the user, in the chat, every task: title, id, dependencies, model if any, and the full
+3. Show the user, in the chat, every task: title, id, dependencies, model, and the full
    specification. Ask for corrections if the request was ambiguous; do not ask for permission
    for each detail.
 4. Call `propose_tasks` once with all the tasks, in the order they should be queued. The call

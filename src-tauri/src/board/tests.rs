@@ -177,16 +177,31 @@ fn parse_spec_rules() {
 }
 
 #[test]
+fn proposals_require_a_valid_model() {
+    let err = |model: Value| parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x","model":model}]})).unwrap_err();
+    assert_eq!(
+        parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x"}]})).unwrap_err(),
+        "tasks[0]: task a: model is required"
+    );
+    assert!(err(Value::Null).contains("model is required"));
+    assert!(err(json!("  ")).contains("model is required"));
+    assert!(err(json!("a b")).contains("invalid model"));
+    assert!(err(json!(7)).contains("model must be a string"));
+    let ok = parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x","model":" opus "}]})).unwrap();
+    assert_eq!(ok[0].model.as_deref(), Some("opus"));
+}
+
+#[test]
 fn proposals_are_parsed_and_limited() {
-    let ok = parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x"}]})).unwrap();
+    let ok = parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x","model":"sonnet"}]})).unwrap();
     assert_eq!(ok.len(), 1);
     assert!(parse_proposal(&json!({})).unwrap_err().contains("tasks is missing"));
     assert!(parse_proposal(&json!({"tasks":[]})).unwrap_err().contains("empty"));
     assert!(parse_proposal(&json!({"tasks":[{"title":"T","task":"x"}]})).unwrap_err().contains("id is missing"));
-    assert!(parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x"}],"max_parallel":2})).unwrap_err().contains("unknown field"));
-    let many: Vec<Value> = (0..21).map(|i| json!({"id":format!("t{i}"),"title":"T","task":"x"})).collect();
+    assert!(parse_proposal(&json!({"tasks":[{"id":"a","title":"T","task":"x","model":"sonnet"}],"max_parallel":2})).unwrap_err().contains("unknown field"));
+    let many: Vec<Value> = (0..21).map(|i| json!({"id":format!("t{i}"),"title":"T","task":"x","model":"sonnet"})).collect();
     assert!(parse_proposal(&json!({"tasks":many})).unwrap_err().contains("too many"));
-    let max: Vec<Value> = (0..20).map(|i| json!({"id":format!("t{i}"),"title":"T","task":"x"})).collect();
+    let max: Vec<Value> = (0..20).map(|i| json!({"id":format!("t{i}"),"title":"T","task":"x","model":"sonnet"})).collect();
     assert_eq!(parse_proposal(&json!({"tasks":max})).unwrap().len(), 20);
 }
 

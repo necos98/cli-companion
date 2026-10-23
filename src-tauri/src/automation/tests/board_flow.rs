@@ -55,7 +55,7 @@ fn propose_validates_everything_and_changes_nothing_on_error() {
     assert!(err(json!({"tasks": [{"id": "c", "task": "x"}]})).contains("title is missing"));
     assert!(err(json!({"tasks": [{"id": "c", "title": "T", "task": "x", "touches": ["src"]}]})).contains("unknown field"));
     assert!(err(json!({})).contains("tasks is missing"));
-    assert!(err(json!({"tasks": [{"id": "c", "title": "T", "task": "x", "repo": "manca"}]})).contains("does not exist"));
+    assert!(err(json!({"tasks": [{"id": "c", "title": "T", "task": "x", "model": "sonnet", "repo": "manca"}]})).contains("does not exist"));
     // Gli id delle proposte pendenti sono riservati anche alle altre proposte.
     call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [spec("p1", &[])]})).unwrap();
     assert!(err(json!({"tasks": [spec("p1", &[])]})).contains("pending proposal"));
@@ -68,7 +68,7 @@ fn propose_validates_everything_and_changes_nothing_on_error() {
 
 #[test]
 fn propose_checks_repos_by_delivery_mode() {
-    let rooted = |repo: &str| json!({"tasks": [{"id": "c", "title": "T", "task": "x", "repo": repo}]});
+    let rooted = |repo: &str| json!({"tasks": [{"id": "c", "title": "T", "task": "x", "model": "sonnet", "repo": repo}]});
     // Modalita' con branch: il repo deve essere git.
     let (st, h) = pr_parallel();
     h.dirs.lock().unwrap().push("C:\\p\\api".to_string());
@@ -110,7 +110,7 @@ fn accept_queues_in_order_discard_removes_and_a_failed_accept_keeps_the_proposal
     assert!(e.contains("duplicate"), "{e}");
     assert_eq!(view(&st, &h).proposals.len(), 1);
     // Accettare rilegge anche i repository: la modalita' di consegna puo' essere cambiata.
-    let p4 = call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [{"id": "e", "title": "E", "task": "x", "repo": "esiste-r"}]})).unwrap();
+    let p4 = call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [{"id": "e", "title": "E", "task": "x", "model": "sonnet", "repo": "esiste-r"}]})).unwrap();
     h.dirs.lock().unwrap().push("C:\\p\\esiste-r".to_string());
     h.set_delivery(DeliveryMode::Pr, true);
     h.git_rule("rev-parse --is-inside-work-tree", false, "", "fatal");

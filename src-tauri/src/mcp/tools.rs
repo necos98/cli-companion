@@ -70,6 +70,12 @@ fn task_properties(with_id: bool) -> Value {
 pub fn session_tools() -> Vec<Value> {
     let mut update = task_properties(false);
     update["id"] = json!({ "type": "string", "description": "Id of the task to change." });
+    let mut proposed = task_properties(true);
+    proposed["model"] = json!({
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]{1,64}$",
+        "description": "Model for the worker: sonnet for well-defined work, opus for design, risky changes or hard bugs."
+    });
     vec![
         tool(
             "propose_tasks",
@@ -84,8 +90,8 @@ pub fn session_tools() -> Vec<Value> {
                     "maxItems": 20,
                     "items": {
                         "type": "object",
-                        "properties": task_properties(true),
-                        "required": ["id", "title", "task"],
+                        "properties": proposed,
+                        "required": ["id", "title", "task", "model"],
                         "additionalProperties": false
                     },
                     "description": "The tasks, in the order they should be queued."

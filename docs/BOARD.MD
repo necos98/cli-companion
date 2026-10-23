@@ -290,8 +290,8 @@ Worker:
   Per i task con worktree l'app calcola il diffstat. Il tab si chiude dopo ~1,5 s.
 
 Sessione (workspace = quello del tab):
-- `propose_tasks { tasks: TaskSpec[] }` — `TaskSpec = { id, title, task, depends_on?,
-  repo?, model? }`. Valida tutto (id unici anche rispetto ai task esistenti e alle altre
+- `propose_tasks { tasks: TaskSpec[] }` — `TaskSpec = { id, title, task, model,
+  depends_on?, repo? }` (`model` obbligatorio nelle proposte). Valida tutto (id unici anche rispetto ai task esistenti e alle altre
   proposte, dipendenze verso la proposta stessa o task esistenti, niente cicli, `repo`
   esistente e git se la modalità usa branch). Crea una **proposta** pendente e ritorna
   `{ proposal, status: "pending" }`: "the user will accept or discard it in the app". Non
@@ -331,8 +331,8 @@ della conversazione), come faceva l'orchestratore.
   `propose_tasks`; spiega che l'approvazione avviene nel pannello Task. Modello della
   specifica: **Goal, Context, Constraints, Done when, Verify** (comandi). Non implementare
   mai il lavoro, non toccare file, non fare merge; può usare `list_tasks`,
-  `get_task_details`, `update_task`, `delete_task` per lo stato della coda. Scegli `model`
-  (sonnet per lavoro ben definito, opus per design/rischio) solo se serve. La specifica deve
+  `get_task_details`, `update_task`, `delete_task` per lo stato della coda. Ogni task ha
+  sempre `model` (sonnet per lavoro ben definito, opus per design/rischio). La specifica deve
   bastare a un worker che non vede la conversazione.
 - Il pannello dei terminali mostra il badge **INTAKE** sull'intestazione dei tab avviati dal
   preset.
