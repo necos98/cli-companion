@@ -14,11 +14,10 @@ import GeneralLaunchesPage from "./settings/GeneralLaunchesPage";
 import WorkspaceLaunchesPage from "./settings/WorkspaceLaunchesPage";
 import WorkerPage from "./settings/WorkerPage";
 import RepoPage from "./settings/RepoPage";
-import OrchestratorPage from "./settings/OrchestratorPage";
-import WorkflowPage from "./settings/WorkflowPage";
+import DeliveryPage from "./settings/DeliveryPage";
 import ArchivedPage from "./settings/ArchivedPage";
 import { SettingsPage, selectClass } from "./settings/shared";
-import type { AgentEnvStatus, AgentProfile, BuiltinLaunch, Workspace } from "../lib/tauri";
+import type { AgentEnvStatus, BuiltinLaunch, Workspace } from "../lib/tauri";
 import { cn } from "../lib/utils";
 
 export type SettingsTab =
@@ -29,8 +28,7 @@ export type SettingsTab =
   | "launches"
   | "worker"
   | "repos"
-  | "orchestrator"
-  | "workflow"
+  | "delivery"
   | "archived";
 
 /** Pagine della sezione Generale. */
@@ -46,9 +44,8 @@ const GENERAL_TABS: { id: SettingsTab; label: string }[] = [
 const WORKSPACE_TABS: { id: SettingsTab; label: string }[] = [
   { id: "launches", label: "Avvii" },
   { id: "worker", label: "Worker" },
+  { id: "delivery", label: "Consegna" },
   { id: "repos", label: "Repository" },
-  { id: "orchestrator", label: "Orchestratore" },
-  { id: "workflow", label: "Workflow" },
 ];
 
 const GROUP_LABEL =
@@ -72,17 +69,11 @@ interface Props {
   onAgentEnvs?: (envs: AgentEnvStatus[]) => void;
   /** Interruttore "Mostra utilizzo" cambiato nelle Impostazioni. */
   onShowUsage?: (enabled: boolean) => void;
-  /** Agenti noti (per la scelta dell'orchestratore automatico). */
-  agentProfiles?: AgentProfile[];
-  /** Ambienti dei coding agent già noti (per il wizard del workflow). */
-  agentEnvs?: AgentEnvStatus[];
   /** Avvii integrati dell'app. */
   builtinLaunches?: BuiltinLaunch[];
   /** Avvio predefinito globale (id di un integrato; null = shell vuota). */
   globalLaunch?: string | null;
   onGlobalLaunchChange?: (id: string | null) => void;
-  /** Apre il terminale del wizard del workflow nel workspace. */
-  onCreateWorkflow?: (ws: Workspace) => void;
 }
 
 export default function SettingsDialog({
@@ -97,12 +88,9 @@ export default function SettingsDialog({
   updateAvailable = false,
   onAgentEnvs,
   onShowUsage,
-  agentProfiles = [],
-  agentEnvs = [],
   builtinLaunches = [],
   globalLaunch = null,
   onGlobalLaunchChange,
-  onCreateWorkflow,
 }: Props) {
   // Gli archiviati si gestiscono solo nella loro pagina.
   const workspaces = allWorkspaces.filter((w) => !w.archived);
@@ -179,7 +167,7 @@ export default function SettingsDialog({
         return (
           <SettingsPage
             title="Fasce orarie"
-            description="Quando gli orchestratori automatici dei workspace possono lavorare."
+            description="Quando le code dei task dei workspace possono far partire nuovi task."
           >
             <ScheduleSettings />
           </SettingsPage>
@@ -224,29 +212,10 @@ export default function SettingsDialog({
         );
       case "worker":
         return <WorkerPage workspace={selected} onWorkspaceUpdated={onWorkspaceUpdated} />;
+      case "delivery":
+        return <DeliveryPage workspace={selected} onWorkspaceUpdated={onWorkspaceUpdated} />;
       case "repos":
         return <RepoPage workspace={selected} onWorkspaceUpdated={onWorkspaceUpdated} />;
-      case "orchestrator":
-        return (
-          <OrchestratorPage
-            workspace={selected}
-            // Le sessioni automatiche sono supportate solo da Claude Code: i
-            // profili non espongono un flag di capacita', quindi si filtra per id.
-            agents={(agentProfiles.length > 0
-              ? agentProfiles.map((p) => ({ id: p.agent_id, name: p.agent_name }))
-              : [{ id: "claude-code", name: "Claude Code" }]
-            ).filter((a) => a.id === "claude-code")}
-            onWorkspaceUpdated={onWorkspaceUpdated}
-          />
-        );
-      case "workflow":
-        return (
-          <WorkflowPage
-            workspace={selected}
-            agentEnvs={agentEnvs}
-            onCreateWorkflow={(ws) => onCreateWorkflow?.(ws)}
-          />
-        );
     }
   };
 

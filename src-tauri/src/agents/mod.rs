@@ -15,8 +15,10 @@
 
 mod claude_code;
 mod claude_usage;
+pub mod presets;
 
 pub use claude_usage::TranscriptCache;
+use presets::{Preset, PRESETS};
 
 use crate::launch_settings::LaunchSettingsStore;
 use crate::wsl::{
@@ -489,8 +491,8 @@ pub trait AgentProvider: Sync {
     fn interactive_command(&self) -> Option<&'static str> {
         None
     }
-    /// Comando che avvia l'agente come orchestratore (`None` = non supportato).
-    fn orchestrator_command(&self) -> Option<&'static str> {
+    /// Comando che avvia l'agente con la skill del preset (`None` = non supporta i preset).
+    fn preset_command(&self, _preset: &Preset) -> Option<String> {
         None
     }
     /// Limiti dell'abbonamento nell'ambiente (`None` = non supportato).
@@ -514,18 +516,22 @@ pub trait AgentProvider: Sync {
 /// Avvio integrato (disponibile in ogni workspace) derivato dal registro.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BuiltinLaunch {
-    /// `builtin:<agent_id>` oppure `builtin:orchestrator`.
+    /// `builtin:<agent_id>` oppure `builtin:preset:<preset_id>`.
     pub id: String,
     pub name: String,
     pub command: String,
-    /// Comando salvato nella sessione del tab per il ripristino: per
-    /// l'orchestratore e' quello interattivo (riprende la conversazione
-    /// invece di rieseguire la skill).
+    /// Comando salvato nella sessione del tab per il ripristino: per un
+    /// preset e' quello interattivo (riprende la conversazione invece di
+    /// rieseguire la skill).
     pub restore_command: String,
     pub agent_id: String,
 }
 
-fn collect_builtin_launches(providers: &[&dyn AgentProvider], default_agent: &str) -> Vec<BuiltinLaunch> {
+fn collect_builtin_launches(
+    providers: &[&dyn AgentProvider],
+    default_agent: &str,
+    presets: &[Preset],
+) -> Vec<BuiltinLaunch> {
     let mut out: Vec<BuiltinLaunch> = providers
         .iter()
         .filter_map(|p| {
@@ -539,28 +545,30 @@ fn collect_builtin_launches(providers: &[&dyn AgentProvider], default_agent: &st
             })
         })
         .collect();
-    // Orchestratore: l'agente di default se lo supporta, altrimenti il primo che puo'.
-    let orch = providers
-        .iter()
-        .find(|p| p.id() == default_agent && p.orchestrator_command().is_some())
-        .or_else(|| providers.iter().find(|p| p.orchestrator_command().is_some()));
-    if let Some(p) = orch {
-        if let Some(cmd) = p.orchestrator_command() {
-            out.push(BuiltinLaunch {
-                id: "builtin:orchestrator".to_string(),
-                name: "Orchestratore".to_string(),
-                command: cmd.to_string(),
-                restore_command: p.interactive_command().unwrap_or(cmd).to_string(),
-                agent_id: p.id().to_string(),
-            });
-        }
+    // Un avvio per preset: l'agente di default se lo supporta, altrimenti il primo che puo'.
+    for preset in presets {
+        let supports = |p: &&&dyn AgentProvider| p.preset_command(preset).is_some();
+        let provider = providers
+            .iter()
+            .filter(supports)
+            .find(|p| p.id() == default_agent)
+            .or_else(|| providers.iter().find(supports));
+        let Some(p) = provider else { continue };
+        let Some(cmd) = p.preset_command(preset) else { continue };
+        out.push(BuiltinLaunch {
+            id: preset.launch_id(),
+            name: preset.name.to_string(),
+            restore_command: p.interactive_command().map_or_else(|| cmd.clone(), str::to_string),
+            command: cmd,
+            agent_id: p.id().to_string(),
+        });
     }
     out
 }
 
 /// Avvii integrati di tutti gli agenti (usata anche per validare gli id).
 pub fn builtin_launch_list() -> Vec<BuiltinLaunch> {
-    collect_builtin_launches(PROVIDERS, crate::automation::DEFAULT_AGENT)
+    collect_builtin_launches(PROVIDERS, crate::automation::DEFAULT_AGENT, PRESETS)
 }
 
 /// Comando Tauri `builtin_launches`: economico, nessun processo.
@@ -580,21 +588,6 @@ pub fn automation_command(
     provider
         .automation_command(env_kind, req)
         .ok_or_else(|| format!("{} does not support automated sessions", provider.display_name()))
-}
-
-/// Agenti che supportano le sessioni automatiche, come (id, nome).
-pub fn automation_agents() -> Vec<(&'static str, &'static str)> {
-    let probe = AutomationRequest {
-        bootstrap_prompt: "probe",
-        permission_mode: PermissionMode::Default,
-        model: None,
-        settings_path: None,
-    };
-    PROVIDERS
-        .iter()
-        .filter(|p| p.automation_command("windows", &probe).is_some())
-        .map(|p| (p.id(), p.display_name()))
-        .collect()
 }
 
 fn find_provider(id: &str) -> Result<&'static dyn AgentProvider, String> {
@@ -1098,7 +1091,8 @@ mod tests {
     struct Fake {
         id: &'static str,
         interactive: Option<&'static str>,
-        orchestrator: Option<&'static str>,
+        /// Prefisso del comando dei preset (`None` = non li supporta).
+        preset: Option<&'static str>,
     }
 
     impl AgentProvider for Fake {
@@ -1123,8 +1117,8 @@ mod tests {
         fn interactive_command(&self) -> Option<&'static str> {
             self.interactive
         }
-        fn orchestrator_command(&self) -> Option<&'static str> {
-            self.orchestrator
+        fn preset_command(&self, preset: &Preset) -> Option<String> {
+            self.preset.map(|c| format!("{c} {}", preset.id))
         }
     }
 
@@ -1134,30 +1128,42 @@ mod tests {
         assert_eq!(l[0].id, "builtin:claude-code");
         assert_eq!(l[0].name, "Claude Code");
         assert_eq!(l[0].command, l[0].restore_command);
-        let o = l.iter().find(|b| b.id == "builtin:orchestrator").unwrap();
-        assert_eq!(o.name, "Orchestratore");
-        assert_eq!(o.agent_id, "claude-code");
-        assert_eq!(o.restore_command, l[0].command);
-        assert!(o.command.contains("cli-companion-notify:orchestrate"));
+        assert!(!l.iter().any(|b| b.id == "builtin:orchestrator"));
+        let ids: Vec<_> = l.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["builtin:claude-code", "builtin:preset:task-intake"]);
+        let p = l.iter().find(|b| b.id == "builtin:preset:task-intake").unwrap();
+        assert_eq!(p.name, "Task Intake");
+        assert_eq!(p.agent_id, "claude-code");
+        assert_eq!(p.restore_command, l[0].command);
+        assert_eq!(
+            p.command,
+            "claude --dangerously-skip-permissions \"/cli-companion-notify:task-intake\""
+        );
+    }
+
+    fn preset(id: &'static str, name: &'static str) -> Preset {
+        Preset { id, name, skill: "" }
     }
 
     #[test]
-    fn builtin_orchestrator_prefers_default_agent_and_may_be_absent() {
-        let a = Fake { id: "a", interactive: Some("a-cli"), orchestrator: Some("a-orch") };
-        let b = Fake { id: "b", interactive: Some("b-cli"), orchestrator: Some("b-orch") };
-        let c = Fake { id: "c", interactive: None, orchestrator: None };
-        let l = collect_builtin_launches(&[&a, &b, &c], "b");
+    fn preset_launches_prefer_default_agent_and_may_be_absent() {
+        let a = Fake { id: "a", interactive: Some("a-cli"), preset: Some("a-run") };
+        let b = Fake { id: "b", interactive: Some("b-cli"), preset: Some("b-run") };
+        let c = Fake { id: "c", interactive: None, preset: None };
+        let presets = [preset("one", "One"), preset("two", "Two")];
+        let l = collect_builtin_launches(&[&a, &b, &c], "b", &presets);
         let ids: Vec<_> = l.iter().map(|x| x.id.as_str()).collect();
-        assert_eq!(ids, vec!["builtin:a", "builtin:b", "builtin:orchestrator"]);
-        assert_eq!(l[2].command, "b-orch");
+        assert_eq!(ids, vec!["builtin:a", "builtin:b", "builtin:preset:one", "builtin:preset:two"]);
+        assert_eq!((l[2].name.as_str(), l[2].command.as_str()), ("One", "b-run one"));
         assert_eq!(l[2].restore_command, "b-cli");
-        // Default senza orchestratore: il primo che ce l'ha.
-        let l = collect_builtin_launches(&[&c, &a], "c");
+        assert_eq!(l[3].agent_id, "b");
+        // Default senza preset: il primo agente che li supporta.
+        let l = collect_builtin_launches(&[&c, &a], "c", &presets);
         assert_eq!(l.last().unwrap().agent_id, "a");
-        // Nessun orchestratore: nessuna voce.
-        let n = Fake { id: "n", interactive: Some("n-cli"), orchestrator: None };
-        assert_eq!(collect_builtin_launches(&[&n], "n").len(), 1);
-        assert!(collect_builtin_launches(&[&c], "c").is_empty());
+        // Nessun agente con preset: nessuna voce preset.
+        let n = Fake { id: "n", interactive: Some("n-cli"), preset: None };
+        assert_eq!(collect_builtin_launches(&[&n], "n", &presets).len(), 1);
+        assert!(collect_builtin_launches(&[&c], "c", &presets).is_empty());
     }
 
     struct Versioned;
@@ -1208,7 +1214,7 @@ mod tests {
             calls += 1;
             vec![Env::Windows, Env::Wsl("Ubuntu".into()), Env::Wsl("Debian".into())]
         };
-        let out = find_outdated(&[&Versioned, &Fake { id: "none", interactive: None, orchestrator: None }], &ctx, &mut envs);
+        let out = find_outdated(&[&Versioned, &Fake { id: "none", interactive: None, preset: None }], &ctx, &mut envs);
         let found: Vec<_> = out
             .iter()
             .map(|o| (o.env_key.as_str(), o.installed_version.as_deref()))
@@ -1229,7 +1235,7 @@ mod tests {
 
     #[test]
     fn usage_is_unsupported_by_default_and_env_is_validated() {
-        let f = Fake { id: "f", interactive: None, orchestrator: None };
+        let f = Fake { id: "f", interactive: None, preset: None };
         assert!(f.usage_limits(&Env::Windows).is_none());
         assert!(f.session_usage(&Env::Windows, "x", &TranscriptCache::default()).is_none());
         assert_eq!(usage_env("windows"), Ok(Env::Windows));

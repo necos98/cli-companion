@@ -3,8 +3,6 @@ import assert from "node:assert/strict";
 import {
   MAX_WINDOWS,
   addWindow,
-  automationBadgeText,
-  automationBadgeTone,
   crossesMidnight,
   formatChange,
   formatClock,
@@ -118,25 +116,5 @@ describe("schedule: testi di stato", () => {
       scheduleStatusText({ schedule: sched(), window_open: false, next_change_at: null }, now),
       "Nessuna finestra in programma",
     );
-  });
-  it("badge della board", () => {
-    assert.equal(automationBadgeText(null), null);
-    assert.equal(automationBadgeText(undefined), null);
-    assert.equal(
-      automationBadgeText({ enabled: true, window_open: true, next_change_at: at(10, 20) }, now),
-      "Automatico · finestra aperta fino alle 20:00",
-    );
-    assert.equal(
-      automationBadgeText({ enabled: true, window_open: false, next_change_at: at(10, 20) }, now),
-      "Automatico · in attesa della finestra delle 20:00",
-    );
-    assert.match(
-      automationBadgeText({ enabled: false, window_open: false, next_change_at: null }),
-      /disattivate/,
-    );
-    assert.equal(automationBadgeTone({ enabled: true, window_open: true, next_change_at: 0 }), "open");
-    assert.equal(automationBadgeTone({ enabled: true, window_open: false, next_change_at: 0 }), "waiting");
-    assert.equal(automationBadgeTone({ enabled: false, window_open: false, next_change_at: 0 }), "off");
-    assert.equal(automationBadgeTone(null), "off");
   });
 });

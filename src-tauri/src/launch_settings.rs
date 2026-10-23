@@ -45,6 +45,14 @@ fn validate(launch_id: &Option<String>, builtin: &[crate::agents::BuiltinLaunch]
     }
 }
 
+/// Legge il file migrando l'avvio predefinito `builtin:orchestrator` (v0.11)
+/// in `builtin:preset:task-intake`.
+fn parse(raw: &str) -> Result<LaunchSettings, serde_json::Error> {
+    let mut s: LaunchSettings = serde_json::from_str(raw)?;
+    crate::agents::presets::migrate_launch_id(&mut s.default_launch);
+    Ok(s)
+}
+
 pub fn load_from_disk(app: &tauri::App) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
@@ -53,8 +61,8 @@ pub fn load_from_disk(app: &tauri::App) {
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return;
     };
-    match serde_json::from_str::<LaunchSettings>(&raw) {
-        Ok(s) => *app.state::<LaunchSettingsStore>().inner.lock().unwrap() = s,
+    match parse(&raw) {
+        Ok(s) =>*app.state::<LaunchSettingsStore>().inner.lock().unwrap() = s,
         Err(_) => {
             // File corrotto: backup e riparto dal default.
             let _ = std::fs::rename(&path, path.with_extension("json.bak"));
@@ -137,8 +145,20 @@ mod tests {
         let builtin = crate::agents::builtin_launch_list();
         assert!(validate(&None, &builtin).is_ok());
         assert!(validate(&Some("builtin:claude-code".into()), &builtin).is_ok());
-        assert!(validate(&Some("builtin:orchestrator".into()), &builtin).is_ok());
+        assert!(validate(&Some("builtin:preset:task-intake".into()), &builtin).is_ok());
+        assert!(validate(&Some("builtin:orchestrator".into()), &builtin).is_err());
         assert!(validate(&Some("shell".into()), &builtin).is_err());
         assert!(validate(&Some("ln-1-1".into()), &builtin).is_err());
+    }
+
+    #[test]
+    fn orchestrator_default_launch_becomes_task_intake() {
+        let s = parse(r#"{"default_launch":"builtin:orchestrator","show_usage":false}"#).unwrap();
+        assert_eq!(s.default_launch.as_deref(), Some("builtin:preset:task-intake"));
+        assert!(!s.show_usage);
+        let s = parse(r#"{"default_launch":"builtin:claude-code"}"#).unwrap();
+        assert_eq!(s.default_launch.as_deref(), Some("builtin:claude-code"));
+        assert_eq!(parse("{}").unwrap(), LaunchSettings::default());
+        assert!(parse("non json").is_err());
     }
 }

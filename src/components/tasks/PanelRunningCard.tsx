@@ -1,0 +1,49 @@
+import { AlertTriangle, Loader2 } from "lucide-react";
+import { PREPARING_LABEL, displayStatus } from "../../lib/board";
+import type { Task } from "../../lib/board";
+import { runningMeta } from "../../lib/taskPanel";
+import { cn } from "@/lib/utils";
+
+interface PanelRunningCardProps {
+  task: Task;
+  now: number;
+  onClick: () => void;
+}
+
+/**
+ * Card di un task in corso: spinner ambra e "modello · tempo", oppure triangolo
+ * arancione e "Richiede attenzione" (bordo evidenziato). Un solo pulsante.
+ */
+export default function PanelRunningCard({ task, now, onClick }: PanelRunningCardProps) {
+  const attention = displayStatus(task) === "attention";
+  const preparing = Boolean(task.preparing);
+  const meta = attention ? "Richiede attenzione" : preparing ? PREPARING_LABEL : runningMeta(task, now);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={task.preparing ?? task.title}
+      className={cn(
+        "flex w-full min-w-0 items-start gap-2.5 rounded-lg border bg-surface px-2.5 py-[9px] text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        attention ? "border-status-attention/45" : "border-border",
+      )}
+    >
+      {attention ? (
+        <AlertTriangle className="mt-px h-[15px] w-[15px] flex-shrink-0 text-status-attention" aria-hidden="true" />
+      ) : (
+        <Loader2
+          className="mt-px h-[15px] w-[15px] flex-shrink-0 animate-spin text-status-running motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      )}
+      <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+        <span className="line-clamp-2 break-words text-[13px] font-medium">{task.title}</span>
+        {meta && (
+          <span className={cn("truncate text-[11px]", attention ? "text-status-attention" : "text-muted-foreground")}>
+            {meta}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}

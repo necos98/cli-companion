@@ -7,13 +7,13 @@
 //! env K=V... sh -c <comando>` (argv, mai interpolato: `WSLENV` non porta
 //! variabili arbitrarie, `env` si). Windows: `cmd /D /S /C` senza finestra.
 
-use super::boards::{join_path, output_with_timeout, GitOut};
+use super::worktrees::{join_path, output_with_timeout, GitOut};
 use super::*;
 use crate::workspaces::RepoConfig;
 
 /// Tetto di un singolo comando di setup (una copia di `vendor` e' lenta).
 pub(super) const HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// Tetto di un comando di pulizia: gira dentro la chiamata dell'orchestratore.
+/// Tetto di un comando di pulizia.
 pub(super) const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// Quanto dell'output di un passo si tiene nei messaggi.
 const OUTPUT_TAIL: usize = 2048;
@@ -179,8 +179,6 @@ pub(super) struct SetupCtx<'a> {
     pub task_id: &'a str,
     pub branch: &'a str,
     pub base: &'a str,
-    /// "worktree" / "integration worktree": per i messaggi.
-    pub subject: &'a str,
 }
 
 fn describe(out: &GitOut) -> String {
@@ -214,14 +212,14 @@ pub(super) fn run_setup<H: Host>(host: &H, c: &SetupCtx, report: &dyn Fn(&str)) 
         }
         let dst = join_path(kind, c.worktree, p);
         host.copy_path(ws, &src, &dst)
-            .map_err(|e| format!("{} of '{}': copying {p} failed: {e}", c.subject, c.repo))?;
+            .map_err(|e| format!("worktree setup of '{}': copying {p} failed: {e}", c.repo))?;
     }
     let env = hook_env(c.cfg, &HookVars { repo_dir: c.repo_dir, worktree: c.worktree, task_id: c.task_id, branch: c.branch, base: c.base });
     let n = c.cfg.setup.len();
     for (i, cmd) in c.cfg.setup.iter().enumerate() {
         let step = format!("setup {}/{n}: {}", i + 1, clip_chars(cmd, 60));
         report(&step);
-        let fail = |why: String| format!("{} of '{}' failed at {step}: {why}", c.subject, c.repo);
+        let fail = |why: String| format!("worktree setup of '{}' failed at {step}: {why}", c.repo);
         match host.run_hook(ws, c.worktree, cmd, &env, HOOK_TIMEOUT) {
             Ok(o) if o.ok => {}
             Ok(o) => return Err(fail(describe(&o))),
@@ -305,11 +303,11 @@ mod tests {
             created_at: 0,
             launches: Vec::new(),
             worker_permission: "accept-edits".into(),
-            worktree_setup: None,
             worker_model: None,
             worker_allow: Vec::new(),
             worker_deny: Vec::new(),
-            auto_orchestrate: None,
+            delivery: Default::default(),
+            use_schedule: false,
             default_launch: None,
             worker_rules: String::new(),
             repos: Default::default(),

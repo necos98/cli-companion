@@ -34,7 +34,7 @@ export default function ArchivedPage({ workspaces, onWorkspaceUpdated, onRemove 
   return (
     <SettingsPage
       title="Workspace archiviati"
-      description="Nascosti dalla sidebar, con la board ferma. Ripristinali per riaverli."
+      description="Nascosti dalla sidebar, con la coda ferma. Ripristinali per riaverli."
     >
       {error && <p className="text-xs text-destructive">{error}</p>}
       {workspaces.length === 0 ? (

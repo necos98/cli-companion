@@ -38,7 +38,7 @@ describe("launch: comando di avvio", () => {
     restore_command: "claude --resume",
     agent_id: "claude-code",
   };
-  const orch = { ...cc, id: "builtin:orchestrator", name: "Orchestratore" };
+  const orch = { ...cc, id: "builtin:preset:task-intake", name: "Task Intake" };
 
   it("allLaunches: prima gli integrati, poi i personalizzati", () => {
     assert.deepEqual(allLaunches({ launches: [a, b] }, [cc]), [cc, a, b]);
@@ -48,7 +48,7 @@ describe("launch: comando di avvio", () => {
   it("resolveDefaultLaunch: workspace > globale > nessuno", () => {
     const ws = (d) => ({ launches: [a, b], default_launch: d });
     assert.equal(resolveDefaultLaunch(ws("b"), [cc], "builtin:claude-code"), b);
-    assert.equal(resolveDefaultLaunch(ws("builtin:orchestrator"), [cc, orch], null), orch);
+    assert.equal(resolveDefaultLaunch(ws("builtin:preset:task-intake"), [cc, orch], null), orch);
     // "shell" forza la shell vuota anche con default globale.
     assert.equal(resolveDefaultLaunch(ws(SHELL_LAUNCH_ID), [cc], "builtin:claude-code"), undefined);
     // Ereditato: null/assente => globale.

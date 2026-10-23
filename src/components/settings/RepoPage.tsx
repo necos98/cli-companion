@@ -207,15 +207,14 @@ export default function RepoPage({ workspace, onWorkspaceUpdated }: Props) {
             <span className="font-mono">$REPO</span> (cartella del repository),{" "}
             <span className="font-mono">$WORKTREE</span>, <span className="font-mono">$CONTAINER_WORKTREE</span>{" "}
             (percorso nel container, vuoto senza «Percorso nel container»),{" "}
-            <span className="font-mono">$TASK_ID</span> (<span className="font-mono">integration</span> per il
-            worktree di integrazione), <span className="font-mono">$BRANCH</span>,{" "}
+            <span className="font-mono">$TASK_ID</span>, <span className="font-mono">$BRANCH</span>,{" "}
             <span className="font-mono">$BASE</span>. Su Windows si scrivono <span className="font-mono">%REPO%</span>{" "}
             ecc.
           </p>
           <p className="mt-1">
-            Il setup parte solo sui worktree creati dall’app (task e integrazione); un worktree riusato dopo un
-            retry non lo rifà, a meno che il setup precedente non fosse finito male. Ogni comando ha 10 minuti. Il
-            branch base vale dopo quelli della board e prima di origin/HEAD.
+            Il setup parte solo sui worktree creati dall’app (consegna con worker in parallelo); un worktree riusato dopo un
+            retry non lo rifà, a meno che il setup precedente non fosse finito male. Ogni comando ha 10 minuti. La
+            branch base ha la precedenza su origin/HEAD (modalità PR) e sulla branch corrente del checkout.
           </p>
         </div>
       </Section>

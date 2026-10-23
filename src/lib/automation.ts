@@ -1,9 +1,9 @@
-// Sessioni automatiche (worker avviati da un orchestratore): metadati del tab,
-// etichette di stato, tooltip ed esclusione dalla persistenza. Funzioni pure a
-// zero dipendenze, importabili sia dall'app sia dai test `node --test`
+// Sessioni automatiche (worker avviati dallo scheduler dei task): metadati del
+// tab, etichette di stato, tooltip ed esclusione dalla persistenza. Funzioni
+// pure a zero dipendenze, importabili sia dall'app sia dai test `node --test`
 // (type-stripping). Il backend e' src-tauri/src/automation.rs.
 
-/** Stati di un worker (vedi `list_sessions` in automation.rs). */
+/** Stati di un worker (vedi `WorkerStatus` in automation/state.rs). */
 export type WorkerStatus =
   | "starting"
   | "running"
@@ -12,17 +12,10 @@ export type WorkerStatus =
   | "idle"
   | "completed"
   | "failed"
-  | "blocked"
   | "closed";
 
-/** Metadati di un tab automatico. `status` e' una stringa: il backend puo' aggiungerne. */
-export type AutomationRole = "worker" | "orchestrator";
-
+/** Metadati di un tab automatico (worker di un task). `status` e' una stringa: il backend puo' aggiungerne. */
 export interface AutomationMeta {
-  /** Ruolo del tab: worker di un task o orchestratore automatico (assente = worker). */
-  role?: AutomationRole;
-  /** Tab dell'orchestratore che ha avviato il worker. */
-  parentTabId: string;
   /** Titolo del task. */
   title: string;
   status: string;
@@ -31,47 +24,48 @@ export interface AutomationMeta {
   cwd?: string;
 }
 
-/** Etichetta del tab di un orchestratore automatico senza titolo. */
-export const ORCHESTRATOR_LABEL = "Orchestratore automatico";
+/** Id dell'avvio integrato "Task Intake" (preset, vedi agents/mod.rs). */
+export const INTAKE_LAUNCH_ID = "builtin:preset:task-intake";
 
-/** Normalizza il ruolo dell'evento `automation-spawn` (assente o sconosciuto = worker). */
-export function normalizeRole(role: string | null | undefined): AutomationRole {
-  return role === "orchestrator" ? "orchestrator" : "worker";
+/** Badge dell'intestazione di un tab. */
+export interface TabBadge {
+  text: string;
+  title: string;
+  /** "intake" = tab del preset Task Intake (colore primary), "auto" = worker. */
+  kind: "auto" | "intake";
 }
 
-export function isOrchestrator(meta: Pick<AutomationMeta, "role"> | undefined | null): boolean {
-  return meta?.role === "orchestrator";
+/** Il tab e' stato aperto dall'avvio Task Intake? */
+export function isIntakeLaunch(launchId: string | null | undefined): boolean {
+  return launchId === INTAKE_LAUNCH_ID;
 }
-
-/** Badge dell'intestazione: sigla e nome breve per ruolo. */
-export function automationBadge(role: AutomationRole | undefined): { text: string; title: string } {
-  return role === "orchestrator"
-    ? { text: "ORCH", title: ORCHESTRATOR_LABEL }
-    : { text: "AUTO", title: "Sessione automatica" };
-}
-
-/** Id dell'avvio integrato "Orchestratore" (vedi agents/mod.rs). */
-export const ORCHESTRATOR_LAUNCH_ID = "builtin:orchestrator";
-
-/** Etichetta del badge di un orchestratore avviato a mano. */
-export const MANUAL_ORCHESTRATOR_LABEL = "Orchestratore";
 
 /**
- * Badge dell'intestazione di un tab: ORCH per l'orchestratore automatico e per
- * quello avviato a mano (avvio integrato), AUTO per i worker, nessuno per gli
- * altri tab.
+ * Badge dell'intestazione di un tab: AUTO per i worker, INTAKE per i tab avviati
+ * dal preset Task Intake, nessuno per gli altri.
  */
 export function tabBadge(tab: {
-  automation?: { role?: AutomationRole } | null;
+  automation?: unknown;
   launchId?: string;
-}): { text: string; title: string; orchestrator: boolean } | null {
-  if (tab.automation) {
-    return { ...automationBadge(tab.automation.role), orchestrator: isOrchestrator(tab.automation) };
-  }
-  if (tab.launchId === ORCHESTRATOR_LAUNCH_ID) {
-    return { text: "ORCH", title: MANUAL_ORCHESTRATOR_LABEL, orchestrator: true };
+}): TabBadge | null {
+  if (tab.automation) return { text: "AUTO", title: "Sessione automatica", kind: "auto" };
+  if (isIntakeLaunch(tab.launchId)) {
+    return { text: "INTAKE", title: "Task Intake: propone task per la coda", kind: "intake" };
   }
   return null;
+}
+
+/**
+ * Chiave del tab Task Intake ancora aperto di un workspace (il primo in ordine
+ * di creazione), o null se non ce n'e'.
+ */
+export function findIntakeTabKey(
+  tabs: { key: string; workspace: { id: string }; launchId?: string }[],
+  workspaceId: string,
+): string | null {
+  return (
+    tabs.find((t) => t.workspace.id === workspaceId && isIntakeLaunch(t.launchId))?.key ?? null
+  );
 }
 
 /** Lunghezza massima dell'ultimo report nel tooltip. */
@@ -90,7 +84,6 @@ const STATUS_WORDS: Record<string, string> = {
   idle: "fermo",
   completed: "completato",
   failed: "fallito",
-  blocked: "bloccato",
   closed: "chiuso",
 };
 
@@ -103,7 +96,6 @@ const STATUS_CLASSES: Record<string, string> = {
   idle: "text-muted-foreground",
   completed: "text-status-finished",
   failed: "text-destructive",
-  blocked: "text-status-attention",
   closed: "text-muted-foreground",
 };
 
@@ -121,19 +113,9 @@ export function truncateReport(text: string, max: number = REPORT_TOOLTIP_MAX): 
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
-/**
- * Testo del tooltip dell'intestazione: titolo del task, stato, orchestratore
- * (`parentLabel`, se il suo tab esiste ancora) e ultimo report troncato.
- */
-export function automationTooltip(meta: AutomationMeta, parentLabel?: string): string {
-  if (isOrchestrator(meta)) {
-    const lines = [ORCHESTRATOR_LABEL, `Stato: ${statusWord(meta.status).text}`];
-    const report = meta.lastReport ? truncateReport(meta.lastReport) : "";
-    if (report) lines.push(`Ultimo report: ${report}`);
-    return lines.join("\n");
-  }
+/** Testo del tooltip dell'intestazione: titolo del task, stato e ultimo report troncato. */
+export function automationTooltip(meta: AutomationMeta): string {
   const lines = [`Sessione automatica: ${meta.title}`, `Stato: ${statusWord(meta.status).text}`];
-  if (parentLabel) lines.push(`Orchestratore: ${parentLabel}`);
   const report = meta.lastReport ? truncateReport(meta.lastReport) : "";
   if (report) lines.push(`Ultimo report: ${report}`);
   return lines.join("\n");
@@ -143,7 +125,6 @@ export function automationTooltip(meta: AutomationMeta, parentLabel?: string): s
 export interface AutomationUpdateLike {
   status: string;
   title: string;
-  parent_tab_id?: string | null;
   last_report?: string | null;
 }
 
@@ -157,16 +138,10 @@ export function applyAutomationUpdate(
 ): AutomationMeta {
   const title = u.title.trim() !== "" ? u.title : meta.title;
   const lastReport = u.last_report ? u.last_report : meta.lastReport;
-  const parentTabId = u.parent_tab_id ? u.parent_tab_id : meta.parentTabId;
-  if (
-    title === meta.title &&
-    lastReport === meta.lastReport &&
-    parentTabId === meta.parentTabId &&
-    u.status === meta.status
-  ) {
+  if (title === meta.title && lastReport === meta.lastReport && u.status === meta.status) {
     return meta;
   }
-  return { ...meta, title, lastReport, parentTabId, status: u.status };
+  return { ...meta, title, lastReport, status: u.status };
 }
 
 /** Tab da salvare nella sessione: gli automatici non si persistono ne' si ripristinano. */

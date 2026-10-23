@@ -13,7 +13,7 @@ e aprirci dentro terminali integrati a tab.
   grezzi non pre-bundlati -> schermata bianca). Vedi `tests/no-gluestack.test.mjs`.
 - Terminali: **xterm.js** (`@xterm/xterm` + `@xterm/addon-fit`) nel frontend,
   **portable-pty** (ConPTY su Windows) nel backend
-- Persistenza: **JSON** (`workspaces.json`, `session.json`, `boards/<workspace_id>.json`, `schedule.json`, `workflows/<workspace_id>.md` nella app-data dir di Tauri)
+- Persistenza: **JSON** (`workspaces.json`, `session.json`, `boards/<workspace_id>.json`, `schedule.json` nella app-data dir di Tauri)
 - Board dei task: **React Flow** (`@xyflow/react`) + **dagre** (`@dagrejs/dagre`) per il layout a grafo
 
 ## Architettura
@@ -39,7 +39,7 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 
 ### `workspaces.rs` — store JSON + CRUD
 
-- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches, default_launch?, worker_permission, worker_model?, worktree_setup? }`
+- `Workspace { id, name, kind, path, distro?, shell?, created_at, launches, default_launch?, worker_permission, worker_model?, delivery, use_schedule }`
   - `kind`: `"windows"` o `"wsl"`
   - `path`: percorso Windows (`C:\...`) oppure percorso Linux assoluto (`/...`)
   - `distro`: solo per WSL; `shell`: override opzionale
@@ -49,8 +49,8 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   - `default_launch`: avvio predefinito del workspace. Assente = eredita il
     predefinito globale (`launch_settings.json`, solo integrati); `"shell"` =
     shell vuota; altrimenti l'id di un avvio del workspace o di un integrato
-    (`builtin:<agent_id>`, `builtin:orchestrator`, da `agents::builtin_launches`).
-    Al caricamento `migrate_default` converte il vecchio `is_default`.
+    (`builtin:<agent_id>`, `builtin:preset:<id>` per ogni preset, da `agents::builtin_launches`).
+    Al caricamento `migrate_default` converte il vecchio `is_default` e `builtin:orchestrator` in `builtin:preset:task-intake` (stessa migrazione per `default_launch` di `launch_settings.json`).
   - `worker_permission`: tetto dei permessi dei worker automatici, `"plan" | "default" |
     "accept-edits" | "bypass"` (vocabolario di `agents::PermissionMode`);
     `#[serde(default)]` -> `"accept-edits"`, cosi' i vecchi `workspaces.json` non diventano
@@ -59,30 +59,28 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     Claude Code permission rules for workers (`Bash(git:*)`, `Edit`, ...), set with
     `set_worker_permission_rules(id, allow, deny)`; validated by `worker_permissions::validate_rules`
     (trimmed, max 100 rules of 300 chars, shape `Name` or `Name(...)`, no control chars,
-    no parentheses on `mcp__` names). At launch of a Claude Code worker (ad-hoc and board,
-    `Host::worker_settings_path`) `{"permissions":{"allow":[..],"deny":[..]}}` is written
+    no parentheses on `mcp__` names). At launch of a Claude Code worker (`Host::worker_settings_path`) `{"permissions":{"allow":[..],"deny":[..]}}` is written
     (only if changed) to `<app_data>/worker-settings/<workspace_id>.json` and the command gets
     `--settings "<path>"` (before `--allowedTools`, which is variadic; `/mnt/<d>/...` for WSL;
     paths with `" $ ` % !` are refused because the line is typed into PowerShell, cmd or
     bash). Claude Code merges these with its other settings; deny always wins, even in
     bypass. Caveats shown in the UI: a prefix rule such as `Bash(docker exec:*)` allows any
     command starting that way; deny rules are not a security boundary (other invocation
-    forms can bypass them); `whoami` lists both lists for the orchestrator.
+    forms can bypass them).
   - `worker_model`: `Option<String>`, modello di default dei worker automatici, usato quando
-    il task o `spawn_session` non indicano `model`; assente = quello dell'agente
-    (`#[serde(default)]`).
-  - `worktree_setup`: `Option<String>`, comando da eseguire per primo in un worktree nuovo
-    (es. `npm ci`), usato dalla board; vuoto = nessuno (`#[serde(default)]`).
-  - `auto_orchestrate`: `Option<AutoOrchestrate { enabled, agent, model? }>`, orchestratore
-    automatico del workspace nelle finestre di esecuzione (`#[serde(default,
-    skip_serializing_if = "Option::is_none")]`); comando `set_auto_orchestrate(id, config)`.
-    Alla rimozione del workspace si elimina anche il suo `workflows/<id>.md`.
+    il task non indica `model`; assente = quello dell'agente (`#[serde(default)]`).
+  - `delivery`: `Delivery { mode: pr|local_merge|push|commit (default commit), parallel (default
+    false, solo pr/local_merge), merge_method: squash|merge|rebase (default squash) }`; comando
+    `set_delivery(id, delivery)` (normalizza `parallel`) e riallineamento dello scheduler.
+  - `use_schedule`: bool, i task partono solo nelle fasce orarie; `set_use_schedule(id, value)`.
+  - Migrazioni al caricamento (`parse_workspaces`, sul JSON): `auto_orchestrate.enabled` ->
+    `use_schedule`; `worktree_setup` -> `repos["."].setup` se vuoto; i due campi spariscono.
 - Stato condiviso `WorkspaceStore` (in memoria + salvataggio su ogni modifica).
 - File: `<app_data>/workspaces.json`. Se corrotto, backup in `.json.bak` e riparto vuoto.
 - Comandi: `list_workspaces`, `add_workspace`, `rename_workspace`, `remove_workspace`,
   `set_worker_permission(id, mode)` (valida il valore, ritorna il `Workspace`),
   `set_worker_model(id, model)` (trim, vuoto = nessuno, validato con `valid_model`),
-  `set_worktree_setup(id, command)` (trim, vuoto = nessuno, max 1000 caratteri),
+  `set_delivery(id, delivery)`, `set_use_schedule(id, value)`,
   `add_launch`, `update_launch`, `remove_launch` (ritornano il `Workspace`
   aggiornato; nome 1-80 caratteri, comando 1-1000, trim come `src/lib/launch.ts`),
   `open_workspace_folder` (`explorer.exe`; per WSL il percorso UNC
@@ -129,9 +127,8 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   - `cwd` opzionale (usato dalle sessioni automatiche) al posto della cartella del
     workspace, validato come questa (Windows `is_dir`, WSL `wsl_dir_exists`);
   - ricontrolla che la cartella esista al momento dello spawn.
-- `PtySession` tiene il `tab_id`; `write_to_tab(app, tab_id, data)` scrive nel PTY
-  di un tab dal backend (usato da `automation.rs` per `send_message` e per il
-  risveglio dell'orchestratore).
+- `PtySession` tiene il `tab_id`; `pty_write` avvisa `automation::user_input` quando
+  l'input contiene Invio (il worker che aspettava l'utente torna `running`).
 - Un thread di lettura per sessione inoltra i chunk al frontend sul `Channel`
   passato a `pty_spawn` (`{kind:"output",data}`; alla chiusura `{kind:"exit"}`):
   ogni tab riceve solo il proprio output, anche quello prima del ritorno dello spawn.
@@ -180,7 +177,7 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   - **RPC** (nuova): `{"rpc":1,"token","session","method","params"}`, limite 1 MB,
     risposta di una riga `{"ok":true,"result":..}` o `{"ok":false,"error":".."}`.
     Token errato o `session` non valida (`is_valid_tab_id`) -> `ok:false`.
-    `dispatch_rpc` (in `automation.rs`) la esegue. Il client `rpc_call(port, line,
+    `automation::rpc::dispatch` la esegue. Il client `rpc_call(port, line,
     timeout)` e' usato da `mcp.rs`; il timeout di lettura della richiesta e' 2 s.
     Nessuna RPC resta in attesa: rispondono tutte subito.
 - Da WSL l'exe gira sull'host via interop: il TCP resta locale, nessun
@@ -217,7 +214,7 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   -> Option<String>` (default `None`) costruisce il comando da digitare nel tab per
   avviare una sessione automatica. `AutomationRequest { bootstrap_prompt,
   permission_mode: PermissionMode (Default | AcceptEdits | Plan | Bypass), model }`.
-  Helper pubblici `automation_command(agent_id, env_kind, req)` e `automation_agents()`.
+  Helper pubblico `automation_command(agent_id, env_kind, req)`.
   Claude Code: `claude "<bootstrap>" --permission-mode <m> --allowedTools
   mcp__plugin_cli-companion-notify_cli-companion [--model <m>]` (prompt prima dei flag:
   `--allowedTools` e' variadico; la regola senza nome tool abilita tutti i tool del server,
@@ -254,161 +251,108 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     Notification that follows for the same tab within 60 s (no duplicate event/sound).
     The hook fires only when a prompt is actually shown (not in bypass, not when a rule
     already allows). Il plugin contiene anche `.mcp.json` con il server `cli-companion`
-    (`command` = exe come sopra, `args` = `["--mcp"]`) e la skill
-    `skills/workflow/SKILL.md` (sorgente `agents/workflow_skill.md`, stessa `include_str!`
-    e normalizzazione LF; in inglese: il wizard che intervista l'utente e salva il
-    `workflow.md` del workspace con `save_workflow`, invocabile come
-    `/cli-companion-notify:workflow`; dettagli in [SCHEDULE.MD](SCHEDULE.MD)) e la skill
-    `skills/orchestrate/SKILL.md` (sorgente `agents/orchestrate_skill.md`, inclusa con
-    `include_str!` e normalizzata a LF; in inglese: metodo dell'orchestratore basato sulla board
-    (piano con dipendenze e `touches`, testo dei task, gestione eventi, integrazione: merge,
-    test di regressione, `set_task_status done`), invocabile
-    come `/cli-companion-notify:orchestrate`; chiama `get_workflow` per prima cosa, il workflow
-    ha la precedenza sul metodo generico salvo la sicurezza, e ha una sezione per le esecuzioni
-    automatiche). Passi: `plugin validate`,
+    (`command` = exe come sopra, `args` = `["--mcp"]`) e una skill per ogni preset di
+    `agents/presets.rs` (`Preset { id, name, skill }`): `skills/<id>/SKILL.md`, sorgente
+    `agents/presets/<id>.md` inclusa con `include_str!` e normalizzata a LF, in inglese,
+    invocabile come `/cli-companion-notify:<id>`. Oggi un solo preset, `task-intake` (il
+    metodo dell'agente Intake: vedi [BOARD.MD](BOARD.MD)); aggiungere un preset = una voce
+    in `PRESETS` + un file md. Le skill `orchestrate` e `workflow` non esistono piu': a ogni
+    installazione `remove_obsolete_skills` toglie da `skills/` le cartelle che non sono
+    preset. Passi: `plugin validate`,
     pulizia best-effort, `plugin marketplace add`, `plugin install --scope user`. La
-    versione del plugin (`1.2.<hash>`) deriva da hook + `.mcp.json` + le due skill (Claude cache
-    per versione: exe spostato o skill cambiata = versione nuova; serve la
-    reinstallazione). La cartella e' caricata sul posto e deve restare su disco.
+    versione del plugin (`<release>-h<hash>`) deriva da hook + `.mcp.json` + le skill dei preset
+    (Claude cache per versione: exe spostato o skill cambiata = versione nuova; i plugin con
+    una versione diversa da quella attesa sono segnalati da `agent_plugins_outdated` e
+    reinstallati da `agent_plugins_update`). La cartella e' caricata sul posto e deve restare su disco.
   - stato installato: `claude plugin list --json` contiene `id` ==
     `cli-companion-notify@cli-companion-local` (array o oggetto con `plugins`).
   - rimozione: `plugin uninstall` + `marketplace remove` + cartella generata.
 
-### `automation.rs` — sessioni automatiche (orchestratore -> worker)
+### `automation.rs` — Task Manager: coda, scheduler e worker
 
-Un orchestratore (qualunque tab non registrato come worker) avvia worker (tab PTY)
-con RPC; i worker rispondono solo con tool MCP. Struttura a strati:
+Ogni workspace ha una coda di task; l'app la esegue con uno scheduler deterministico e un
+worker (tab PTY marcato automatico) per task. Il worker consegna da solo e riferisce con
+`complete_task`; l'Intake (una sessione normale) propone task. Contratto completo (modello
+dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, in `automation/`:
 
-- `Registry`: nucleo **puro** (niente `AppHandle`, tempo iniettato). Tiene worker, code
-  di eventi per orchestratore (`seq` crescenti, tetto 1000, scarta i piu' vecchi), la
-  decisione di risveglio e accumula gli `Effect` da eseguire. Tetti: 16 worker attivi
-  per orchestratore, 256 worker tracciati in memoria.
-- `AutomationState { Mutex<Registry> }` (managed state): `run` modifica sotto lock e
-  applica gli effetti **fuori** dal lock. `get_events` (`Registry::drain`) svuota la coda
-  e azzera `wake_pending` senza mai attendere: l'orchestratore e' a eventi, chiude il
-  turno dopo gli spawn e viene svegliato (niente long-poll che tenga occupato il tab e
-  consumi una richiesta a ogni giro a vuoto).
-- `Host`: gli effetti verso l'esterno (eventi Tauri, `pty::write_to_tab`, timer di
-  chiusura, workspace). `TauriHost` e' la versione reale, i test usano un host finto.
-- `dispatch_rpc` smista per ruolo: orchestratore = `list_agents`, `spawn_session`,
-  `list_sessions`, `send_message`, `close_session`, `get_events` e i tool di board
-  (`submit_plan`, `get_board`, `get_task_details`, `update_task`, `set_task_status`, `set_board`, delegati a `board.rs`);
-  worker = `get_task`, `report_fact`, `request_help`, `complete_task` (con campi strutturati opzionali, vedi `board.rs`) (`whoami` per
-  entrambi; per l'orchestratore riporta anche il suo `workspace`). Un worker puo' usare solo i propri metodi; un orchestratore agisce solo
-  sui propri worker.
+- `automation.rs`: `Registry`, nucleo **puro** (niente `AppHandle`, tempo iniettato): worker
+  (stati, hook, `get_task`, `complete_task`, chiusura del tab), board e `Effect` da eseguire.
+  Tetto di 256 worker tracciati in memoria. Qui anche i comandi Tauri.
+- `state.rs`: `AutomationState { Mutex<Registry> }` (managed state). `run` modifica sotto lock,
+  schedula le board toccate (`flush_boards`) e applica gli effetti **fuori** dal lock;
+  pubblicazione ordinata per `rev` (evento `board-update` + salvataggio coalescente, max 1/s).
+- `host.rs`: trait `Host` (eventi Tauri, git, file, timer, workspace) e `TauriHost`; i test usano
+  un host finto con i timer in linea.
+- `boards.rs`: parte del `Registry` che tiene le board (proposte, azioni sui task, scheduler,
+  guardiano degli avvii) e la logica dei comandi e dei tool di sessione.
+- `worktrees.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn), pulizia a
+  consegna avvenuta, rilevamento dei repository, esecuzione di git (timeout 120 s, WSL via
+  `wsl.exe -e`). `hooks.rs`: setup e pulizia per repository (`RepoConfig`).
+- `rpc.rs`: `dispatch` smista per ruolo. Worker: `get_task`, `complete_task`. Sessione normale
+  (qualunque altro tab di cli-companion, workspace = quello del tab): `propose_tasks`,
+  `list_tasks`, `get_task_details`, `update_task`, `delete_task`. `whoami` non e' un tool:
+  e' l'handshake con cui il server MCP sceglie i tool.
+- `auto.rs`: fasce orarie e standby (sotto).
 
-Stati del worker: `starting` (spawnato) -> `running` (`get_task`) -> `completed` |
-`failed` | `blocked` (`complete_task`) -> `closed` (tab chiuso). In mezzo, dagli hook
-di `--notify` (solo con token valido): `needs_input` (hook needs-input, tranne
-`idle_prompt`, ignorato per i worker), `background` e `idle`. Gestione di `finished`
-(`Registry::on_hook`, ritorna il motivo di blocco): con `background_work > 0` -> `background`
-(nessun evento, solo update per la UI); altrimenti, se il worker e' `starting`/`running`/
-`background` (o `needs_input` da permesso, non da `request_help`) e
-`stop_hook_active != Some(true)` -> risposta `block` con `STOP_BLOCK_REASON` (nessun
-evento, nessun cambio di stato); se `stop_hook_active == Some(true)` e ancora nessun
-report -> `idle` + `stopped_without_report`; con `request_help` pendente nulla. Qualunque
-attivita' successiva (tool MCP, `send_message`) riporta `background` a `running`.
-Eventi in coda all'orchestratore: `started`, `fact`, `help_request`, `completed`,
-`needs_input`, `stopped_without_report`, `exited`; per la board anche `start_failed`,
-`plan_completed` e `user_action`. Ogni evento di un worker di board porta `task` (id del task).
+Stati del worker: `starting` -> `running` (`get_task`) -> `completed` | `failed`
+(`complete_task`) -> `closed` (tab chiuso). In mezzo, dagli hook di `--notify` (solo con token
+valido): `needs_input` (hook needs-input, tranne `idle_prompt`), `background` e `idle`.
+`Registry::on_hook` su `finished`: con `background_work > 0` -> `background`; altrimenti, con
+`stop_hook_active != true`, risposta `block` con `STOP_BLOCK_REASON` (promemoria in inglese);
+con `stop_hook_active == true` -> `idle`. `needs_input` e `idle` = "richiede attenzione" e
+mandano la notifica. Nessun hook segnala la risposta dell'utente: `pty_write` avvisa il backend
+quando nel terminale di un worker in attesa si preme Invio (`Registry::user_input`) e il worker
+torna `running`.
 
-Tutto cio' che legge il modello e' in inglese (`BOOTSTRAP_PROMPT`, ASCII sicuro per la
-shell, `WORKER_INSTRUCTIONS`, `WAKE_TEXT`, `STOP_BLOCK_REASON`, descrizioni e schemi dei
-tool MCP, istruzioni dei ruoli, errori di `mcp.rs` e delle RPC); `spawn_session` chiede
-di scrivere `task` e `send_message` in inglese. UI e commenti restano in italiano.
+Notifiche di sistema: evento `task-notify` `{workspace_id, task_id, tab_id?, kind:
+"attention"|"failed", title, body}` (testo in italiano); il frontend mostra la notifica.
+
+Tutto cio' che legge il modello e' in inglese (`BOOTSTRAP_PROMPT`, `STOP_BLOCK_REASON`,
+istruzioni, ambiente e passi di consegna in `board/texts.rs`, `automation/worker_guardrails.md`,
+descrizioni dei tool MCP, errori delle RPC). UI e commenti restano in italiano.
 
 ```text
-O: spawn_session --RPC--> Registry.spawn --> emit automation-spawn --> frontend apre il tab W
-W: claude "<bootstrap>" --> get_task --> report_fact / request_help --> complete_task
-                                   \_____ eventi in coda di O _____/        |
-O: chiude il turno                                          dopo 1,5 s: emit automation-close
-O idle al prompt ed evento azionabile --> write_to_tab(O, "[cli-companion] ... call get_events ...")
-O: get_events <-- coda, gestisce gli eventi, chiude di nuovo il turno
+Intake: propose_tasks --RPC--> board.proposals --board-update--> UI: Accetta --> coda (queued)
+scheduler (dopo ogni modifica) --> running --> thread: base, worktree, setup --> emit automation-spawn
+W: claude "<bootstrap>" --> get_task --> lavora, consegna (commit/push/PR/merge) --> complete_task
+                                                          dopo 1,5 s: automation-close; chiuso il tab: pulizia
 ```
 
-Risveglio (`check_wake`): scrive nel PTY di O (bracketed paste, poi `\r` dopo 300 ms) solo
-se l'ultimo hook di O e' `finished` (idle al prompt; la notifica `idle_prompt`, ~60 s dopo
-la fine del turno, conta come `finished` e non come richiesta di permesso) e
-dall'ultimo risveglio sono arrivati eventi **azionabili** nuovi (`EventKind::is_actionable`:
-`completed`, `help_request`, `needs_input`, `stopped_without_report`, `exited`, `start_failed`,
-`plan_completed`; `started`, `fact` e `user_action` si accodano soltanto e non svegliano ne' bloccano un risveglio successivo;
-`wake_pending`/`woke_seq`: una volta per gruppo di eventi). Mai se l'ultimo hook di O e' `needs-input` (finirebbe in un dialogo
-di permesso). `send_message` usa la stessa scrittura nel PTY del worker.
+Pulizia: a `complete_task completed` il tab si chiude dopo 1,5 s; quando `automation_tab_closed`
+lo conferma (e dopo 2 s, perche' Windows rilasci la cartella) l'app esegue i `cleanup` del
+repository, `git worktree remove` e `git branch -D` (`pr`) / `-d` (`local_merge`). Gli errori
+diventano una nota sul task. `failed` conserva worktree e branch per il retry.
 
-Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`;
-comandi `automation_tab_closed(tab_id)` e `automation_sessions()` (riallineamento a
-hot reload). Il comando di avvio e' `agents::automation_command`; per le sessioni
-ad-hoc l'isolamento (es. git worktree + `cwd`) e' deciso dall'orchestratore, mentre i
-worker di board hanno il worktree gestito dall'app (vedi `board.rs`); in ogni caso solo dentro il suo workspace:
-`spawn_session` non accetta `workspace` (errore esplicito), il worker si apre nel
-workspace del tab dell'orchestratore (`pty::workspace_of_tab`, `Host::tab_workspace`) e il
-permessi: ordine `plan < default < accept-edits < bypass`; `permission_mode` di
-`spawn_session` e' opzionale, assente = `Workspace.worker_permission`, presente = ammesso solo se
-<= al tetto (`automation::resolve_permission`), altrimenti errore; `whoami` espone il tetto
-(`workspace.worker_permission`) e le istruzioni MCP lo riportano, come il modello di default
-(`workspace.worker_model`, usato da `spawn_session` e dai task senza `model`); il
-`cwd` opzionale deve essere assoluto, senza `..`, uguale o sotto il path del workspace
-(Windows: senza maiuscole e con ``/`/` equivalenti; WSL: per segmenti su `/`).
+Eventi Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`,
+`board-update`, `task-notify`, `schedule-state`. Comandi: `automation_tab_closed`,
+`automation_sessions`, `board_get`, `board_set`, `task_create`, `task_update`, `task_action`,
+`task_move`, `proposal_decide`, `workspace_detect_repos`. Comando di avvio del worker:
+`agents::automation_command`; permessi = `Workspace.worker_permission`, modello = `task.model`
+poi `worker_model`.
 
-### `board.rs` — board dei task per workspace (v0.7)
+### `board.rs` — modello, validazione e scheduler della coda
 
-Piano di task con dipendenze, persistente e eseguito da uno scheduler dell'app;
-l'orchestratore (LLM) pianifica e integra (merge, test di regressione), l'app
-avvia i worker, gestisce i worktree git e raccoglie i report. Dettagli completi
-(modello dati, ciclo di vita, scheduler, worktree, tool, comandi): [BOARD.MD](BOARD.MD).
+Parte **pura** (nessun I/O, tempo iniettato), con i sottomoduli `board/spec.rs` (`TaskSpec`,
+id, repository, grafo delle dipendenze, id generati dal titolo), `board/report.rs` (report di
+`complete_task`), `board/texts.rs` (istruzioni, ambiente e consegna per modalita'). Contiene
+`Board`, `Task` (stati `queued|running|done|failed`), `Proposal`, `BoardView`, la normalizzazione
+dei file della v0.11 (sul JSON, al caricamento), le operazioni sulla coda (accetta/scarta,
+modifica, elimina, riprova, riordina) e `schedule`: in modalita' parallela (`pr`/`local_merge`
+con `parallel`) fino a `max_parallel` running, altrimenti un running per repository; l'ordine
+dell'array e' l'ordine della coda. Persistenza: `<app_data>/boards/<workspace_id>.json`
+(`write_atomic`); al riavvio i `running` diventano `failed`.
 
-- Struttura come `automation.rs`: nucleo **puro** (`Board`, `Task`, colonna derivata,
-  validazione di `submit_plan`/`update_task`, scheduler con conflitti su `touches` e
-  `isolation: none`, transizioni di stato, pulizia) testato senza `AppHandle`, e uno strato
-  che esegue gli effetti (git, spawn del worker) fuori dal lock, su thread separati.
-  Si integra con `automation.rs`: lo scheduler crea i worker tramite il `Registry`, e le
-  transizioni dei worker (`complete_task`, `exited`, hook) aggiornano il task.
-- Persistenza: `<app_data>/boards/<workspace_id>.json` con `write_atomic`. Al riavvio i task
-  `running` diventano `failed` (`interrupted: the app was restarted`).
-- Worktree gestiti dall'app: `<root>/.worktrees/<task-id>`, branch `task/<task-id>`,
-  `git` con `CREATE_NO_WINDOW` (WSL: `wsl.exe -d <distro> --cd <dir> -- git ...`); il comando
-  `worktree_setup` del workspace e le regole del worker finiscono nell'`environment` di `get_task`.
-- Tool MCP dell'orchestratore: `submit_plan`, `get_board` (vista compatta, parametro `columns`), `get_task_details`
-  (dettaglio completo di un task), `update_task`, `set_task_status`, `set_board`. `complete_task` del worker accetta `commit`, `files_changed`, `tests`, `follow_ups`.
-- Comandi Tauri: `board_get`, `board_set`, `board_task_action` (`hold | unhold | retry |
-  cancel | done`), `set_worktree_setup`; evento `board-update` (payload `BoardView`).
+### Fasce orarie e standby (`schedule.rs`, `automation/auto.rs`)
 
-### Esecuzione automatica: finestre, orchestratore automatico, workflow (v0.7, fase 2)
-
-Dettagli completi: [SCHEDULE.MD](SCHEDULE.MD). Si appoggia alla board.
-
-- **Finestre di esecuzione**: `<app_data>/schedule.json` (`{enabled, windows:[{start,end}],
-  keep_awake}`, ora locale `HH:MM`, finestra `[start, end)` che puo' attraversare la mezzanotte,
-  max 12, scrittura atomica). Logica pura testata (`window_open`, `next_change`), `chrono` e'
-  l'unica dipendenza nuova. Un thread dell'app controlla ogni 30 s e agisce alle transizioni.
-- **Gate dello scheduler** (`board.rs`): per un workspace con `auto_orchestrate` e schedule
-  abilitato, i task partono solo se `!paused && window_open`; il gate della finestra e'
-  separato dalla pausa dell'utente. I workspace non automatici ignorano le finestre.
-- **Apertura**: lo scheduler riparte e, se c'e' lavoro (task `queued` non trattenuti o in
-  `review`) e nessun orchestratore con tab vivo e' owner della board, l'app apre un
-  orchestratore automatico (evento `automation-spawn` con `role: "orchestrator"`, metadati
-  automatici, tab non persistito) con `ORCHESTRATOR_BOOTSTRAP_PROMPT`. **Chiusura**: nessun nuovo
-  task, i worker in corso finiscono, all'orchestratore si digita `WINDOW_CLOSED_TEXT`; in
-  **drain** il suo tab si chiude quando e' idle (hook `finished`), nessun task e' `running` e la
-  coda non ha eventi azionabili. Un orchestratore aperto dall'utente non viene mai chiuso ne'
-  duplicato. Al massimo un orchestratore per workspace: i tab dell'avvio `builtin:orchestrator`
-  si registrano nel `Registry` con `automation_orchestrator_open(workspace_id, tab_id)` (rifiuto se
-  c'e' gia' quello automatico o un altro manuale vivo; chiusura via `automation_tab_closed` /
-  `pty_exited`) e finche' uno e' vivo l'automatico non parte. Il badge ORCH vale per entrambi
-  (`tabBadge` in `src/lib/automation.ts`). Testi per il modello in inglese.
-- **Keep-awake**: con `keep_awake` l'app impedisce lo standby (Windows
-  `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` da un thread dedicato) finche'
-  un workspace automatico ha finestra aperta con lavoro, o task in esecuzione/drain.
-- **Workflow**: `<app_data>/workflows/<workspace_id>.md` (max 50000 caratteri, in inglese).
-  Tool MCP dell'orchestratore `get_workflow` e `save_workflow { content }`; la skill
-  `orchestrate` e le istruzioni MCP chiedono di leggerlo prima di pianificare.
-- **Comandi Tauri**: `schedule_get`, `schedule_set` (valida formato, `start != end`, max 12),
-  `set_auto_orchestrate`, `workflow_get`, `workflow_save` (None o vuoto = elimina).
-  **Eventi**: `schedule-state` (`{schedule, window_open, next_change_at}`) a ogni transizione o
-  modifica; `get_board` (compatto) e `BoardView` includono `automation` per i workspace automatici.
-- **UI**: pagina "Fasce orarie" nelle Impostazioni generali; "Orchestratore
-  automatico" e "Workflow" (editor, "Crea con il wizard") nelle impostazioni del workspace;
-  badge nella Board.
+`<app_data>/schedule.json` (`{enabled, windows:[{start,end}], keep_awake}`, ora locale `HH:MM`,
+finestra `[start, end)` che puo' attraversare la mezzanotte, max 12). Logica pura testata
+(`window_open`, `next_change`). Sono solo un **gate dello scheduler**: con schedule abilitato,
+un workspace con `use_schedule` non avvia task fuori fascia (quelli in corso finiscono);
+`BoardView.schedule_blocked` lo espone. Un thread dell'app fa un giro ogni 30 s (guardiano degli
+avvii, `schedule-state` se cambia, le board il cui gate e' cambiato ripartono). `keep_awake`: con
+il flag attivo l'app impedisce lo standby (Windows `SetThreadExecutionState`, thread dedicato)
+finche' c'e' un task `running` in un workspace non archiviato. Comandi: `schedule_get`,
+`schedule_set`.
 
 ### `mcp.rs` — server MCP stdio (`cli-companion --mcp`)
 
@@ -419,8 +363,9 @@ Dettagli completi: [SCHEDULE.MD](SCHEDULE.MD). Si appoggia alla board.
   (`agent_notify::rpc_call`), invia la riga RPC con `CLI_COMPANION_TOKEN` e
   `CLI_COMPANION_SESSION` dall'ambiente e restituisce il risultato come testo JSON
   (errore RPC -> `isError: true`). Read timeout 30 s.
-- Il ruolo si risolve con `whoami` e decide i tool esposti (orchestratore o worker); l'orchestratore
-  ha anche i tool di board (vedi `board.rs`).
+- Il ruolo si risolve con `whoami` e decide i tool esposti: worker (`get_task`,
+  `complete_task`) o sessione normale (`propose_tasks`, `list_tasks`, `get_task_details`,
+  `update_task`, `delete_task`). Le definizioni sono in `mcp/tools.rs`.
   Senza variabili o con l'app non raggiungibile la lista tool e' vuota.
 - Logica pura (`handle_message` con `trait Backend`), testata con un backend finto.
 
@@ -549,17 +494,20 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `automation-close` (stesso percorso di `closeTab`) e `automation-update` (stato e
   ultimo report); alla chiusura di un tab automatico chiama `automation_tab_closed`.
   All'avvio `automation_sessions()` riallinea lo stato. `PaneHeader` mostra il badge AUTO
-  (ORCH per gli orchestratori, anche quello manuale) e la parola di stato. I tab automatici sono esclusi dal salvataggio di sessione e
+  (INTAKE per i tab avviati da un preset) e la parola di stato. I tab automatici sono esclusi dal salvataggio di sessione e
   scrollback e non vengono ripristinati.
-- **Board** (`components/BoardView.tsx`, `lib/board.ts`, `lib/boardLayout.ts`, v0.7): vista a grafo
-  per workspace con `@xyflow/react` (nodi = task, archi = `depends_on`) e auto-layout sinistra ->
-  destra con `@dagrejs/dagre`. `lib/board.ts` (zero-dep, testato) ha tipi, etichette e colori delle
-  colonne, azioni consentite, progresso; `boardLayout.ts` il calcolo delle posizioni.
-  Si apre dal pulsante "Board" della card del workspace o con Ctrl+Maiusc+B e copre l'area dei
-  pannelli del workspace: i `TerminalView` restano montati (regola del DOM sopra). `App.tsx` carica
-  `board_get` e ascolta `board-update`. Barra con avanzamento, `max_parallel`, pausa; pannello dettagli
-  con report e azioni (`board_task_action`). Il campo `worktree_setup` si imposta nelle impostazioni
-  del workspace. Dettagli in [BOARD.MD](BOARD.MD).
+- **Tasks Manager** (`components/tasks/`, `lib/board.ts`, `lib/boardLayout.ts`, `lib/useBoards.ts`):
+  `lib/board.ts` (zero-dep, testato) ha i tipi del contratto (`BoardView`, `Task`, `Proposal`,
+  `Delivery`), i quattro stati (+ "Richiede attenzione") con etichette e colori, selettori, ricerca/filtri,
+  formati di durata e consegna, `mergeBoard` per `rev`. `useBoards` (in `App.tsx`) carica `board_get`,
+  ascolta `board-update` e `task-notify` (notifica di sistema); i componenti chiamano `api` e passano la
+  `BoardView` restituita a `storeBoard`. `TaskPanel` / `GlobalTaskPanel` stanno a sinistra della griglia
+  dei terminali (compresso/espanso per workspace in localStorage, `lib/taskPanelPrefs.ts`); `TasksManager`
+  (Ctrl+Maiusc+B o pulsante "Tasks" della sidebar) copre pannello e griglia: i `TerminalView` restano
+  montati (regola del DOM sopra). `DependencyGraph` = React Flow (`@xyflow/react`) + auto-layout con
+  `@dagrejs/dagre` (`boardLayout.ts`). "Task Intake" (`openIntake` in `App.tsx`) mette a fuoco il tab del
+  preset `builtin:preset:task-intake` o ne apre uno; `PaneHeader` mostra il badge INTAKE (il `launchId` del
+  tab è già persistito nella sessione). Dettagli in [BOARD.MD](BOARD.MD).
 - `components/ui/dropdown-menu.tsx`: wrapper shadcn di Radix, usato dal menu
   "⋯" della card workspace.
 - `lib/launch.ts`: pure functions zero-dep (sanitizza, trigger, input pty
@@ -587,8 +535,8 @@ dello store in `setup` e tutti i comandi. Capability minime in
 - Solo Windows + WSL per ora: il codice WSL/PTY è Windows-first
   (`wsl.exe`, ConPTY via portable-pty).
 - Le board sono file JSON per workspace (`boards/`), come lo store dei workspace.
-- Schedule e workflow sono file a parte (`schedule.json`, `workflows/<id>.md`): le finestre
-  sono globali, il workflow e' testo libero per workspace.
+- Lo schedule e' un file a parte (`schedule.json`): le fasce sono globali, ogni workspace
+  sceglie se rispettarle (`use_schedule`).
 - JSON invece di SQLite: adeguato per poche centinaia di workspace; lo store
   è isolato in `workspaces.rs`, migrabile in futuro.
 - Nessuna autenticazione/cifratura: i path sono dati locali non sensibili.

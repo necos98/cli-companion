@@ -492,7 +492,6 @@ fn spawn_blocking_session(
 
     // Thread di lettura: inoltra l'output al frontend sul canale della sessione.
     let sessions = pty.sessions.clone();
-    let (app, exit_tab) = (app.clone(), tab_id.to_string());
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 8192];
@@ -514,13 +513,6 @@ fn spawn_blocking_session(
             let text = String::from_utf8_lossy(&pending).into_owned();
             let _ = on_event.send(PtyEvent::Output { data: text });
         }
-        // Ancora in mappa: nessun `pty_close`, il processo e' uscito da solo.
-        // Lo si dice al backend prima di togliere la sessione e prima
-        // dell'evento Exit (cosi' un giro del timer non lo scambia per una
-        // chiusura dell'utente e il report del frontend arriva dopo).
-        if sessions.lock().unwrap().contains_key(&session_id) {
-            crate::automation::pty_exited(&app, &exit_tab);
-        }
         let session = sessions.lock().unwrap().remove(&session_id);
         if let Some(sess) = session {
             let mut child = sess.child.lock().unwrap();
@@ -530,23 +522,6 @@ fn spawn_blocking_session(
     });
 
     Ok(session_id)
-}
-
-/// Scrive nel terminale del tab `tab_id` (usato dall'automazione per
-/// digitare messaggi nei prompt degli agenti). Accoda soltanto: la scrittura
-/// vera la fa il thread della sessione.
-pub fn write_to_tab(app: &AppHandle, tab_id: &str, data: &str) -> Result<(), String> {
-    let pty = app.state::<PtyState>();
-    let tx = pty
-        .sessions
-        .lock()
-        .unwrap()
-        .values()
-        .find(|sess| sess.tab_id == tab_id)
-        .map(|sess| sess.writer.clone())
-        .ok_or_else(|| "terminale del tab non trovato".to_string())?;
-    tx.send(data.as_bytes().to_vec())
-        .map_err(|_| "terminale chiuso".to_string())
 }
 
 /// Id del workspace in cui e' aperto il tab `tab_id` (None se non ha un pty vivo).
@@ -561,14 +536,18 @@ pub fn workspace_of_tab(app: &AppHandle, tab_id: &str) -> Option<String> {
 
 /// Sincrono ma O(1): accoda e basta, quindi sul main thread non blocca.
 #[tauri::command]
-pub fn pty_write(pty: State<PtyState>, session_id: u32, data: String) -> Result<(), String> {
-    let tx = pty
+pub fn pty_write(app: AppHandle, pty: State<PtyState>, session_id: u32, data: String) -> Result<(), String> {
+    let (tx, tab_id) = pty
         .sessions
         .lock()
         .unwrap()
         .get(&session_id)
-        .map(|sess| sess.writer.clone())
+        .map(|sess| (sess.writer.clone(), sess.tab_id.clone()))
         .ok_or_else(|| "sessione non trovata".to_string())?;
+    // Invio nel terminale di un worker che aspettava l'utente: ha risposto.
+    if data.contains('\r') {
+        crate::automation::user_input(&app, &tab_id);
+    }
     tx.send(data.into_bytes())
         .map_err(|_| "sessione chiusa".to_string())
 }

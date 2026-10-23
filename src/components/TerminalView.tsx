@@ -84,8 +84,8 @@ interface Props {
    * Tab automatico: stato del worker e tooltip dell'intestazione. Presente =
    * lo scrollback non viene salvato (il tab non e' mai ripristinato).
    */
-  automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
-  /** Avvio del tab (per il badge dell'orchestratore manuale). */
+  automation?: { status: string; tooltip: string };
+  /** Avvio del tab (per il badge INTAKE del preset Task Intake). */
   launchId?: string;
   /** Utilizzo di token della sessione dell'agente (intestazione). */
   usage?: { text: string; title: string };
@@ -568,7 +568,7 @@ export default memo(TerminalView, (a, b) => {
       const y = b.automation;
       if (x !== y) {
         if (!x || !y) return false;
-        if (x.role !== y.role || x.status !== y.status || x.tooltip !== y.tooltip) return false;
+        if (x.status !== y.status || x.tooltip !== y.tooltip) return false;
       }
     } else if (a[k] !== b[k]) {
       return false;

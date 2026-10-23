@@ -1,19 +1,17 @@
-//! Finestre di esecuzione automatica (contratto: `docs/SCHEDULE.MD`).
+//! Fasce orarie (contratto: `docs/BOARD.MD`, "Fasce orarie"). Servono solo
+//! come gate dello scheduler dei workspace che le usano.
 //!
-//! Parte PURA: tipi, validazione, `window_open`, `next_change`, `needs_awake`
-//! e controlli sul workflow; niente I/O ne' orologio (il chiamante passa i
-//! minuti locali). Aritmetica sui minuti del giorno, indifferente al cambio
-//! dell'ora legale: il thread dei timer rilegge l'ora locale a ogni giro.
-//! Persistenza (`schedule.json`) e lettura/scrittura del workflow sono in
-//! fondo; l'integrazione con il `Registry` e' in `automation/auto.rs`.
+//! Parte PURA: tipi, validazione, `window_open`, `next_change`; niente I/O ne'
+//! orologio (il chiamante passa i minuti locali). Aritmetica sui minuti del
+//! giorno, indifferente al cambio dell'ora legale: il thread dei timer rilegge
+//! l'ora locale a ogni giro. Persistenza (`schedule.json`) in fondo;
+//! l'integrazione con il `Registry` e' in `automation/auto.rs`.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const MAX_WINDOWS: usize = 12;
 pub const MINUTES_PER_DAY: u16 = 1440;
-/// Caratteri massimi di un workflow.
-pub const WORKFLOW_MAX: usize = 50_000;
 pub const SCHEDULE_FILE: &str = "schedule.json";
 
 /// Finestra `[start, end)` in ora locale, `HH:MM`.
@@ -28,7 +26,7 @@ pub struct Window {
 pub struct Schedule {
     pub enabled: bool,
     pub windows: Vec<Window>,
-    /// Impedisce lo standby del sistema mentre c'e' lavoro automatico.
+    /// Impedisce lo standby del sistema finche' un task e' in corso.
     pub keep_awake: bool,
 }
 
@@ -44,15 +42,6 @@ pub struct ScheduleState {
     pub schedule: Schedule,
     pub window_open: bool,
     /// Unix ms del prossimo cambio (apertura o chiusura), se esiste.
-    pub next_change_at: Option<i64>,
-}
-
-/// Stato di automazione di un workspace automatico (campo `automation` di
-/// `BoardView` e di `get_board`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AutomationInfo {
-    pub enabled: bool,
-    pub window_open: bool,
     pub next_change_at: Option<i64>,
 }
 
@@ -138,78 +127,6 @@ pub fn state(s: &Schedule, minute: u16, now_ms: i64) -> ScheduleState {
         schedule: s.clone(),
         window_open: window_open(s, minute),
         next_change_at: next_change_at(s, minute, now_ms),
-    }
-}
-
-pub fn automation_info(s: &Schedule, minute: u16, now_ms: i64) -> AutomationInfo {
-    AutomationInfo {
-        enabled: s.enabled,
-        window_open: window_open(s, minute),
-        next_change_at: next_change_at(s, minute, now_ms),
-    }
-}
-
-/// Segnali di un workspace automatico per decidere se tenere sveglio il PC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AwakeSignal {
-    /// Finestra aperta (e workspace automatico) con lavoro in board.
-    pub open_with_work: bool,
-    /// Task in esecuzione.
-    pub running: bool,
-    /// L'orchestratore automatico sta chiudendo (drain).
-    pub draining: bool,
-}
-
-/// Serve tenere il sistema sveglio? Solo con `keep_awake` e almeno un
-/// workspace con lavoro aperto, task in corso o drain.
-pub fn needs_awake(keep_awake: bool, signals: &[AwakeSignal]) -> bool {
-    keep_awake && signals.iter().any(|s| s.open_with_work || s.running || s.draining)
-}
-
-// ---------------------------------------------------------------------------
-// Workflow
-// ---------------------------------------------------------------------------
-
-/// Il testo del workflow rispetta il tetto di caratteri?
-pub fn workflow_len_ok(content: &str) -> bool {
-    content.chars().count() <= WORKFLOW_MAX
-}
-
-/// Id di workspace sicuro come nome di file.
-pub fn safe_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-pub fn workflow_file(dir: &Path, ws_id: &str) -> Result<PathBuf, String> {
-    if !safe_id(ws_id) {
-        return Err("id workspace non valido".to_string());
-    }
-    Ok(dir.join(format!("{ws_id}.md")))
-}
-
-/// Legge il workflow (assente = `None`).
-pub fn read_workflow(dir: &Path, ws_id: &str) -> Result<Option<String>, String> {
-    let file = workflow_file(dir, ws_id)?;
-    match std::fs::read_to_string(&file) {
-        Ok(s) => Ok(Some(s).filter(|s| !s.trim().is_empty())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("impossibile leggere il workflow: {e}")),
-    }
-}
-
-/// Scrive (atomico) o, con `None`, elimina il workflow.
-pub fn write_workflow(dir: &Path, ws_id: &str, content: Option<&str>) -> Result<(), String> {
-    let file = workflow_file(dir, ws_id)?;
-    match content {
-        Some(c) => {
-            std::fs::create_dir_all(dir).map_err(|e| format!("impossibile creare la cartella dei workflow: {e}"))?;
-            crate::write_atomic(&file, c).map_err(|e| format!("impossibile salvare il workflow: {e}"))
-        }
-        None => match std::fs::remove_file(&file) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("impossibile eliminare il workflow: {e}")),
-        },
     }
 }
 
@@ -364,29 +281,12 @@ mod tests {
         let st = state(&s, m("21:00"), now);
         assert!(st.window_open);
         assert_eq!(st.next_change_at, Some(base + 16 * 60 * 60_000));
-        let info = automation_info(&s, m("15:00"), now);
-        assert!(info.enabled && !info.window_open);
     }
 
     #[test]
     fn minute_wraps_modulo_a_day() {
         let s = sched(&[("20:00", "13:00")]);
         assert_eq!(window_open(&s, 1440 + 60), window_open(&s, 60));
-    }
-
-    #[test]
-    fn needs_awake_decision() {
-        let idle = AwakeSignal::default();
-        let work = AwakeSignal { open_with_work: true, ..idle };
-        let running = AwakeSignal { running: true, ..idle };
-        let draining = AwakeSignal { draining: true, ..idle };
-        assert!(!needs_awake(true, &[]));
-        assert!(!needs_awake(true, &[idle, idle]));
-        assert!(needs_awake(true, &[idle, work]));
-        assert!(needs_awake(true, &[running]));
-        assert!(needs_awake(true, &[draining]));
-        // keep_awake spento: mai.
-        assert!(!needs_awake(false, &[work, running, draining]));
     }
 
     #[test]
@@ -404,31 +304,9 @@ mod tests {
     }
 
     #[test]
-    fn workflow_limits_and_ids() {
-        assert!(workflow_len_ok(&"x".repeat(WORKFLOW_MAX)));
-        assert!(!workflow_len_ok(&"x".repeat(WORKFLOW_MAX + 1)));
-        // Conta i caratteri, non i byte.
-        assert!(workflow_len_ok(&"\u{e8}".repeat(WORKFLOW_MAX)));
-        let dir = Path::new("wf");
-        assert!(workflow_file(dir, "ws-1_a").is_ok());
-        for bad in ["", "../x", "a/b", "a.b", "a b"] {
-            assert!(workflow_file(dir, bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
     fn files_roundtrip_in_a_temp_dir() {
         let dir = std::env::temp_dir().join(format!("cc-sched-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        // Workflow.
-        assert_eq!(read_workflow(&dir, "ws-1"), Ok(None));
-        write_workflow(&dir, "ws-1", Some("# Identity\nhi")).unwrap();
-        assert_eq!(read_workflow(&dir, "ws-1"), Ok(Some("# Identity\nhi".to_string())));
-        write_workflow(&dir, "ws-1", Some("v2")).unwrap();
-        assert_eq!(read_workflow(&dir, "ws-1"), Ok(Some("v2".to_string())));
-        write_workflow(&dir, "ws-1", None).unwrap();
-        assert_eq!(read_workflow(&dir, "ws-1"), Ok(None));
-        write_workflow(&dir, "ws-1", None).unwrap();
         // Schedule.
         assert_eq!(load_schedule(&dir), Schedule::default());
         let s = sched(&[("20:00", "13:00")]);

@@ -1,4 +1,4 @@
-import { Bot, Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
+import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
 import { tabBadge, statusWord as workerStatusWord } from "../lib/automation";
 import { cn } from "../lib/utils";
@@ -10,8 +10,8 @@ interface Props {
   prefix?: string;
   status: TabStatus;
   /** Sessione automatica (worker): stato e tooltip; assente = tab normale. */
-  automation?: { role?: "worker" | "orchestrator"; status: string; tooltip: string };
-  /** Avvio da cui e' nato il tab (l'orchestratore manuale ha il badge ORCH). */
+  automation?: { status: string; tooltip: string };
+  /** Avvio da cui e' nato il tab (il preset Task Intake ha il badge INTAKE). */
   launchId?: string;
   /** Utilizzo di token della sessione dell'agente (testo compatto e tooltip). */
   usage?: { text: string; title: string };
@@ -93,10 +93,9 @@ export default function PaneHeader({
           title={badge.title}
           className={cn(
             "flex flex-shrink-0 items-center gap-0.5 rounded-[4px] border px-1 font-mono text-[9px] font-medium leading-[14px] tracking-wide",
-            badge.orchestrator ? "border-primary/50 text-primary" : "text-muted-foreground",
+            badge.kind === "intake" ? "border-primary/50 text-primary" : "text-muted-foreground",
           )}
         >
-          {badge.orchestrator && <Bot className="h-[10px] w-[10px]" />}
           {badge.text}
         </span>
       )}

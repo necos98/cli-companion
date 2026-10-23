@@ -1,4 +1,4 @@
-// Auto-layout della board: i task diventano nodi e archi di React Flow,
+// Auto-layout del grafo delle dipendenze: i task diventano nodi e archi di React Flow,
 // disposti da sinistra a destra con dagre (arco dalla dipendenza al dipendente).
 // Il modulo non importa React Flow (solo tipi propri): testabile con node --test.
 
@@ -6,7 +6,7 @@ import dagre from "@dagrejs/dagre";
 import type { Task } from "./board.ts";
 
 export const NODE_WIDTH = 240;
-export const NODE_HEIGHT = 112;
+export const NODE_HEIGHT = 88;
 
 export interface LayoutNode {
   id: string;

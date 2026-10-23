@@ -45,16 +45,11 @@ pub struct Workspace {
     /// Avvii personalizzati del workspace (vuoto = solo shell semplice).
     #[serde(default)]
     pub launches: Vec<Launch>,
-    /// Tetto dei permessi dei worker automatici: "plan" | "default" |
-    /// "accept-edits" | "bypass". L'orchestratore puo' solo restringerlo.
+    /// Permessi dei worker automatici: "plan" | "default" | "accept-edits" | "bypass".
     #[serde(default = "default_worker_permission")]
     pub worker_permission: String,
-    /// Comando di setup dei worktree (es. `npm ci`): non lo esegue l'app, lo
-    /// legge il worker nell'ambiente del task (`get_task`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_setup: Option<String>,
     /// Modello di default dei worker automatici (None = quello dell'agente);
-    /// vale quando ne' il task ne' `spawn_session` ne indicano uno.
+    /// vale quando il task non ne indica uno.
     #[serde(default)]
     pub worker_model: Option<String>,
     /// Regole di permesso Claude Code pre-approvate / vietate per i worker
@@ -63,16 +58,19 @@ pub struct Workspace {
     pub worker_allow: Vec<String>,
     #[serde(default)]
     pub worker_deny: Vec<String>,
-    /// Orchestratore automatico nelle finestre di esecuzione (vedi `schedule`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_orchestrate: Option<AutoOrchestrate>,
+    /// Modalita' di consegna dei task (vedi docs/BOARD.MD).
+    #[serde(default)]
+    pub delivery: Delivery,
+    /// I task di questo workspace partono solo nelle fasce orarie (vedi `schedule`).
+    #[serde(default)]
+    pub use_schedule: bool,
     /// Avvio predefinito dei nuovi terminali: `None` = eredita il predefinito
     /// globale; "shell" = shell semplice; altrimenti l'id di un avvio del
     /// workspace o di uno integrato (`builtin:...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_launch: Option<String>,
     /// Regole per i worker automatici (test vietati, comandi da non lanciare):
-    /// `get_task` le accoda alle istruzioni di ogni worker, di board o ad-hoc.
+    /// `get_task` le accoda alle istruzioni di ogni worker.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub worker_rules: String,
     /// Configurazione per repository (chiave = cartella relativa alla root,
@@ -80,7 +78,7 @@ pub struct Workspace {
     /// setup / pulizia dei worktree, eseguiti dall'app.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub repos: BTreeMap<String, RepoConfig>,
-    /// Archiviato: congelato (nessun task, nessun orchestratore, nessun tab);
+    /// Archiviato: congelato (nessun task, nessun tab);
     /// i dati restano e si puo' riattivare.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
@@ -90,7 +88,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RepoConfig {
-    /// Branch base dei task del repository (dopo `base_branches` della board).
+    /// Branch base dei task del repository (prima del default di `origin`).
     pub base_branch: Option<String>,
     /// Dove il repository e' montato in un container (es. `/var/www/html`):
     /// ne deriva `$CONTAINER_WORKTREE`.
@@ -159,187 +157,6 @@ impl RepoConfig {
     }
 }
 
-/// Un campo `Option<Option<T>>` distingue "assente" (nessuna modifica) da
-/// `null` (azzera il valore).
-fn de_double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(d).map(Some)
-}
-
-/// Massimo di repository in una proposta di impostazioni.
-const MAX_PATCH_REPOS: usize = 20;
-
-/// Modifica parziale della configurazione di un repository: solo i campi
-/// presenti cambiano (`null` su `base_branch` / `container_root` li azzera).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RepoPatch {
-    #[serde(default, deserialize_with = "de_double_option", skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<Option<String>>,
-    #[serde(default, deserialize_with = "de_double_option", skip_serializing_if = "Option::is_none")]
-    pub container_root: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub copy_ignored: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cleanup: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remove_force: Option<bool>,
-}
-
-impl RepoPatch {
-    pub fn is_empty(&self) -> bool {
-        *self == RepoPatch::default()
-    }
-
-    /// `base` con i campi della patch sovrapposti, poi normalizzato.
-    fn merge(&self, base: &RepoConfig) -> Result<RepoConfig, String> {
-        let mut c = base.clone();
-        if let Some(v) = &self.base_branch {
-            c.base_branch = v.clone();
-        }
-        if let Some(v) = &self.container_root {
-            c.container_root = v.clone();
-        }
-        if let Some(v) = &self.copy_ignored {
-            c.copy_ignored = v.clone();
-        }
-        if let Some(v) = &self.setup {
-            c.setup = v.clone();
-        }
-        if let Some(v) = &self.cleanup {
-            c.cleanup = v.clone();
-        }
-        if let Some(v) = self.remove_force {
-            c.remove_force = v;
-        }
-        c.normalized()
-    }
-
-    /// Gli stessi campi della patch, con i valori di `cfg`.
-    fn project(&self, cfg: &RepoConfig) -> RepoPatch {
-        RepoPatch {
-            base_branch: self.base_branch.as_ref().map(|_| cfg.base_branch.clone()),
-            container_root: self.container_root.as_ref().map(|_| cfg.container_root.clone()),
-            copy_ignored: self.copy_ignored.as_ref().map(|_| cfg.copy_ignored.clone()),
-            setup: self.setup.as_ref().map(|_| cfg.setup.clone()),
-            cleanup: self.cleanup.as_ref().map(|_| cfg.cleanup.clone()),
-            remove_force: self.remove_force.map(|_| cfg.remove_force),
-        }
-    }
-}
-
-/// Modifica proposta alle impostazioni del workspace: SOLO regole dei worker
-/// e configurazione per repository (mai permessi ne' comandi consentiti).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SettingsPatch {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_rules: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repos: Option<BTreeMap<String, RepoPatch>>,
-}
-
-impl SettingsPatch {
-    pub fn is_empty(&self) -> bool {
-        self.workspace_rules.is_none() && self.repos.is_none()
-    }
-
-    /// Valida come le impostazioni dell'interfaccia e ritorna la patch con
-    /// chiavi e valori normalizzati. Errori in italiano (come l'interfaccia).
-    pub fn normalized(&self, ws: &Workspace) -> Result<SettingsPatch, String> {
-        let workspace_rules = self.workspace_rules.as_deref().map(normalize_rules).transpose()?;
-        let repos = match &self.repos {
-            None => None,
-            Some(map) => {
-                if map.len() > MAX_PATCH_REPOS {
-                    return Err(format!("too many repos in the proposal (max {MAX_PATCH_REPOS})"));
-                }
-                let mut out = BTreeMap::new();
-                for (raw, p) in map {
-                    let key = repo_config_key(raw)?;
-                    if out.contains_key(&key) {
-                        return Err(format!("duplicate repo key: {key}"));
-                    }
-                    if p.is_empty() {
-                        return Err(format!("repos['{key}'] has no fields"));
-                    }
-                    let base = ws.repos.get(&key).cloned().unwrap_or_default();
-                    let merged = p.merge(&base)?;
-                    out.insert(key, p.project(&merged));
-                }
-                Some(out)
-            }
-        };
-        Ok(SettingsPatch { workspace_rules, repos })
-    }
-
-    /// Valori attuali dei soli campi toccati (per il confronto nell'interfaccia).
-    pub fn current(&self, ws: &Workspace) -> SettingsPatch {
-        SettingsPatch {
-            workspace_rules: self.workspace_rules.as_ref().map(|_| ws.worker_rules.clone()),
-            repos: self.repos.as_ref().map(|m| {
-                m.iter()
-                    .map(|(k, p)| (k.clone(), p.project(&ws.repos.get(k).cloned().unwrap_or_default())))
-                    .collect()
-            }),
-        }
-    }
-
-    /// Applica la patch tutto-o-niente: ogni valore si valida su una copia.
-    pub fn apply(&self, ws: &mut Workspace) -> Result<(), String> {
-        let norm = self.normalized(ws)?;
-        let mut next = ws.clone();
-        if let Some(r) = norm.workspace_rules {
-            next.worker_rules = r;
-        }
-        for (k, p) in norm.repos.unwrap_or_default() {
-            let base = next.repos.get(&k).cloned().unwrap_or_default();
-            next.repos.insert(k, p.merge(&base)?);
-        }
-        *ws = next;
-        Ok(())
-    }
-}
-
-/// Messaggio di validazione (italiano, dell'interfaccia) in inglese per il
-/// modello; i messaggi gia' inglesi passano invariati.
-pub fn validation_error_en(e: &str) -> String {
-    const MAP: [(&str, &str); 13] = [
-        ("regole troppo lunghe", "workspace_rules too long (max 4000 characters)"),
-        ("le regole non possono", "workspace_rules cannot contain control characters"),
-        ("branch base non valido", "invalid base_branch"),
-        ("percorso nel container non valido", "invalid container_root"),
-        ("il percorso da copiare deve essere relativo", "copy_ignored paths must be relative to the repository"),
-        ("percorso da copiare non valido", "invalid copy_ignored path (no '..', not the repository root, max 300 characters)"),
-        ("troppi percorsi da copiare", "too many copy_ignored paths (max 30)"),
-        ("il comando di setup", "setup commands must be single-line"),
-        ("il comando di pulizia", "cleanup commands must be single-line"),
-        ("comando di setup troppo lungo", "setup command too long (max 2000 characters)"),
-        ("comando di pulizia troppo lungo", "cleanup command too long (max 2000 characters)"),
-        ("troppi comandi di setup", "too many setup commands (max 30)"),
-        ("troppi comandi di pulizia", "too many cleanup commands (max 30)"),
-    ];
-    match MAP.iter().find(|(it, _)| e.starts_with(it)) {
-        Some((_, en)) => (*en).to_string(),
-        None => e.to_string(),
-    }
-}
-
-/// Applica una patch alle impostazioni di un workspace e salva su disco
-/// (stesso percorso delle impostazioni dell'interfaccia). Ritorna il workspace.
-pub fn apply_settings_patch(app: &AppHandle, workspace_id: &str, patch: &SettingsPatch) -> Result<Workspace, String> {
-    persist(app, |data| {
-        let ws = ws_mut(data, workspace_id)?;
-        patch.apply(ws)?;
-        Ok(ws.clone())
-    })
-}
-
 /// Elenco di comandi: trim, righe vuote scartate; ciascuno su una riga, al
 /// massimo `MAX_REPO_COMMAND_LEN` caratteri, al massimo `MAX_REPO_COMMANDS`.
 fn normalize_commands(list: &[String], what: &str) -> Result<Vec<String>, String> {
@@ -369,7 +186,8 @@ pub fn repo_config_key(repo: &str) -> Result<String, String> {
     crate::board::normalize_repo(repo).map(|r| r.unwrap_or_else(|| ".".to_string()))
 }
 
-/// Migra il vecchio flag `is_default` degli avvii in `default_launch`.
+/// Migra il vecchio flag `is_default` degli avvii in `default_launch` e la voce
+/// rapida `builtin:orchestrator` (v0.11) in `builtin:preset:task-intake`.
 fn migrate_default(ws: &mut Workspace) {
     if ws.default_launch.is_none() {
         ws.default_launch = ws.launches.iter().find(|l| l.is_default).map(|l| l.id.clone());
@@ -377,22 +195,71 @@ fn migrate_default(ws: &mut Workspace) {
     for l in ws.launches.iter_mut() {
         l.is_default = false;
     }
+    crate::agents::presets::migrate_launch_id(&mut ws.default_launch);
 }
 
-/// Configurazione dell'orchestratore automatico di un workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AutoOrchestrate {
-    pub enabled: bool,
-    #[serde(default = "default_auto_agent")]
-    pub agent: String,
-    #[serde(default)]
-    pub model: Option<String>,
+/// Come un task arriva al repository (vedi docs/BOARD.MD, "Consegna").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryMode {
+    /// Branch + push + PR + merge (`gh`).
+    Pr,
+    /// Branch + rebase + fast-forward della base locale.
+    LocalMerge,
+    /// Commit sul branch corrente + `pull --rebase` + push.
+    Push,
+    /// Solo commit sul branch corrente.
+    #[default]
+    Commit,
 }
 
-fn default_auto_agent() -> String {
-    crate::automation::DEFAULT_AGENT.to_string()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    #[default]
+    Squash,
+    Merge,
+    Rebase,
 }
 
+impl MergeMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeMethod::Squash => "squash",
+            MergeMethod::Merge => "merge",
+            MergeMethod::Rebase => "rebase",
+        }
+    }
+}
+
+/// Impostazione di consegna del workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Delivery {
+    pub mode: DeliveryMode,
+    /// Un worktree per task (solo `pr` e `local_merge`).
+    pub parallel: bool,
+    /// Solo per `pr`.
+    pub merge_method: MergeMethod,
+}
+
+impl Delivery {
+    /// La modalita' lavora su un branch `task/<id>`.
+    pub fn uses_branches(&self) -> bool {
+        matches!(self.mode, DeliveryMode::Pr | DeliveryMode::LocalMerge)
+    }
+
+    /// Ogni task ha il suo worktree (e i task possono andare in parallelo).
+    pub fn worktrees(&self) -> bool {
+        self.parallel && self.uses_branches()
+    }
+
+    /// `parallel` ha senso solo con i branch.
+    fn normalized(mut self) -> Delivery {
+        self.parallel &= self.uses_branches();
+        self
+    }
+}
 fn default_worker_permission() -> String {
     PermissionMode::AcceptEdits.as_str().to_string()
 }
@@ -446,7 +313,7 @@ pub fn load_from_disk(app: &tauri::App) {
         Ok(raw) => raw,
         Err(_) => return,
     };
-    match serde_json::from_str::<Vec<Workspace>>(&raw) {
+    match parse_workspaces(&raw) {
         Ok(mut workspaces) => {
             workspaces.iter_mut().for_each(migrate_default);
             let store = app.state::<WorkspaceStore>();
@@ -456,6 +323,44 @@ pub fn load_from_disk(app: &tauri::App) {
         Err(_) => {
             // File corrotto: backup e riparto vuoto.
             let _ = std::fs::rename(&path, path.with_extension("json.bak"));
+        }
+    }
+}
+
+/// Legge il file dei workspace migrando i campi delle versioni precedenti:
+/// `auto_orchestrate.enabled` -> `use_schedule`; `worktree_setup` ->
+/// `repos["."].setup` (se vuoto). Entrambi i campi spariscono.
+fn parse_workspaces(raw: &str) -> Result<Vec<Workspace>, serde_json::Error> {
+    let mut list: Vec<serde_json::Value> = serde_json::from_str(raw)?;
+    list.iter_mut().for_each(migrate_legacy_fields);
+    serde_json::from_value(serde_json::Value::Array(list))
+}
+
+fn migrate_legacy_fields(ws: &mut serde_json::Value) {
+    let Some(obj) = ws.as_object_mut() else {
+        return;
+    };
+    let enabled = obj
+        .remove("auto_orchestrate")
+        .and_then(|a| a.get("enabled").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    if enabled {
+        obj.insert("use_schedule".into(), true.into());
+    }
+    let setup = obj
+        .remove("worktree_setup")
+        .and_then(|v| v.as_str().map(|c| c.trim().to_string()))
+        .filter(|c| !c.is_empty());
+    if let Some(cmd) = setup {
+        let repos = obj.entry("repos").or_insert_with(|| serde_json::json!({}));
+        if let Some(map) = repos.as_object_mut() {
+            let root = map.entry(".").or_insert_with(|| serde_json::json!({}));
+            if let Some(r) = root.as_object_mut() {
+                let empty = r.get("setup").and_then(serde_json::Value::as_array).is_none_or(Vec::is_empty);
+                if empty {
+                    r.insert("setup".into(), serde_json::json!([cmd]));
+                }
+            }
         }
     }
 }
@@ -568,11 +473,11 @@ fn add_workspace_blocking(
         created_at: now_millis(),
         launches: Vec::new(),
         worker_permission: default_worker_permission(),
-        worktree_setup: None,
         worker_model: None,
         worker_allow: Vec::new(),
         worker_deny: Vec::new(),
-        auto_orchestrate: None,
+        delivery: Delivery::default(),
+        use_schedule: false,
         default_launch: None,
         worker_rules: String::new(),
         repos: BTreeMap::new(),
@@ -679,20 +584,38 @@ pub async fn set_worker_model(app: AppHandle, id: String, model: Option<String>)
     .await
 }
 
-/// Comando di setup dei worktree del workspace (vuoto = nessuno).
+/// Imposta la modalita' di consegna (vale per i task che partono da ora).
 #[tauri::command]
-pub async fn set_worktree_setup(app: AppHandle, id: String, command: Option<String>) -> Result<Workspace, String> {
+pub async fn set_delivery(app: AppHandle, id: String, delivery: Delivery) -> Result<Workspace, String> {
     crate::blocking(move || {
-        let command = normalize_setup(command)?;
-        persist(&app, |data| {
+        let out = persist(&app, |data| {
             let ws = ws_mut(data, &id)?;
-            ws.worktree_setup = command;
+            ws.delivery = delivery.normalized();
             Ok(ws.clone())
-        })
+        })?;
+        // Fuori dal lock dei workspace: lo scheduler li rilegge.
+        let automation = app.state::<crate::automation::AutomationState>();
+        automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        Ok(out)
     })
     .await
 }
 
+/// I task del workspace partono solo nelle fasce orarie.
+#[tauri::command]
+pub async fn set_use_schedule(app: AppHandle, id: String, value: bool) -> Result<Workspace, String> {
+    crate::blocking(move || {
+        let out = persist(&app, |data| {
+            let ws = ws_mut(data, &id)?;
+            ws.use_schedule = value;
+            Ok(ws.clone())
+        })?;
+        let automation = app.state::<crate::automation::AutomationState>();
+        automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        Ok(out)
+    })
+    .await
+}
 
 /// Regole per i worker del workspace (vuoto = nessuna).
 #[tauri::command]
@@ -744,68 +667,6 @@ pub(crate) fn normalize_rules(rules: &str) -> Result<String, String> {
     Ok(r.to_string())
 }
 
-/// Trim; vuoto = nessun comando; massimo `MAX_COMMAND_LEN` caratteri.
-fn normalize_setup(command: Option<String>) -> Result<Option<String>, String> {
-    let Some(c) = command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) else {
-        return Ok(None);
-    };
-    if c.chars().count() > MAX_COMMAND_LEN {
-        return Err(format!("comando troppo lungo (max {MAX_COMMAND_LEN} caratteri)"));
-    }
-    if c.chars().any(|ch| ch.is_control() && ch != '\t') {
-        return Err("il comando non puo' contenere caratteri di controllo".to_string());
-    }
-    Ok(Some(c))
-}
-
-/// Valida la configurazione dell'orchestratore automatico: l'agente deve
-/// supportare le sessioni automatiche (`known` sono gli id), il modello deve
-/// avere il formato dei modelli dei task. Modello vuoto = quello dell'agente.
-fn normalize_auto(
-    config: Option<AutoOrchestrate>,
-    known: &[(String, String)],
-) -> Result<Option<AutoOrchestrate>, String> {
-    let Some(c) = config else {
-        return Ok(None);
-    };
-    let agent = c.agent.trim().to_string();
-    if !known.iter().any(|(id, _)| *id == agent) {
-        return Err(format!("agente non valido o senza supporto alle sessioni automatiche: {agent}"));
-    }
-    let model = match c.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) if crate::automation::valid_model(m) => Some(m.to_string()),
-        Some(_) => return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string()),
-        None => None,
-    };
-    Ok(Some(AutoOrchestrate { enabled: c.enabled, agent, model }))
-}
-
-/// Imposta l'orchestratore automatico del workspace (None = lo rimuove).
-#[tauri::command]
-pub async fn set_auto_orchestrate(
-    app: AppHandle,
-    id: String,
-    config: Option<AutoOrchestrate>,
-) -> Result<Workspace, String> {
-    crate::blocking(move || {
-        let known: Vec<(String, String)> = crate::agents::automation_agents()
-            .into_iter()
-            .map(|(i, n)| (i.to_string(), n.to_string()))
-            .collect();
-        let config = normalize_auto(config, &known)?;
-        let out = persist(&app, |data| {
-            let ws = ws_mut(data, &id)?;
-            ws.auto_orchestrate = config;
-            Ok(ws.clone())
-        })?;
-        // Fuori dal lock dei workspace: il riallineamento li rilegge.
-        let automation = app.state::<crate::automation::AutomationState>();
-        automation.reconcile(&crate::automation::TauriHost(app.clone()));
-        Ok(out)
-    })
-    .await
-}
-
 /// Nuovo ordine dei workspace: `ids` elenca tutti gli id o solo un
 /// sottoinsieme (i non elencati seguono, nel loro ordine relativo).
 fn apply_order(list: &mut Vec<Workspace>, ids: &[String]) -> Result<(), String> {
@@ -841,7 +702,7 @@ pub async fn reorder_workspaces(app: AppHandle, ids: Vec<String>) -> Result<Vec<
 }
 
 /// Archivia / riattiva un workspace. Archiviato = congelato: la board non
-/// avvia task, nessun orchestratore si apre; i task in corso tornano in coda
+/// avvia task; i task in corso tornano in coda
 /// (i tab li chiude il frontend).
 #[tauri::command]
 pub async fn set_workspace_archived(app: AppHandle, workspace_id: String, archived: bool) -> Result<Workspace, String> {
@@ -1203,6 +1064,21 @@ mod tests {
     }
 
     #[test]
+    fn orchestrator_default_launch_becomes_task_intake() {
+        let raw = r#"[{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,
+            "default_launch":"builtin:orchestrator"},
+            {"id":"ws-2","name":"q","kind":"windows","path":"C:\\q","created_at":1,
+            "default_launch":"builtin:claude-code"}]"#;
+        let mut list = parse_workspaces(raw).unwrap();
+        list.iter_mut().for_each(migrate_default);
+        assert_eq!(list[0].default_launch.as_deref(), Some("builtin:preset:task-intake"));
+        assert_eq!(list[1].default_launch.as_deref(), Some("builtin:claude-code"));
+        let builtin = crate::agents::builtin_launch_list();
+        assert!(valid_default_launch(&list[0], "builtin:preset:task-intake", &builtin));
+        assert!(!valid_default_launch(&list[0], "builtin:orchestrator", &builtin));
+    }
+
+    #[test]
     fn old_file_with_is_default_is_read_but_not_written_back() {
         let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,
             "launches":[{"id":"l1","name":"n","command":"ls","is_default":true}]}"#;
@@ -1249,22 +1125,6 @@ mod tests {
     }
 
     #[test]
-    fn worktree_setup_is_trimmed_and_optional() {
-        assert_eq!(normalize_setup(None), Ok(None));
-        assert_eq!(normalize_setup(Some("   ".into())), Ok(None));
-        assert_eq!(normalize_setup(Some("  npm ci  ".into())), Ok(Some("npm ci".into())));
-        assert!(normalize_setup(Some("x".repeat(1000))).is_ok());
-        assert!(normalize_setup(Some("x".repeat(1001))).is_err());
-        assert!(normalize_setup(Some("a\nb".into())).is_err());
-        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
-        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
-        assert_eq!(ws.worktree_setup, None);
-        assert!(!serde_json::to_string(&ws).unwrap().contains("worktree_setup"));
-        ws.worktree_setup = Some("npm ci".into());
-        assert!(serde_json::to_string(&ws).unwrap().contains("\"worktree_setup\":\"npm ci\""));
-    }
-
-    #[test]
     fn worker_permission_roundtrips_and_bad_value_falls_back() {
         let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1,"worker_permission":"plan"}"#;
         let mut ws: Workspace = serde_json::from_str(raw).unwrap();
@@ -1282,36 +1142,6 @@ mod tests {
         ws.worker_model = Some("opus".into());
         let back: Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
         assert_eq!(back.worker_model.as_deref(), Some("opus"));
-    }
-
-    #[test]
-    fn auto_orchestrate_is_validated_and_optional() {
-        let known = vec![("claude-code".to_string(), "Claude Code".to_string())];
-        let cfg = |agent: &str, model: Option<&str>| AutoOrchestrate {
-            enabled: true,
-            agent: agent.to_string(),
-            model: model.map(str::to_string),
-        };
-        assert_eq!(normalize_auto(None, &known), Ok(None));
-        assert_eq!(
-            normalize_auto(Some(cfg(" claude-code ", Some("  opus "))), &known),
-            Ok(Some(cfg("claude-code", Some("opus"))))
-        );
-        assert_eq!(normalize_auto(Some(cfg("claude-code", Some("  "))), &known), Ok(Some(cfg("claude-code", None))));
-        assert!(normalize_auto(Some(cfg("gemini", None)), &known).is_err());
-        assert!(normalize_auto(Some(cfg("claude-code", Some("a b"))), &known).is_err());
-        assert!(normalize_auto(Some(cfg("claude-code", Some(&"m".repeat(65)))), &known).is_err());
-        // Serde: campo assente = nessuna configurazione; modello null.
-        let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
-        let mut ws: Workspace = serde_json::from_str(raw).unwrap();
-        assert_eq!(ws.auto_orchestrate, None);
-        assert!(!serde_json::to_string(&ws).unwrap().contains("auto_orchestrate"));
-        ws.auto_orchestrate = Some(cfg("claude-code", None));
-        assert!(serde_json::to_string(&ws)
-            .unwrap()
-            .contains(r#""auto_orchestrate":{"enabled":true,"agent":"claude-code","model":null}"#));
-        let c: AutoOrchestrate = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
-        assert_eq!((c.enabled, c.agent.as_str(), c.model), (false, "claude-code", None));
     }
 
     fn ws_id(id: &str) -> Workspace {
@@ -1372,81 +1202,41 @@ mod tests {
         );
     }
 
-    fn patch(v: serde_json::Value) -> SettingsPatch {
-        serde_json::from_value(v).unwrap()
+    #[test]
+    fn delivery_defaults_and_normalization() {
+        let ws = ws_with(Vec::new());
+        assert_eq!(ws.delivery, Delivery { mode: DeliveryMode::Commit, parallel: false, merge_method: MergeMethod::Squash });
+        assert!(!ws.use_schedule);
+        let d: Delivery = serde_json::from_str(r#"{"mode":"local_merge","parallel":true}"#).unwrap();
+        assert!(d.worktrees() && d.uses_branches());
+        assert_eq!(d.merge_method, MergeMethod::Squash);
+        // `parallel` non ha senso senza branch.
+        let push = Delivery { mode: DeliveryMode::Push, parallel: true, ..Default::default() };
+        assert!(!push.worktrees() && !push.normalized().parallel);
+        let pr: Delivery = serde_json::from_str(r#"{"mode":"pr","merge_method":"rebase"}"#).unwrap();
+        assert!(pr.uses_branches() && !pr.worktrees());
+        assert_eq!(serde_json::to_value(pr).unwrap()["mode"], "pr");
+        assert!(serde_json::from_str::<Delivery>(r#"{"mode":"yolo"}"#).is_err());
     }
 
     #[test]
-    fn settings_patch_parsing_is_strict_and_tells_null_from_absent() {
-        let p = patch(serde_json::json!({"repos": {"a": {"base_branch": null, "setup": []}}}));
-        let r = &p.repos.as_ref().unwrap()["a"];
-        assert_eq!(r.base_branch, Some(None));
-        assert_eq!(r.container_root, None);
-        assert_eq!(r.setup, Some(vec![]));
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({"repos": {"a": {"base_branch": null, "setup": []}}}));
-        for bad in [
-            serde_json::json!({"worker_allow": []}),
-            serde_json::json!({"repos": {"a": {"allow": []}}}),
-            serde_json::json!({"workspace_rules": 1}),
-        ] {
-            assert!(serde_json::from_value::<SettingsPatch>(bad).is_err());
-        }
-    }
-
-    #[test]
-    fn settings_patch_applies_all_or_nothing_and_snapshots_current() {
-        let mut ws = ws_with(vec![]);
-        ws.worker_rules = "old".into();
-        ws.repos.insert("api".into(), RepoConfig { base_branch: Some("main".into()), setup: vec!["a".into()], ..Default::default() });
-        let p = patch(serde_json::json!({
-            "workspace_rules": " new ",
-            "repos": {"api/": {"setup": ["b"], "container_root": " /srv/ "}, ".": {"remove_force": true}}
-        }));
-        let norm = p.normalized(&ws).unwrap();
-        assert_eq!(norm.workspace_rules.as_deref(), Some("new"));
-        assert_eq!(norm.repos.as_ref().unwrap()["api"].container_root, Some(Some("/srv".to_string())));
-        let cur = norm.current(&ws);
-        assert_eq!(cur.workspace_rules.as_deref(), Some("old"));
-        assert_eq!(cur.repos.as_ref().unwrap()["api"].setup, Some(vec!["a".to_string()]));
-        assert_eq!(cur.repos.as_ref().unwrap()["."].remove_force, Some(false));
-        // Un valore non valido in un repository non applica nulla del resto.
-        let bad = patch(serde_json::json!({
-            "workspace_rules": "new",
-            "repos": {"api": {"setup": ["x"]}, "web": {"base_branch": "no good"}}
-        }));
-        let mut copy = ws.clone();
-        assert!(bad.apply(&mut copy).is_err());
-        assert_eq!(copy, ws);
-        p.apply(&mut ws).unwrap();
-        assert_eq!(ws.worker_rules, "new");
-        let api = &ws.repos["api"];
-        assert_eq!((api.base_branch.as_deref(), api.setup.as_slice()), (Some("main"), &["b".to_string()][..]));
-        assert_eq!(api.container_root.as_deref(), Some("/srv"));
-        assert!(ws.repos["."].remove_force);
-        // null azzera il branch base.
-        patch(serde_json::json!({"repos": {"api": {"base_branch": null}}})).apply(&mut ws).unwrap();
-        assert_eq!(ws.repos["api"].base_branch, None);
-        // Mai permessi o comandi consentiti: i campi non esistono nella patch.
-        assert_eq!(ws.worker_allow, Vec::<String>::new());
-    }
-
-    #[test]
-    fn settings_patch_errors_map_to_english() {
-        let ws = ws_with(vec![]);
-        let err = |v: serde_json::Value| validation_error_en(&patch(v).normalized(&ws).unwrap_err());
-        for (v, expect) in [
-            (serde_json::json!({"workspace_rules": "x".repeat(MAX_RULES_LEN + 1)}), "too long"),
-            (serde_json::json!({"workspace_rules": "a\u{1}b"}), "control characters"),
-            (serde_json::json!({"repos": {"a": {"base_branch": "no good"}}}), "invalid base_branch"),
-            (serde_json::json!({"repos": {"a": {"copy_ignored": ["/abs"]}}}), "relative"),
-            (serde_json::json!({"repos": {"a": {"copy_ignored": [".."]}}}), "copy_ignored"),
-            (serde_json::json!({"repos": {"a": {"setup": ["a\nb"]}}}), "single-line"),
-            (serde_json::json!({"repos": {"a": {"cleanup": ["a\nb"]}}}), "cleanup"),
-            (serde_json::json!({"repos": {"a": {"setup": vec!["x"; MAX_REPO_COMMANDS + 1]}}}), "too many setup"),
-            (serde_json::json!({"repos": {"a": {}}}), "no fields"),
-        ] {
-            let e = err(v);
-            assert!(e.contains(expect) && e.is_ascii(), "{e}");
-        }
+    fn legacy_fields_are_migrated_and_dropped() {
+        let raw = r#"[
+            {"id":"a","name":"a","kind":"windows","path":"C:/a","created_at":1,
+             "auto_orchestrate":{"enabled":true,"agent":"claude-code"},"worktree_setup":"  npm ci "},
+            {"id":"b","name":"b","kind":"windows","path":"C:/b","created_at":1,
+             "auto_orchestrate":{"enabled":false},"worktree_setup":"npm ci",
+             "repos":{".":{"setup":["make"]}}},
+            {"id":"c","name":"c","kind":"windows","path":"C:/c","created_at":1}
+        ]"#;
+        let list = parse_workspaces(raw).unwrap();
+        assert!(list[0].use_schedule && !list[1].use_schedule && !list[2].use_schedule);
+        // worktree_setup diventa il setup della root solo se questo e' vuoto.
+        assert_eq!(list[0].repos["."].setup, ["npm ci"]);
+        assert_eq!(list[1].repos["."].setup, ["make"]);
+        assert!(list[2].repos.is_empty());
+        let out = serde_json::to_string(&list).unwrap();
+        assert!(!out.contains("worktree_setup") && !out.contains("auto_orchestrate"));
+        assert!(parse_workspaces("{").is_err());
     }
 }

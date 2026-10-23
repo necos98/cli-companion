@@ -91,8 +91,9 @@ export default function ScheduleSettings() {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[11px] text-muted-foreground">
-        Nelle fasce orarie i workspace con l’orchestratore automatico lavorano da
-        soli; fuori dalle fasce non parte nessun nuovo task.
+        I workspace che rispettano le fasce orarie (Impostazioni › Worker) fanno
+        partire i task in coda solo dentro le fasce; fuori non parte nessun
+        nuovo task e quelli in corso finiscono.
       </p>
 
       <label className="flex items-center gap-2 text-[13px] font-medium">
@@ -189,8 +190,8 @@ export default function ScheduleSettings() {
           Impedisci lo standby
         </label>
         <p className="mt-1 pl-5 text-[11px] text-muted-foreground">
-          Il computer non va in standby finché un workspace automatico ha la
-          finestra aperta con del lavoro da fare.
+          Il computer non va in standby finché c’è almeno un task in corso in
+          un workspace.
         </p>
       </div>
 

@@ -1,10 +1,15 @@
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPermission } from "./workerPermission";
-import type { BoardView, TaskAction } from "./board";
-import type { UserRequestEvent } from "./requests";
+import type {
+  BoardView,
+  Delivery,
+  NewTaskSpec,
+  TaskAction,
+  TaskNotifyEvent,
+  TaskPatch,
+} from "./board";
 import type { Schedule, ScheduleState } from "./schedule";
-import type { AutoOrchestrate } from "./workflow";
 
 /** Avvio personalizzato di un workspace (vedi `Launch` in workspaces.rs). */
 export interface Launch {
@@ -49,15 +54,15 @@ export interface Workspace {
   /** Regole di permesso pre-approvate / vietate per i worker Claude Code. */
   worker_allow?: string[];
   worker_deny?: string[];
-  /** Comando di setup dei worktree dei task (assente = nessuno). */
-  worktree_setup?: string;
   /** Regole inviate a ogni worker automatico (assente = nessuna). */
   worker_rules?: string;
-  /** Orchestratore automatico del workspace (assente = non automatico). */
-  auto_orchestrate?: AutoOrchestrate | null;
+  /** Consegna dei task (assente = commit sul branch corrente, un worker alla volta). */
+  delivery?: Delivery;
+  /** La coda rispetta le fasce orarie globali (assente = no). */
+  use_schedule?: boolean;
   /** Configurazione per repository (chiave = cartella relativa alla root, "." = la root). */
   repos?: Record<string, RepoConfig>;
-  /** Archiviato: nascosto dalla sidebar, board ferma (assente = attivo). */
+  /** Archiviato: nascosto dalla sidebar, coda ferma (assente = attivo). */
   archived?: boolean;
 }
 
@@ -163,7 +168,7 @@ export interface AgentProfile {
   input_profile: { rules: InputRule[] };
 }
 
-/** Evento `automation-spawn` (vedi automation.rs): apri un tab worker. */
+/** Evento `automation-spawn` (vedi automation/host.rs): apri un tab worker. */
 export interface AutomationSpawn {
   tab_id: string;
   workspace_id: string;
@@ -171,10 +176,9 @@ export interface AutomationSpawn {
   command: string;
   cwd?: string | null;
   title: string;
+  /** Sempre vuoto (nessun orchestratore): tenuto per compatibilita'. */
   parent_tab_id: string;
   agent_id: string;
-  /** Assente = worker. */
-  role?: "worker" | "orchestrator";
 }
 
 /** Evento `automation-close`: chiudi il tab worker. */
@@ -224,15 +228,17 @@ export const api = {
   setWorkerRules: (workspaceId: string, rules: string) =>
     invoke<Workspace>("set_worker_rules", { workspaceId, rules }),
 
-  setWorktreeSetup: (id: string, command: string | null) =>
-    invoke<Workspace>("set_worktree_setup", { id, command }),
+  /** Modalita' di consegna dei task del workspace. */
+  setDelivery: (id: string, delivery: Delivery) =>
+    invoke<Workspace>("set_delivery", { id, delivery }),
+
+  /** La coda del workspace rispetta (o no) le fasce orarie globali. */
+  setUseSchedule: (id: string, value: boolean) =>
+    invoke<Workspace>("set_use_schedule", { id, value }),
 
   /** Imposta (o con null rimuove) la configurazione di un repository del workspace. */
   setRepoConfig: (workspaceId: string, repo: string, config: RepoConfig | null) =>
     invoke<Workspace>("set_repo_config", { workspaceId, repo, config }),
-
-  setAutoOrchestrate: (id: string, config: AutoOrchestrate | null) =>
-    invoke<Workspace>("set_auto_orchestrate", { id, config }),
 
   removeWorkspace: (id: string) => invoke<void>("remove_workspace", { id }),
 
@@ -320,21 +326,10 @@ export const api = {
   /** Un tab automatico e' stato chiuso (utente, app o shell uscita). */
   automationTabClosed: (tabId: string) => invoke<void>("automation_tab_closed", { tabId }),
 
-  /**
-   * Registra un tab dell'avvio "Orchestratore" prima di aprirlo: fallisce se il
-   * workspace ha gia' un orchestratore (automatico o manuale).
-   */
-  automationOrchestratorOpen: (workspaceId: string, tabId: string) =>
-    invoke<void>("automation_orchestrator_open", { workspaceId, tabId }),
-
   automationSessions: () => invoke<AutomationTabInfo[]>("automation_sessions"),
 
-  // Board dei task (backend: src-tauri, contratto in docs/BOARD.MD).
+  // Coda dei task (backend: src-tauri, contratto in docs/BOARD.MD).
   boardGet: (workspaceId: string) => invoke<BoardView>("board_get", { workspaceId }),
-
-  /** Azzera il blocco e fa aprire subito l'orchestratore se serve. */
-  startBoardOrchestrator: (workspaceId: string) =>
-    invoke<void>("start_board_orchestrator", { workspaceId }),
 
   /** Repository del workspace: "." se la root è un repo, più le sottocartelle con un .git. */
   workspaceDetectRepos: (workspaceId: string) =>
@@ -347,33 +342,29 @@ export const api = {
       paused: settings.paused ?? null,
     }),
 
-  boardTaskSetModel: (workspaceId: string, taskId: string, model: string | null) =>
-    invoke<BoardView>("board_task_set_model", { workspaceId, taskId, model }),
-  boardTaskAction: (workspaceId: string, taskId: string, action: TaskAction) =>
-    invoke<BoardView>("board_task_action", { workspaceId, taskId, action }),
+  /** Task manuale (senza proposta); l'id lo genera il backend dal titolo. */
+  taskCreate: (workspaceId: string, spec: NewTaskSpec) =>
+    invoke<BoardView>("task_create", { workspaceId, spec }),
 
-  // Richieste dell'orchestratore (domande e proposte di impostazioni).
-  answerUserRequest: (workspaceId: string, requestId: string, answer: string) =>
-    invoke<BoardView>("answer_user_request", { workspaceId, requestId, answer }),
-  decideUserRequest: (
-    workspaceId: string,
-    requestId: string,
-    approve: boolean,
-    comment: string | null,
-  ) => invoke<BoardView>("decide_user_request", { workspaceId, requestId, approve, comment }),
-  dismissUserRequest: (workspaceId: string, requestId: string) =>
-    invoke<BoardView>("dismiss_user_request", { workspaceId, requestId }),
+  /** Solo i task Da fare / Falliti; `repo` e `model` a null tornano al valore predefinito. */
+  taskUpdate: (workspaceId: string, taskId: string, patch: TaskPatch) =>
+    invoke<BoardView>("task_update", { workspaceId, taskId, patch }),
 
-  // Esecuzione automatica e workflow (contratto in docs/SCHEDULE.MD).
+  taskAction: (workspaceId: string, taskId: string, action: TaskAction) =>
+    invoke<BoardView>("task_action", { workspaceId, taskId, action }),
+
+  /** Riordina un task Da fare: prima di `beforeId`, o in fondo se assente. */
+  taskMove: (workspaceId: string, taskId: string, beforeId?: string | null) =>
+    invoke<BoardView>("task_move", { workspaceId, taskId, beforeId: beforeId ?? null }),
+
+  /** Accetta o scarta una proposta di Task Intake. */
+  proposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
+    invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept }),
+
+  // Fasce orarie globali (solo come gate dello scheduler, docs/BOARD.MD).
   scheduleGet: () => invoke<ScheduleState>("schedule_get"),
 
   scheduleSet: (schedule: Schedule) => invoke<ScheduleState>("schedule_set", { schedule }),
-
-  workflowGet: (workspaceId: string) => invoke<string | null>("workflow_get", { workspaceId }),
-
-  /** `content` null o vuoto = elimina il workflow. */
-  workflowSave: (workspaceId: string, content: string | null) =>
-    invoke<void>("workflow_save", { workspaceId, content }),
 
   // Persistenza della sessione (backend: src-tauri/src/session.rs).
   loadSession: () => invoke<string | null>("load_session"),
@@ -416,15 +407,11 @@ export function onBoardUpdate(cb: (b: BoardView) => void) {
   return listen<BoardView>("board-update", (event) => cb(event.payload));
 }
 
-export function onUserRequest(cb: (e: UserRequestEvent) => void) {
-  return listen<UserRequestEvent>("user-request", (event) => cb(event.payload));
+/** Un task richiede attenzione o e' fallito: notifica di sistema. */
+export function onTaskNotify(cb: (e: TaskNotifyEvent) => void) {
+  return listen<TaskNotifyEvent>("task-notify", (event) => cb(event.payload));
 }
 
 export function onAgentEvent(cb: (e: AgentEvent) => void) {
   return listen<AgentEvent>("agent-event", (event) => cb(event.payload));
-}
-
-/** Workspace modificato dal backend (es. proposta di impostazioni approvata). */
-export function onWorkspaceUpdated(cb: (ws: Workspace) => void) {
-  return listen<Workspace>("workspace-updated", (event) => cb(event.payload));
 }

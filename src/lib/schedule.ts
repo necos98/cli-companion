@@ -1,4 +1,4 @@
-// Esecuzione automatica: fasce orarie globali (docs/SCHEDULE.MD). Tipi del
+// Fasce orarie globali (gate dello scheduler dei task, docs/BOARD.MD). Tipi del
 // contratto, validazione, normalizzazione e testi di stato. Funzioni pure a
 // zero dipendenze, importabili sia dall'app sia dai test `node --test`.
 // La logica "finestra aperta / prossimo cambio" e' del backend (schedule.rs):
@@ -22,13 +22,6 @@ export interface ScheduleState {
   schedule: Schedule;
   window_open: boolean;
   /** Unix ms del prossimo cambio di stato della finestra, o null. */
-  next_change_at: number | null;
-}
-
-/** Campo `automation` di una board per i workspace automatici. */
-export interface BoardAutomation {
-  enabled: boolean;
-  window_open: boolean;
   next_change_at: number | null;
 }
 
@@ -174,29 +167,4 @@ export function scheduleStatusText(
   return state.next_change_at === null
     ? "Nessuna finestra in programma"
     : `Prossima apertura alle ${formatChange(state.next_change_at, now)}`;
-}
-
-/** Badge della board per un workspace automatico. */
-export function automationBadgeText(
-  a: BoardAutomation | null | undefined,
-  now: number = Date.now(),
-): string | null {
-  if (!a) return null;
-  if (!a.enabled) return "Automatico · finestre disattivate";
-  if (a.window_open) {
-    return a.next_change_at === null
-      ? "Automatico · finestra aperta"
-      : `Automatico · finestra aperta fino alle ${formatChange(a.next_change_at, now)}`;
-  }
-  return a.next_change_at === null
-    ? "Automatico · in attesa della finestra"
-    : `Automatico · in attesa della finestra delle ${formatChange(a.next_change_at, now)}`;
-}
-
-/** Tono del badge: aperta = attivo, in attesa = neutro, disattivato = attenuato. */
-export function automationBadgeTone(
-  a: BoardAutomation | null | undefined,
-): "open" | "waiting" | "off" {
-  if (!a || !a.enabled) return "off";
-  return a.window_open ? "open" : "waiting";
 }

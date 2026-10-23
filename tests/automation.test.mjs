@@ -1,22 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  INTAKE_LAUNCH_ID,
   applyAutomationUpdate,
-  automationBadge,
-  isOrchestrator,
-  normalizeRole,
   automationTooltip,
+  findIntakeTabKey,
   isAutomated,
+  isIntakeLaunch,
   persistableTabs,
   statusWord,
   tabBadge,
-  ORCHESTRATOR_LAUNCH_ID,
   truncateReport,
 } from "../src/lib/automation.ts";
 import { EMPTY_LAYOUT, openTab, openTabBackground } from "../src/lib/layout.ts";
 
 const meta = (extra = {}) => ({
-  parentTabId: "orch",
   title: "Fix login",
   status: "starting",
   agentId: "claude-code",
@@ -33,7 +31,6 @@ describe("automazione: stati", () => {
       idle: "fermo",
       completed: "completato",
       failed: "fallito",
-      blocked: "bloccato",
       closed: "chiuso",
     };
     for (const [s, text] of Object.entries(expected)) {
@@ -61,17 +58,15 @@ describe("automazione: metadati e tooltip", () => {
     assert.ok(t.endsWith("…"));
   });
 
-  it("tooltip con titolo, stato, padre e report", () => {
-    const tip = automationTooltip(meta({ status: "running", lastReport: "fatto  tutto" }), "Claude");
+  it("tooltip con titolo, stato e report", () => {
+    const tip = automationTooltip(meta({ status: "running", lastReport: "fatto  tutto" }));
     assert.match(tip, /Fix login/);
     assert.match(tip, /in corso/);
-    assert.match(tip, /Orchestratore: Claude/);
     assert.match(tip, /Ultimo report: fatto tutto/);
   });
 
-  it("tooltip senza padre ne' report", () => {
+  it("tooltip senza report", () => {
     const tip = automationTooltip(meta());
-    assert.doesNotMatch(tip, /Orchestratore/);
     assert.doesNotMatch(tip, /report/);
   });
 
@@ -79,7 +74,6 @@ describe("automazione: metadati e tooltip", () => {
     const next = applyAutomationUpdate(meta(), {
       status: "completed",
       title: "Nuovo",
-      parent_tab_id: "orch",
       last_report: "ok",
     });
     assert.equal(next.status, "completed");
@@ -144,55 +138,47 @@ describe("layout: apertura in secondo piano", () => {
   });
 });
 
-describe("automazione: orchestratore automatico", () => {
-  it("ruolo: assente o sconosciuto = worker", () => {
-    assert.equal(normalizeRole(undefined), "worker");
-    assert.equal(normalizeRole("boh"), "worker");
-    assert.equal(normalizeRole("orchestrator"), "orchestrator");
-    assert.equal(isOrchestrator(meta({ role: "orchestrator" })), true);
-    assert.equal(isOrchestrator(meta()), false);
+describe("automazione: badge del tab", () => {
+  it("i worker hanno AUTO", () => {
+    const b = tabBadge({ automation: meta() });
+    assert.deepEqual(b, { text: "AUTO", title: "Sessione automatica", kind: "auto" });
   });
-  it("tooltip dedicato, senza titolo del task ne' padre", () => {
-    const tip = automationTooltip(meta({ role: "orchestrator", status: "running" }), "Claude");
-    assert.match(tip, /^Orchestratore automatico/);
-    assert.ok(!tip.includes("Sessione automatica"));
-    assert.ok(!tip.includes("Orchestratore: "));
-    assert.match(tip, /Stato: in corso/);
+
+  it("i tab avviati dal preset Task Intake hanno INTAKE", () => {
+    assert.equal(INTAKE_LAUNCH_ID, "builtin:preset:task-intake");
+    const b = tabBadge({ launchId: INTAKE_LAUNCH_ID });
+    assert.equal(b.text, "INTAKE");
+    assert.equal(b.kind, "intake");
   });
-  it("badge per ruolo", () => {
-    assert.equal(automationBadge("orchestrator").text, "ORCH");
-    assert.equal(automationBadge("worker").text, "AUTO");
-    assert.equal(automationBadge(undefined).text, "AUTO");
+
+  it("gli altri tab non hanno badge", () => {
+    assert.equal(tabBadge({}), null);
+    assert.equal(tabBadge({ launchId: "builtin:claude-code" }), null);
+    assert.equal(tabBadge({ launchId: "builtin:preset:altro" }), null);
   });
-  it("non si persiste, come i worker", () => {
-    const tabs = [{ k: 1 }, { k: 2, automation: meta({ role: "orchestrator" }) }];
-    assert.deepEqual(persistableTabs(tabs), [{ k: 1 }]);
-  });
-  it("l'aggiornamento conserva il ruolo", () => {
-    const next = applyAutomationUpdate(meta({ role: "orchestrator" }), { status: "running", title: "" });
-    assert.equal(next.role, "orchestrator");
+
+  it("un tab Intake non e' automatico: resta persistibile", () => {
+    const tab = { key: "t", launchId: INTAKE_LAUNCH_ID };
+    assert.equal(isAutomated(tab), false);
+    assert.equal(persistableTabs([tab]).length, 1);
+    assert.equal(isIntakeLaunch(INTAKE_LAUNCH_ID), true);
+    assert.equal(isIntakeLaunch(undefined), false);
   });
 });
 
-describe("automazione: badge del tab", () => {
-  it("l'orchestratore automatico e quello manuale hanno entrambi ORCH", () => {
-    const auto = tabBadge({ automation: meta({ role: "orchestrator" }) });
-    assert.deepEqual(auto, { text: "ORCH", title: "Orchestratore automatico", orchestrator: true });
-    const manual = tabBadge({ launchId: ORCHESTRATOR_LAUNCH_ID });
-    assert.deepEqual(manual, { text: "ORCH", title: "Orchestratore", orchestrator: true });
-    assert.equal(ORCHESTRATOR_LAUNCH_ID, "builtin:orchestrator");
+describe("automazione: tab Intake aperto", () => {
+  const tabs = [
+    { key: "a", workspace: { id: "w1" } },
+    { key: "b", workspace: { id: "w2" }, launchId: INTAKE_LAUNCH_ID },
+    { key: "c", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
+    { key: "d", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
+  ];
+  it("trova il primo tab Intake del workspace", () => {
+    assert.equal(findIntakeTabKey(tabs, "w1"), "c");
+    assert.equal(findIntakeTabKey(tabs, "w2"), "b");
   });
-
-  it("i worker hanno AUTO, gli altri tab nessun badge", () => {
-    assert.equal(tabBadge({ automation: meta() }).text, "AUTO");
-    assert.equal(tabBadge({ automation: meta() }).orchestrator, false);
-    assert.equal(tabBadge({}), null);
-    assert.equal(tabBadge({ launchId: "builtin:claude-code" }), null);
-  });
-
-  it("l'orchestratore manuale non e' un tab automatico: resta persistibile", () => {
-    const tab = { key: "t", launchId: ORCHESTRATOR_LAUNCH_ID };
-    assert.equal(isAutomated(tab), false);
-    assert.equal(persistableTabs([tab]).length, 1);
+  it("nessun tab Intake: null", () => {
+    assert.equal(findIntakeTabKey(tabs, "w3"), null);
+    assert.equal(findIntakeTabKey([tabs[0]], "w1"), null);
   });
 });

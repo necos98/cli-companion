@@ -11,13 +11,9 @@ import {
   workerPermissionLabel,
 } from "../../lib/workerPermission";
 import type { WorkerPermission } from "../../lib/workerPermission";
-import { modelError, sanitizeModel } from "../../lib/workflow";
-import {
-  WORKER_RULES_MAX,
-  WORKTREE_SETUP_MAX,
-  sanitizeWorkerRules,
-  sanitizeWorktreeSetup,
-} from "../../lib/board";
+import { modelError, sanitizeModel } from "../../lib/model";
+import { WORKER_RULES_MAX, sanitizeWorkerRules } from "../../lib/board";
+import UseScheduleSection from "./UseScheduleSection";
 import { Field, Section, SettingsPage, selectClass, useWorkspaceOp } from "./shared";
 
 const rulesAreaClass =
@@ -31,12 +27,11 @@ interface Props {
   onWorkspaceUpdated: (ws: Workspace) => void;
 }
 
-/** Workspace › Worker: permessi, modello e setup dei worktree dei worker automatici. */
+/** Workspace › Worker: permessi, modello, regole e fasce orarie dei worker automatici. */
 export default function WorkerPage({ workspace, onWorkspaceUpdated }: Props) {
   const { run, saving, error } = useWorkspaceOp(onWorkspaceUpdated);
 
   // Bozze: seguono il workspace selezionato e il valore salvato.
-  const [setupDraft, setSetupDraft] = useState("");
   const [workerModelDraft, setWorkerModelDraft] = useState("");
   const [allowDraft, setAllowDraft] = useState("");
   const [denyDraft, setDenyDraft] = useState("");
@@ -54,10 +49,6 @@ export default function WorkerPage({ workspace, onWorkspaceUpdated }: Props) {
     if (rules === (workspace.worker_rules ?? "")) return;
     void run(() => api.setWorkerRules(workspace.id, rules)).then((ok) => setRulesSaved(ok));
   };
-
-  useEffect(() => {
-    setSetupDraft(workspace.worktree_setup ?? "");
-  }, [workspace.id, workspace.worktree_setup]);
 
   useEffect(() => {
     setWorkerModelDraft(workspace.worker_model ?? "");
@@ -78,12 +69,12 @@ export default function WorkerPage({ workspace, onWorkspaceUpdated }: Props) {
   return (
     <SettingsPage
       title="Worker"
-      description="Come lavorano le sessioni automatiche avviate da un orchestratore in questo workspace."
+      description="Come lavorano i worker automatici che eseguono i task della coda di questo workspace."
     >
       <Section>
         <Field
           label="Permessi dei worker automatici"
-          help="Livello massimo delle sessioni avviate da un orchestratore in questo workspace: l’orchestratore può solo restringerlo."
+          help="Livello massimo dei permessi dei worker automatici di questo workspace."
         >
           <select
             value={permission}
@@ -178,7 +169,7 @@ export default function WorkerPage({ workspace, onWorkspaceUpdated }: Props) {
       <Section>
         <Field
           label="Modello dei worker"
-          help="Modello dei worker automatici di questo workspace. Vuoto = predefinito dell’agente. L’orchestratore può comunque scegliere un modello per singolo task."
+          help="Modello dei worker automatici di questo workspace. Vuoto = predefinito dell’agente. Un singolo task può indicare un modello diverso."
         >
           <div className="flex gap-2">
             <Input
@@ -211,42 +202,12 @@ export default function WorkerPage({ workspace, onWorkspaceUpdated }: Props) {
         </Field>
       </Section>
 
-      <Section>
-        <Field
-          label="Setup dei worktree"
-          help="Comando dato ai worker come primo passo nei nuovi worktree dei task della board (es. installare le dipendenze). Vuoto = nessuno."
-        >
-          <div className="flex gap-2">
-            <Input
-              value={setupDraft}
-              onChange={(e) => setSetupDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
-              }}
-              placeholder="npm ci"
-              maxLength={WORKTREE_SETUP_MAX}
-              className="h-8 font-mono text-[12px]"
-            />
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={saving || sanitizeWorktreeSetup(setupDraft) === (workspace.worktree_setup ?? "")}
-              onClick={() =>
-                void run(() =>
-                  api.setWorktreeSetup(workspace.id, sanitizeWorktreeSetup(setupDraft) || null),
-                )
-              }
-            >
-              Salva
-            </Button>
-          </div>
-        </Field>
-      </Section>
+      <UseScheduleSection workspace={workspace} onWorkspaceUpdated={onWorkspaceUpdated} />
 
       <Section>
         <Field
           label="Regole per i worker"
-          help="Test vietati, comandi da non lanciare… inviate a ogni worker automatico (di board o avviato a mano) insieme alle sue istruzioni. Valgono per i nuovi worker; l’orchestratore non deve ripeterle nei task."
+          help="Test vietati, comandi da non lanciare… inviate a ogni worker automatico insieme alle sue istruzioni. Valgono per i nuovi worker; non serve ripeterle nei task."
         >
           <textarea
             value={rulesDraft}

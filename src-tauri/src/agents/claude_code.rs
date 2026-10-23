@@ -7,12 +7,14 @@
 //! plugins/cli-companion-notify/.claude-plugin/plugin.json
 //! plugins/cli-companion-notify/hooks/hooks.json
 //! plugins/cli-companion-notify/.mcp.json
-//! plugins/cli-companion-notify/skills/orchestrate/SKILL.md
-//! plugins/cli-companion-notify/skills/workflow/SKILL.md
+//! plugins/cli-companion-notify/skills/<preset id>/SKILL.md   (uno per preset)
 //! ```
 //! Il marketplace locale e' caricato sul posto: la cartella deve restare su
 //! disco finche' il plugin e' installato.
 
+use std::path::Path;
+
+use super::presets::{Preset, PRESETS};
 use super::{
     claude_usage, parse_version, DETECT_TIMEOUT, PLUGIN_LIST_TIMEOUT, resolve_wsl_command_cached, AgentProvider, AutomationRequest, Detection, Env, InputEvent,
     InputProfile, InputRule, InstallCtx, PermissionMode, SessionUsage, TranscriptCache, UsageLimitsReply,
@@ -34,21 +36,9 @@ const MCP_SERVER: &str = "cli-companion";
 /// (`mcp__plugin_<plugin>_<server>__<tool>`; senza nome tool = tutti).
 /// `acceptEdits` non approva i tool MCP, quindi serve sempre.
 const MCP_ALLOW_RULE: &str = "mcp__plugin_cli-companion-notify_cli-companion";
-/// Skill `orchestrate` (`/cli-companion-notify:orchestrate`): il metodo
-/// dell'orchestratore. La legge il modello: in inglese.
-const ORCHESTRATE_SKILL: &str = include_str!("orchestrate_skill.md");
-
-/// Testo della skill con fine riga LF, qualunque sia il checkout.
-fn orchestrate_skill() -> String {
-    ORCHESTRATE_SKILL.replace("\r\n", "\n")
-}
-
-/// Skill `workflow` (`/cli-companion-notify:workflow`): wizard che intervista
-/// l'utente e salva il `workflow.md` del workspace. La legge il modello: in inglese.
-const WORKFLOW_SKILL: &str = include_str!("workflow_skill.md");
-
-fn workflow_skill() -> String {
-    WORKFLOW_SKILL.replace("\r\n", "\n")
+/// Tutte le skill dei preset in un solo testo (serve alla versione del plugin).
+fn skills_blob() -> String {
+    PRESETS.iter().map(Preset::skill_text).collect::<Vec<_>>().join("\n")
 }
 
 fn marketplace_json() -> String {
@@ -122,15 +112,14 @@ fn plugin_version(hooks: &str, mcp: &str, skills: &str) -> String {
 
 /// Versione che avrebbe il plugin generato ora per `exe` (come lo vede l'agente).
 fn plugin_version_for(exe: &str) -> String {
-    let skills = format!("{}\n{}", orchestrate_skill(), workflow_skill());
-    plugin_version(&hooks_json(exe), &mcp_json(exe), &skills)
+    plugin_version(&hooks_json(exe), &mcp_json(exe), &skills_blob())
 }
 
 fn plugin_json(version: &str) -> String {
     let v = serde_json::json!({
         "name": PLUGIN,
         "description": "Notifies cli-companion when a Claude Code session finishes or waits for an answer, \
-                        and provides the MCP tools and the skills to orchestrate automated sessions.",
+                        and provides the MCP tools and the agent presets (skills) of its Tasks Manager.",
         "version": version,
     });
     serde_json::to_string_pretty(&v).unwrap_or_default()
@@ -141,10 +130,8 @@ fn plugin_json(version: &str) -> String {
 fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let hooks = hooks_json(exe);
     let mcp = mcp_json(exe);
-    let skill = orchestrate_skill();
-    let workflow = workflow_skill();
-    let version = plugin_json(&plugin_version(&hooks, &mcp, &format!("{skill}\n{workflow}")));
-    vec![
+    let version = plugin_json(&plugin_version(&hooks, &mcp, &skills_blob()));
+    let mut files = vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (
             format!("plugins/{PLUGIN}/.claude-plugin/plugin.json"),
@@ -152,9 +139,36 @@ fn plugin_files(exe: &str) -> Vec<(String, String)> {
         ),
         (format!("plugins/{PLUGIN}/hooks/hooks.json"), hooks),
         (format!("plugins/{PLUGIN}/.mcp.json"), mcp),
-        (format!("plugins/{PLUGIN}/skills/orchestrate/SKILL.md"), skill),
-        (format!("plugins/{PLUGIN}/skills/workflow/SKILL.md"), workflow),
-    ]
+    ];
+    files.extend(
+        PRESETS
+            .iter()
+            .map(|p| (format!("plugins/{PLUGIN}/skills/{}/SKILL.md", p.id), p.skill_text())),
+    );
+    files
+}
+
+/// Toglie da `skills/` le cartelle che non sono piu' preset (es. le vecchie
+/// `orchestrate` e `workflow`): la reinstallazione non deve lasciarle nel plugin.
+fn remove_obsolete_skills(plugin_dir: &Path) -> std::io::Result<()> {
+    let skills = plugin_dir.join("skills");
+    let entries = match std::fs::read_dir(&skills) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let current = entry.file_name().to_str().is_some_and(|n| PRESETS.iter().any(|p| p.id == n));
+        if !current {
+            let path = entry.path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `true` se l'output di `claude plugin list --json` contiene il nostro
@@ -277,8 +291,9 @@ impl AgentProvider for ClaudeCode {
         Some("claude --dangerously-skip-permissions")
     }
 
-    fn orchestrator_command(&self) -> Option<&'static str> {
-        Some("claude --dangerously-skip-permissions \"/cli-companion-notify:orchestrate\"")
+    /// Come l'interattivo, con la skill del preset (`/<plugin>:<id>`) come primo prompt.
+    fn preset_command(&self, preset: &Preset) -> Option<String> {
+        Some(format!("claude --dangerously-skip-permissions \"/{PLUGIN}:{}\"", preset.id))
     }
 
     fn usage_limits(&self, env: &Env) -> Option<UsageLimitsReply> {
@@ -329,6 +344,8 @@ impl AgentProvider for ClaudeCode {
             .ok_or_else(|| "Claude Code non trovato in questo env".to_string())?;
         let root = ctx.plugin_root(AGENT_ID, env);
         let exe = ctx.exe_for(env)?;
+        remove_obsolete_skills(&root.join("plugins").join(PLUGIN))
+            .map_err(|e| format!("pulizia skill obsolete: {e}"))?;
         for (rel, content) in plugin_files(&exe) {
             let file = root.join(&rel);
             if let Some(parent) = file.parent() {
@@ -492,7 +509,7 @@ mod tests {
     #[test]
     fn version_depends_on_hooks_mcp_and_skill() {
         let (hooks, mcp) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"));
-        let skill = format!("{}\n{}", orchestrate_skill(), workflow_skill());
+        let skill = skills_blob();
         let v1 = plugin_version(&hooks, &mcp, &skill);
         assert_eq!(v1, plugin_version(&hooks, &mcp, &skill));
         assert_eq!(v1, plugin_version_for("C:/a.exe"));
@@ -519,51 +536,62 @@ mod tests {
     }
 
     #[test]
-    fn plugin_ships_the_orchestrate_skill() {
+    fn plugin_ships_one_skill_per_preset_and_nothing_else() {
         let files = plugin_files("C:/a.exe");
-        let (_, skill) = files
+        let skills: Vec<_> = files
             .iter()
-            .find(|(p, _)| p == "plugins/cli-companion-notify/skills/orchestrate/SKILL.md")
-            .expect("SKILL.md nel plugin");
-        assert!(!skill.contains('\r'));
-        // Frontmatter: name uguale alla cartella e description su una riga.
-        let front = skill.strip_prefix("---\n").and_then(|s| s.split_once("\n---\n")).unwrap().0;
-        let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
-        assert_eq!(field("name:"), Some("orchestrate"));
-        let desc = field("description:").unwrap();
-        assert!(desc.contains("cli-companion") && desc.len() <= 1024);
-        // Testo per il modello: inglese (ASCII) e allineato ai tool di oggi.
-        assert!(skill.is_ascii());
-        for t in [
-            "spawn_session", "get_events", "send_message", "end your turn", "submit_plan", "set_task_status",
-            "get_workflow", "cli-companion-notify:workflow", "execution window",
-        ] {
-            assert!(skill.contains(t), "{t}");
+            .filter(|(p, _)| p.contains("/skills/"))
+            .map(|(p, _)| p.as_str())
+            .collect();
+        assert_eq!(skills.len(), PRESETS.len());
+        for preset in PRESETS {
+            let path = format!("plugins/cli-companion-notify/skills/{}/SKILL.md", preset.id);
+            let (_, skill) = files.iter().find(|(p, _)| *p == path).expect("SKILL.md del preset nel plugin");
+            assert_eq!(*skill, preset.skill_text());
+            assert!(!skill.contains('\r'));
         }
-        assert!(!skill.contains("wait_for_events"));
+        assert!(files.iter().any(|(p, _)| p == "plugins/cli-companion-notify/skills/task-intake/SKILL.md"));
+        for gone in ["orchestrate", "workflow"] {
+            assert!(!files.iter().any(|(p, _)| p.contains(&format!("skills/{gone}/"))), "{gone}");
+        }
     }
 
     #[test]
-    fn plugin_ships_the_workflow_skill() {
-        let files = plugin_files("C:/a.exe");
-        let (_, skill) = files
-            .iter()
-            .find(|(p, _)| p == "plugins/cli-companion-notify/skills/workflow/SKILL.md")
-            .expect("SKILL.md del workflow nel plugin");
-        assert!(!skill.contains('\r'));
-        let front = skill.strip_prefix("---\n").and_then(|s| s.split_once("\n---\n")).unwrap().0;
-        let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
-        assert_eq!(field("name:"), Some("workflow"));
-        let desc = field("description:").unwrap();
-        assert!(desc.contains("cli-companion") && desc.len() <= 1024);
-        assert!(skill.is_ascii());
-        for t in [
-            "get_workflow", "save_workflow", "AskUserQuestion", "Identity", "Goals", "Branching & merge",
-            "Verification", "Task design", "Parallelism & models", "Boundaries", "Escalation",
-            "Unattended runs", "Reporting",
-        ] {
-            assert!(skill.contains(t), "{t}");
+    fn preset_command_runs_the_plugin_skill() {
+        let preset = &PRESETS[0];
+        assert_eq!(
+            ClaudeCode.preset_command(preset).as_deref(),
+            Some("claude --dangerously-skip-permissions \"/cli-companion-notify:task-intake\"")
+        );
+    }
+
+    #[test]
+    fn install_removes_obsolete_skill_folders() {
+        let dir = std::env::temp_dir().join(format!("mc-obsolete-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let skills = dir.join("skills");
+        for old in ["orchestrate", "workflow", "task-intake"] {
+            std::fs::create_dir_all(skills.join(old)).unwrap();
+            std::fs::write(skills.join(old).join("SKILL.md"), "x").unwrap();
         }
+        std::fs::write(skills.join("stray.txt"), "x").unwrap();
+        remove_obsolete_skills(&dir).unwrap();
+        assert!(!skills.join("orchestrate").exists() && !skills.join("workflow").exists());
+        assert!(!skills.join("stray.txt").exists());
+        // Le cartelle dei preset restano (verranno riscritte).
+        assert!(skills.join("task-intake").join("SKILL.md").exists());
+        // Senza cartella skills non c'e' nulla da fare.
+        remove_obsolete_skills(&dir.join("missing")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_installs_are_flagged_outdated_by_their_marker() {
+        // La versione dipende dal contenuto delle skill: il marcatore di un'installazione
+        // con le vecchie skill (o senza marcatore) non coincide e `find_outdated` la segnala.
+        let current = plugin_version_for("C:/a.exe");
+        let old = plugin_version(&hooks_json("C:/a.exe"), &mcp_json("C:/a.exe"), "orchestrate\nworkflow");
+        assert_ne!(current, old);
     }
 
     fn req<'a>(mode: PermissionMode, model: Option<&'a str>, prompt: &'a str) -> AutomationRequest<'a> {
