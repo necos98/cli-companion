@@ -133,16 +133,16 @@ pub fn session_tools() -> Vec<Value> {
         ),
         tool(
             "save_skill",
-            "Create or update a global user skill, usable in every project as /<name>. The app generates SKILL.md and its \
-             frontmatter from your fields. Fails on a hand-written skill with that name. Returns {name, invocation, store_path, \
-             synced: [{env, ok, error?}]}.",
+            "Create or update a global user skill, usable in every project (Windows, WSL) as /<name>. The app generates \
+             SKILL.md and its frontmatter from your fields. Fails on a hand-written skill with that name. Returns {name, \
+             invocation, store_path, synced: [{env, ok, error?}]}.",
             skill_properties(),
             &["name", "description", "body"],
         ),
         tool("list_skills", "List the skills saved with save_skill: [{name, description}].", json!({}), &[]),
         tool(
             "delete_skill",
-            "Delete a skill saved with save_skill; hand-written skills are never touched.",
+            "Delete a skill saved with save_skill everywhere; hand-written ones are never touched.",
             json!({ "name": { "type": "string" } }),
             &["name"],
         ),

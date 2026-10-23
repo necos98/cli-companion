@@ -7,16 +7,8 @@
 use super::*;
 use crate::user_skills::{self, SkillInput};
 use serde_json::json;
-use std::path::PathBuf;
 
 pub const SKILL_METHODS: [&str; 3] = ["save_skill", "list_skills", "delete_skill"];
-
-/// Ambiente in cui le skill devono comparire e la sua cartella delle skill
-/// (`Err` se l'ambiente non e' raggiungibile). Oggi solo Windows.
-pub struct SkillTarget {
-    pub env: String,
-    pub dir: Result<PathBuf, String>,
-}
 
 pub(super) fn rpc<H: Host>(host: &H, method: &str, params: &Value) -> Result<Value, String> {
     match method {
@@ -75,8 +67,9 @@ fn outcome(env: &str, result: Result<(), String>) -> Value {
 }
 
 /// Ripristina in background le skill dell'archivio nelle cartelle target
-/// (svuotate o cancellate dall'utente). Gli errori si loggano soltanto: non
-/// devono impedire l'avvio dell'app.
+/// (svuotate o cancellate dall'utente), anche quelle delle distro WSL in uso:
+/// risolvere i target puo' essere lento, per questo tutto gira nel thread. Gli
+/// errori si loggano soltanto: non devono impedire l'avvio dell'app.
 pub fn restore_in_background<H: Host>(host: H) {
     std::thread::spawn(move || {
         let store = match host.skills_store_dir() {

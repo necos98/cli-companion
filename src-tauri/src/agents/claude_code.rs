@@ -22,7 +22,7 @@ use super::{
 
 pub struct ClaudeCode;
 
-const AGENT_ID: &str = "claude-code";
+pub(crate) const AGENT_ID: &str = "claude-code";
 const MARKETPLACE: &str = "cli-companion-local";
 const PLUGIN: &str = "cli-companion-notify";
 /// Id come lo riporta `claude plugin list --json`.

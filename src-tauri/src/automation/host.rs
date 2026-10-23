@@ -5,6 +5,7 @@
 use super::*;
 use crate::agents::{self, AutomationRequest};
 use crate::schedule::{Schedule, ScheduleState};
+use crate::user_skills::targets;
 use crate::workspaces::WorkspaceStore;
 use tauri::Emitter;
 
@@ -15,9 +16,6 @@ const UPDATE_EVENT: &str = "automation-update";
 const BOARD_EVENT: &str = "board-update";
 const NOTICE_EVENT: &str = "task-notify";
 const SCHEDULE_EVENT: &str = "schedule-state";
-
-/// Nome dell'ambiente Windows nei risultati dei tool delle skill.
-const WINDOWS_ENV: &str = "windows";
 
 /// Effetti verso l'esterno. `Clone + Send + 'static`: i timer li portano in
 /// un thread.
@@ -77,7 +75,8 @@ pub trait Host: Clone + Send + 'static {
     fn set_keep_awake(&self, on: bool);
     /// Archivio sorgente delle skill utente (`<app data>/user-skills`).
     fn skills_store_dir(&self) -> Result<std::path::PathBuf, String>;
-    /// Ambienti in cui le skill utente devono comparire.
+    /// Ambienti in cui le skill utente devono comparire: Windows e le distro WSL
+    /// in uso (vedi `user_skills::targets`).
     fn skill_targets(&self) -> Vec<SkillTarget>;
 }
 
@@ -303,6 +302,12 @@ impl Host for TauriHost {
     }
 
     fn skill_targets(&self) -> Vec<SkillTarget> {
-        vec![SkillTarget { env: WINDOWS_ENV.to_string(), dir: crate::user_skills::windows_skills_dir() }]
+        match auto::data_dir(&self.0) {
+            Ok(dir) => targets::all(&dir),
+            Err(e) => {
+                eprintln!("user skills: {e}");
+                targets::windows_only()
+            }
+        }
     }
 }

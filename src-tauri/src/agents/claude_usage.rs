@@ -82,30 +82,14 @@ pub(crate) fn windows_claude_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Cartella utente non trovata.".to_string())
 }
 
-/// `$HOME` dell'utente di default della distro, risolto una volta per distro.
-fn wsl_home(distro: &str) -> Result<String, String> {
-    static HOMES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    let homes = HOMES.get_or_init(Default::default);
-    if let Some(h) = homes.lock().unwrap().get(distro) {
-        return Ok(h.clone());
-    }
-    let out = Env::Wsl(distro.to_string())
-        .run("sh", &["-c", "printf %s \"$HOME\""])
-        .map_err(|e| format!("Home della distro non risolta: {e}"))?;
-    let home = out.trim().to_string();
-    if !home.starts_with('/') || home.contains(['\n', '\r']) || home.split('/').any(|c| c == "..") {
-        return Err("Home della distro non valida.".to_string());
-    }
-    homes.lock().unwrap().insert(distro.to_string(), home.clone());
-    Ok(home)
-}
-
 /// File delle credenziali da provare, in ordine.
 fn credentials_candidates(env: &Env) -> Result<Vec<PathBuf>, String> {
     match env {
         Env::Windows => Ok(vec![windows_claude_dir()?.join(".credentials.json")]),
         Env::Wsl(d) => {
-            let home = wsl_home(d)?.replace('/', "\\");
+            let home = crate::wsl::linux_home(d)
+                .map_err(|e| format!("Home della distro non risolta: {e}"))?
+                .replace('/', "\\");
             Ok(["wsl.localhost", "wsl$"]
                 .iter()
                 .map(|host| PathBuf::from(format!("\\\\{host}\\{d}{home}\\.claude\\.credentials.json")))

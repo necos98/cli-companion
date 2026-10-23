@@ -170,6 +170,28 @@ fn delete_removes_store_and_target_but_never_an_unmanaged_skill() {
 }
 
 #[test]
+fn delete_reports_each_environment_and_cleans_the_reachable_ones() {
+    let sb = Sandbox::new();
+    let (st, h) = (AutomationState::default(), sb.host());
+    let second = sb.0.join("second");
+    h.skill_dirs.lock().unwrap().push(("wsl:Debian".to_string(), Err("distro is stopped".to_string())));
+    h.skill_dirs.lock().unwrap().push(("wsl:Ubuntu".to_string(), Ok(second.clone())));
+    save(&st, &h, skill("notes")).unwrap();
+    assert!(second.join("notes").join(SKILL_FILE).is_file());
+
+    let r = call(&st, &h, INTAKE, "delete_skill", json!({"name": "notes"})).unwrap();
+    assert_eq!(
+        r["removed"],
+        json!([
+            {"env": "windows", "ok": true},
+            {"env": "wsl:Debian", "ok": false, "error": "distro is stopped"},
+            {"env": "wsl:Ubuntu", "ok": true},
+        ])
+    );
+    assert!(!sb.target().join("notes").exists() && !second.join("notes").exists());
+}
+
+#[test]
 fn delete_rejects_names_that_could_escape_the_folders() {
     let sb = Sandbox::new();
     let (st, h) = (AutomationState::default(), sb.host());

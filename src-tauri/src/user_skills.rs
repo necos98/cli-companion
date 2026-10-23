@@ -1,7 +1,7 @@
 //! Skill globali create dall'utente: archivio e sincronizzazione. Solo logica
 //! pura su path passati come parametri (nessun `AppHandle`), cosi' i test usano
 //! una cartella temporanea e il sync puo' puntare a qualunque cartella delle
-//! skill (oggi `~/.claude/skills` di Windows, poi quella delle distro WSL).
+//! skill (`~/.claude/skills` di Windows e delle distro WSL: vedi `targets`).
 //!
 //! Le skill NON stanno nel plugin `cli-companion-notify`: salvarne una non
 //! cambia la versione del plugin ne' innesca reinstallazioni. L'archivio
@@ -11,6 +11,7 @@
 //! una skill scritta a mano dall'utente: non viene mai sovrascritta ne'
 //! cancellata. Gli errori sono in inglese perche' li legge il modello via RPC.
 
+pub mod targets;
 mod validate;
 
 #[cfg(test)]
@@ -82,12 +83,6 @@ pub struct SyncReport {
 /// Archivio sorgente delle skill: `<app data>/user-skills`.
 pub fn store_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(STORE_DIR_NAME)
-}
-
-/// Cartella delle skill personali di Claude Code su Windows
-/// (`CLAUDE_CONFIG_DIR` o `~/.claude`, come il resto dell'app).
-pub fn windows_skills_dir() -> Result<PathBuf, String> {
-    crate::agents::claude_usage::windows_claude_dir().map(|dir| dir.join("skills"))
 }
 
 /// Valida e salva (o aggiorna) la skill nell'archivio. I file accessori che

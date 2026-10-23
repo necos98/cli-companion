@@ -5,6 +5,10 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod home;
+
+pub use home::linux_home;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -252,6 +256,14 @@ pub fn wsl_to_windows_path(distro: &str, linux: &str) -> Option<String> {
         }
     }
     Some(format!("\\\\wsl.localhost\\{distro}\\{}", comps.join("\\")))
+}
+
+/// Nome di distro sicuro da usare in un path UNC: niente separatori o
+/// caratteri insoliti.
+pub(crate) fn is_valid_distro_name(name: &str) -> bool {
+    name.len() <= 64
+        && name != ".."
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
 }
 
 #[tauri::command]

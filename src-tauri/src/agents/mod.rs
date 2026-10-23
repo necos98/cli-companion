@@ -18,11 +18,13 @@ pub(crate) mod claude_usage;
 pub mod presets;
 
 pub use claude_usage::TranscriptCache;
+/// Id dell'agente Claude Code (le skill utente vivono nel suo `~/.claude`).
+pub(crate) use claude_code::AGENT_ID as CLAUDE_CODE_ID;
 use presets::{Preset, PRESETS};
 
 use crate::launch_settings::LaunchSettingsStore;
 use crate::wsl::{
-    installed_distros, invalidate_distros_cache, is_windows_drive_path, output_with_timeout,
+    installed_distros, invalidate_distros_cache, is_valid_distro_name, is_windows_drive_path, output_with_timeout,
     windows_to_wsl_path, TtlCache,
 };
 use serde::Serialize;
@@ -297,11 +299,13 @@ impl InstallCtx {
     /// Cartella del plugin generato per (agente, ambiente). Il marketplace
     /// locale e' caricato sul posto: deve restare su disco finche' installato.
     pub fn plugin_root(&self, agent_id: &str, env: &Env) -> PathBuf {
-        self.data_dir
-            .join("agent-plugins")
-            .join(agent_id)
-            .join(sanitize_env_key(&env.key()))
+        plugins_dir(&self.data_dir, agent_id).join(sanitize_env_key(&env.key()))
     }
+}
+
+/// Cartella dei plugin generati per un agente: una sottocartella per ambiente.
+pub(crate) fn plugins_dir(data_dir: &Path, agent_id: &str) -> PathBuf {
+    data_dir.join("agent-plugins").join(agent_id)
 }
 
 /// Chiave env sicura per nomi di cartella: solo ASCII semplici, resto `-`.
@@ -687,10 +691,7 @@ pub fn agent_profiles() -> Vec<AgentProfile> {
 fn usage_env(env_key: &str) -> Result<Env, String> {
     let env = Env::from_key(env_key)?;
     if let Env::Wsl(d) = &env {
-        let ok = d.len() <= 64
-            && d != ".."
-            && d.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
-        if !ok {
+        if !is_valid_distro_name(d) {
             return Err(format!("nome distro non valido: {d}"));
         }
     }
@@ -807,7 +808,7 @@ fn find_outdated(
     let mut all: Option<Vec<Env>> = None;
     let mut out = Vec::new();
     for provider in providers {
-        let base = ctx.data_dir.join("agent-plugins").join(provider.id());
+        let base = plugins_dir(&ctx.data_dir, provider.id());
         let Ok(entries) = std::fs::read_dir(&base) else { continue };
         let mut names: Vec<String> = entries
             .filter_map(Result::ok)
