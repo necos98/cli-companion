@@ -131,7 +131,50 @@ pub fn session_tools() -> Vec<Value> {
             json!({ "id": { "type": "string", "description": "Id of the task." } }),
             &["id"],
         ),
+        tool(
+            "save_skill",
+            "Create or update a global user skill, usable in every project as /<name>. The app generates SKILL.md and its \
+             frontmatter from your fields. Fails on a hand-written skill with that name. Returns {name, invocation, store_path, \
+             synced: [{env, ok, error?}]}.",
+            skill_properties(),
+            &["name", "description", "body"],
+        ),
+        tool("list_skills", "List the skills saved with save_skill: [{name, description}].", json!({}), &[]),
+        tool(
+            "delete_skill",
+            "Delete a skill saved with save_skill; hand-written skills are never touched.",
+            json!({ "name": { "type": "string" } }),
+            &["name"],
+        ),
     ]
+}
+
+/// Campi di `save_skill`; i limiti rispecchiano `user_skills::validate`.
+fn skill_properties() -> Value {
+    json!({
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$", "description": "Slug, 1..40 chars." },
+        "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "One line: what the skill does and when to use it."
+        },
+        "body": { "type": "string", "minLength": 1, "maxLength": 102400, "description": "Markdown instructions, no frontmatter." },
+        "files": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative, '/' separated." },
+                    "content": { "type": "string", "maxLength": 204800 }
+                },
+                "required": ["path", "content"],
+                "additionalProperties": false
+            },
+            "description": "Extra text files."
+        }
+    })
 }
 
 pub fn worker_tools() -> Vec<Value> {
@@ -208,7 +251,8 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>) -> String {
             let mut text = "cli-companion: you may propose tasks for this workspace's queue with propose_tasks. The user \
                 accepts or discards them in the app and automated workers deliver them on their own. Never wait for workers \
                 or for the decision (no sleep, polling or repeated calls): end your turn. list_tasks, get_task_details, \
-                update_task and delete_task inspect and fix the queue. Write task texts in the language of the conversation."
+                update_task and delete_task inspect and fix the queue. Write task texts in the language of the conversation. \
+                save_skill, list_skills and delete_skill manage the user's global skills."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));

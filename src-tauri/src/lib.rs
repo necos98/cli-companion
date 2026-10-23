@@ -119,6 +119,7 @@ pub fn run() {
             launch_settings::load_from_disk(app);
             automation::load_boards(app);
             automation::auto::init(app);
+            automation::skills::restore_in_background(automation::TauriHost(app.handle().clone()));
             agent_notify::start_listener(app.handle());
             Ok(())
         })

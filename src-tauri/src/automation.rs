@@ -36,10 +36,12 @@ mod boards;
 mod hooks;
 mod host;
 mod rpc;
+pub mod skills;
 mod state;
 mod worktrees;
 
 pub use host::{Host, TauriHost};
+pub use skills::SkillTarget;
 pub use state::AutomationState;
 pub use worktrees::{CleanupTarget, GitOut, StartJob};
 

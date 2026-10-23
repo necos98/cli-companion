@@ -11,6 +11,7 @@ use serde_json::json;
 mod board_flow;
 mod schedule;
 mod session_end;
+mod skills;
 mod worker;
 
 /// Tab dell'Intake (una sessione normale del workspace "ws-1").
@@ -38,6 +39,9 @@ pub(super) fn ws(id: &str, name: &str, kind: &str) -> Workspace {
         archived: false,
     }
 }
+
+/// Ambiente e cartella (o errore) di una cartella target delle skill.
+type SkillDir = (String, Result<std::path::PathBuf, String>);
 
 #[derive(Clone, Default)]
 struct FakeHost {
@@ -78,6 +82,9 @@ struct FakeHost {
     files: Arc<Mutex<Vec<String>>>,
     /// Errore forzato di `append_exclude`.
     exclude_err: Arc<Mutex<Option<String>>>,
+    /// Archivio delle skill utente e cartelle target (ambiente, cartella).
+    skills_store: Arc<Mutex<Option<std::path::PathBuf>>>,
+    skill_dirs: Arc<Mutex<Vec<SkillDir>>>,
 }
 
 impl FakeHost {
@@ -235,6 +242,13 @@ impl Host for FakeHost {
     }
     fn set_keep_awake(&self, on: bool) {
         self.awake.lock().unwrap().push(on);
+    }
+    fn skills_store_dir(&self) -> Result<std::path::PathBuf, String> {
+        self.skills_store.lock().unwrap().clone().ok_or_else(|| "no skills store".to_string())
+    }
+    fn skill_targets(&self) -> Vec<SkillTarget> {
+        let dirs = self.skill_dirs.lock().unwrap();
+        dirs.iter().map(|(env, dir)| SkillTarget { env: env.clone(), dir: dir.clone() }).collect()
     }
 }
 

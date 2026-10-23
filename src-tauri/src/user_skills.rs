@@ -32,6 +32,9 @@ pub const MANAGED_MARKER: &str = ".cli-companion-managed";
 
 const MARKER_CONTENT: &str = "Managed by cli-companion. Changes made here are overwritten.\n";
 
+/// Cartella dell'archivio dentro la cartella dati dell'app.
+const STORE_DIR_NAME: &str = "user-skills";
+
 /// Suffisso della cartella di staging accanto alla destinazione (`.<nome>.<suffisso>`).
 const STAGING_SUFFIX: &str = "cli-companion-tmp";
 
@@ -74,6 +77,11 @@ pub struct SkillInfo {
 pub struct SyncReport {
     pub name: String,
     pub result: Result<(), String>,
+}
+
+/// Archivio sorgente delle skill: `<app data>/user-skills`.
+pub fn store_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(STORE_DIR_NAME)
 }
 
 /// Cartella delle skill personali di Claude Code su Windows
@@ -139,6 +147,13 @@ pub fn sync_one(store_root: &Path, name: &str, target_skills_dir: &Path) -> Resu
         write_text(&dir.join(MANAGED_MARKER), MARKER_CONTENT)?;
         copy_files(&source, dir)
     })
+}
+
+/// Errore se `<target_skills_dir>/<name>` esiste e non e' gestita da
+/// cli-companion: serve a rifiutare un salvataggio prima di scrivere.
+pub fn check_target_free(target_skills_dir: &Path, name: &str) -> Result<(), String> {
+    check_slug(name)?;
+    ensure_replaceable(&target_skills_dir.join(name)).map(drop)
 }
 
 /// Rimuove la skill dal target. `Ok(false)` se non c'era; errore se la

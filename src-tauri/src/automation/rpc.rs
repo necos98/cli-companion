@@ -1,8 +1,9 @@
 //! Dispatch delle RPC dei tool MCP. Due ruoli: il worker di un task
 //! (`get_task`, `complete_task`) e la sessione normale, Intake compreso
 //! (`propose_tasks`, `list_tasks`, `get_task_details`, `update_task`,
-//! `delete_task`). `whoami` e' l'handshake del server MCP, non un tool.
+//! `delete_task`, piu' le skill globali di `skills`). `whoami` e' l'handshake del server MCP, non un tool.
 
+use super::skills::SKILL_METHODS;
 use super::*;
 use serde_json::json;
 
@@ -24,7 +25,7 @@ pub fn dispatch<H: Host>(
     if WORKER_METHODS.contains(&method) && !worker {
         return Err(format!("{method} is reserved for automated sessions"));
     }
-    if SESSION_METHODS.contains(&method) && worker {
+    if (SESSION_METHODS.contains(&method) || SKILL_METHODS.contains(&method)) && worker {
         return Err(format!("{method} is not available to automated sessions"));
     }
     // Workspace archiviato: congelato, anche per un tab sopravvissuto.
@@ -35,6 +36,7 @@ pub fn dispatch<H: Host>(
         "whoami" => Ok(whoami(host, session, worker)),
         "get_task" => get_task(st, host, session),
         "complete_task" => complete_task(st, host, session, params),
+        m if SKILL_METHODS.contains(&m) => skills::rpc(host, m, params),
         m if SESSION_METHODS.contains(&m) => boards::rpc_session(st, host, session, m, params),
         _ => Err(format!("unknown method: {method}")),
     }

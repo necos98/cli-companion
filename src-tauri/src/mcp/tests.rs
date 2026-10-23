@@ -5,7 +5,8 @@ use std::cell::RefCell;
 /// Tool definitions and server instructions are sent to the model in every
 /// session: the ceilings are intentional. Do not raise one to fit new text,
 /// shorten the text.
-const SESSION_TOOLS_CEILING: usize = 4_400;
+/// 5_600 = the previous ceiling plus the three skill tools (mostly their validation limits).
+const SESSION_TOOLS_CEILING: usize = 5_600;
 const WORKER_TOOLS_CEILING: usize = 2_600;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
 
@@ -86,6 +87,7 @@ fn initialize_negotiates_protocol_version() {
     let text = r["result"]["instructions"].as_str().unwrap();
     assert!(text.contains("Proj (wsl, /home/u/app)"));
     assert!(text.contains("propose_tasks") && text.contains("accepts or discards") && text.contains("Never wait"));
+    assert!(text.contains("save_skill") && text.contains("global skills"));
     let w = Fake::new("worker");
     let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
     let text = r["result"]["instructions"].as_str().unwrap();
@@ -100,7 +102,10 @@ fn initialize_negotiates_protocol_version() {
 fn tools_list_depends_on_role() {
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("session"), json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
-    assert_eq!(names(&r), ["propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task"]);
+    assert_eq!(
+        names(&r),
+        ["propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "save_skill", "list_skills", "delete_skill"]
+    );
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("worker"), json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
     assert_eq!(names(&r), ["get_task", "complete_task"]);
@@ -149,6 +154,16 @@ fn schemas_match_the_rust_validation() {
     assert_eq!(by("list_tasks")["inputSchema"]["properties"]["status"]["items"]["enum"], json!(["queued", "running", "done", "failed"]));
     assert_eq!(by("delete_task")["inputSchema"]["required"], json!(["id"]));
     assert_eq!(by("get_task_details")["inputSchema"]["required"], json!(["id"]));
+
+    let save = by("save_skill");
+    assert_eq!(keys(&save["inputSchema"]["properties"]), ["body", "description", "files", "name"]);
+    assert_eq!(save["inputSchema"]["required"], json!(["name", "description", "body"]));
+    assert_eq!(save["inputSchema"]["properties"]["name"]["pattern"], "^[a-z0-9][a-z0-9-]{0,39}$");
+    assert_eq!(save["inputSchema"]["properties"]["files"]["maxItems"], 20);
+    assert_eq!(save["inputSchema"]["properties"]["files"]["items"]["required"], json!(["path", "content"]));
+    assert_eq!(save["inputSchema"]["additionalProperties"], false);
+    assert_eq!(keys(&by("list_skills")["inputSchema"]["properties"]), Vec::<String>::new());
+    assert_eq!(by("delete_skill")["inputSchema"]["required"], json!(["name"]));
 
     let done = &worker_tools()[1];
     assert_eq!(

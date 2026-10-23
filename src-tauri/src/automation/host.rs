@@ -16,6 +16,9 @@ const BOARD_EVENT: &str = "board-update";
 const NOTICE_EVENT: &str = "task-notify";
 const SCHEDULE_EVENT: &str = "schedule-state";
 
+/// Nome dell'ambiente Windows nei risultati dei tool delle skill.
+const WINDOWS_ENV: &str = "windows";
+
 /// Effetti verso l'esterno. `Clone + Send + 'static`: i timer li portano in
 /// un thread.
 pub trait Host: Clone + Send + 'static {
@@ -72,6 +75,10 @@ pub trait Host: Clone + Send + 'static {
     fn save_schedule(&self, s: &Schedule) -> Result<(), String>;
     /// Prende o rilascia il blocco dello standby.
     fn set_keep_awake(&self, on: bool);
+    /// Archivio sorgente delle skill utente (`<app data>/user-skills`).
+    fn skills_store_dir(&self) -> Result<std::path::PathBuf, String>;
+    /// Ambienti in cui le skill utente devono comparire.
+    fn skill_targets(&self) -> Vec<SkillTarget>;
 }
 
 /// Timer di `Host::defer`: un solo thread con coda a priorita' al posto di un
@@ -289,5 +296,13 @@ impl Host for TauriHost {
 
     fn set_keep_awake(&self, on: bool) {
         crate::awake::set(on);
+    }
+
+    fn skills_store_dir(&self) -> Result<std::path::PathBuf, String> {
+        auto::data_dir(&self.0).map(|dir| crate::user_skills::store_dir(&dir))
+    }
+
+    fn skill_targets(&self) -> Vec<SkillTarget> {
+        vec![SkillTarget { env: WINDOWS_ENV.to_string(), dir: crate::user_skills::windows_skills_dir() }]
     }
 }
