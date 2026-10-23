@@ -321,6 +321,32 @@ fn retry_requeues_at_the_bottom_and_keeps_the_previous_outcome() {
 }
 
 #[test]
+fn reopen_failed_only_resumes_the_same_failure() {
+    let mut b = board_with(vec![spec("a", &[])]);
+    b.start_task("a", 1);
+    b.task_mut("a").unwrap().session = Some("w1".into());
+    assert!(!b.reopen_failed("a", "w1", 1, "ended", "reopened", 2), "running: nothing to reopen");
+    assert!(b.finish_running("a", Some("w1"), TaskStatus::Failed, None, Some("ended".into()), 3));
+    // Tentativo, nota o task diversi: rifiutato.
+    assert!(!b.reopen_failed("a", "w1", 2, "ended", "reopened", 4));
+    assert!(!b.reopen_failed("a", "w1", 1, "tab closed", "reopened", 4));
+    assert!(!b.reopen_failed("zz", "w1", 1, "ended", "reopened", 4));
+    assert!(b.reopen_failed("a", "w1", 1, "ended", "reopened", 5));
+    let t = b.task("a").unwrap();
+    assert_eq!((t.status, t.session.as_deref(), t.note.as_deref()), (TaskStatus::Running, Some("w1"), Some("reopened")));
+    assert_eq!((t.worker_status, t.finished_at, t.attempts), (Some(WorkerStatus::Running), None, 1));
+    // La conclusione e' quella normale e la traccia resta.
+    assert!(b.finish_running("a", Some("w1"), TaskStatus::Done, None, None, 6));
+    assert_eq!(b.task("a").unwrap().note.as_deref(), Some("reopened"));
+    // Ripreso da un retry: non si riapre piu'.
+    let mut b = board_with(vec![spec("a", &[])]);
+    b.start_task("a", 1);
+    assert!(b.finish_running("a", None, TaskStatus::Failed, None, Some("ended".into()), 2));
+    b.retry_task("a", 3).unwrap();
+    assert!(!b.reopen_failed("a", "w1", 1, "ended", "reopened", 4));
+}
+
+#[test]
 fn delete_rules() {
     let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["a"])]);
     // Un queued con dipendenti non done non si elimina.

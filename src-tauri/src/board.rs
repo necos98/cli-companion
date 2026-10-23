@@ -750,6 +750,28 @@ impl Board {
         self.updated_at = now;
         true
     }
+
+    /// Riapre per `session` un task fallito con `failed_note` al tentativo
+    /// `attempt`: il worker che lo aveva era ancora vivo e riferisce. Solo se
+    /// nessuno l'ha ripreso nel frattempo (ancora `failed`, stesso tentativo,
+    /// stessa nota). Il task torna `running` con `note` come traccia; la
+    /// conclusione resta a `finish_running`.
+    pub fn reopen_failed(&mut self, id: &str, session: &str, attempt: u32, failed_note: &str, note: &str, now: i64) -> bool {
+        let Some(t) = self.task_mut(id) else {
+            return false;
+        };
+        if t.status != TaskStatus::Failed || t.attempts != attempt || t.note.as_deref() != Some(failed_note) {
+            return false;
+        }
+        t.status = TaskStatus::Running;
+        t.session = Some(session.to_string());
+        t.worker_status = Some(WorkerStatus::Running);
+        t.note = Some(note.to_string());
+        t.finished_at = None;
+        t.updated_at = now;
+        self.updated_at = now;
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

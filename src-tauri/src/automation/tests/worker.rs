@@ -4,18 +4,6 @@
 use super::*;
 use crate::board::texts::WORKER_GUARDRAILS;
 
-/// Una board con il task `a` gia' in corso; ritorna la sessione del worker.
-fn running(mode: DeliveryMode, parallel: bool) -> (AutomationState, FakeHost, String) {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, parallel));
-    queue(&st, &h, vec![spec("a", &[])]);
-    let w = session_of(&st, &h, "a");
-    (st, h, w)
-}
-
-fn tab_closed(st: &AutomationState, h: &FakeHost, tab: &str) {
-    st.run(h, |r| r.tab_closed(tab, 1));
-}
-
 #[test]
 fn get_task_returns_task_instructions_environment_and_delivery() {
     let h = FakeHost::with_delivery(DeliveryMode::Pr, true);
@@ -377,7 +365,7 @@ fn closed_workers_are_pruned_beyond_the_cap() {
     for i in 0..(MAX_TRACKED_WORKERS + 10) {
         let env = WorkerEnv { delivery: Delivery::default(), repo_dir: String::new(), workdir: String::new(), branch: None, base: None };
         let new = NewWorker { workspace_id: "w".into(), agent_id: "a".into(), title: "t".into(), cwd: String::new(), command: String::new() };
-        let id = r.spawn_worker("w", &format!("t{i}"), new, env, i as i64).tab_id;
+        let id = r.spawn_worker("w", &format!("t{i}"), 1, new, env, i as i64).tab_id;
         r.tab_closed(&id, 1);
     }
     assert!(r.workers.len() <= MAX_TRACKED_WORKERS + 1);

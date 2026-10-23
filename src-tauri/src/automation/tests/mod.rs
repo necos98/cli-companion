@@ -10,6 +10,7 @@ use serde_json::json;
 
 mod board_flow;
 mod schedule;
+mod session_end;
 mod worker;
 
 /// Tab dell'Intake (una sessione normale del workspace "ws-1").
@@ -276,6 +277,18 @@ fn hook(st: &AutomationState, h: &FakeHost, tab: &str, event: &str) -> Option<St
 fn stop(st: &AutomationState, h: &FakeHost, tab: &str, active: Option<bool>, background: Option<u32>) -> Option<String> {
     let ev = HookEvent { event: "finished", stop_hook_active: active, background_work: background, ..Default::default() };
     st.run(h, |r| r.on_hook(tab, &ev, 1))
+}
+
+/// Una board con il task `a` gia' in corso; ritorna la sessione del worker.
+fn running(mode: DeliveryMode, parallel: bool) -> (AutomationState, FakeHost, String) {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, parallel));
+    queue(&st, &h, vec![spec("a", &[])]);
+    let w = session_of(&st, &h, "a");
+    (st, h, w)
+}
+
+fn tab_closed(st: &AutomationState, h: &FakeHost, tab: &str) {
+    st.run(h, |r| r.tab_closed(tab, 1));
 }
 
 fn finish(st: &AutomationState, h: &FakeHost, session: &str, status: &str) {

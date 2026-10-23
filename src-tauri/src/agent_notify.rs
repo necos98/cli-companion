@@ -103,6 +103,14 @@ pub struct NotifyPayload {
     /// background non finiti + cron di sessione). `None` = dato assente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_work: Option<u32>,
+    /// Solo `session-start`: come e' iniziata la sessione dell'agente
+    /// (`startup`, `resume`, `clear`, `compact`, `fork`; `source` dello stdin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Solo `session-end`: perche' e' finita la sessione dell'agente (`clear`,
+    /// `resume`, `logout`, `prompt_input_exit`, `other`; `reason` dello stdin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Path del transcript della sessione, come lo vede l'agente (Windows o
     /// Linux/WSL): serve al frontend per leggere i consumi di token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,6 +202,8 @@ pub struct HookInput {
     pub message: Option<String>,
     pub stop_hook_active: Option<bool>,
     pub background_work: Option<u32>,
+    pub source: Option<String>,
+    pub reason: Option<String>,
     pub transcript_path: Option<String>,
     pub tool_name: Option<String>,
     /// Riassunto breve di `tool_input` (comando di Bash, path dei tool di file, URL).
@@ -305,6 +315,8 @@ pub fn parse_hook_stdin(raw: &str) -> HookInput {
         message: field("message", MESSAGE_MAX_CHARS),
         stop_hook_active: v.get("stop_hook_active").and_then(Value::as_bool),
         background_work: background_work(&v),
+        source: field("source", FIELD_MAX_CHARS),
+        reason: field("reason", FIELD_MAX_CHARS),
         transcript_path: field("transcript_path", TRANSCRIPT_PATH_MAX_CHARS),
     }
 }
@@ -333,6 +345,8 @@ pub fn build_payload(
         token: None,
         stop_hook_active: input.stop_hook_active,
         background_work: input.background_work,
+        source: input.source,
+        reason: input.reason,
         transcript_path: input.transcript_path,
     }
 }
@@ -784,6 +798,20 @@ mod tests {
         assert_eq!(p.agent_session_id.as_deref(), Some("s-1"));
         assert_eq!(p.notification_type.as_deref(), Some("idle_prompt"));
         assert_eq!(p.message.as_deref(), Some("Claude aspetta"));
+    }
+
+    #[test]
+    fn session_start_source_and_session_end_reason_reach_the_payload() {
+        let start = build_payload("session-start", "claude-code", Some("t1"), Some(r#"{"session_id":"s","source":"clear"}"#));
+        assert_eq!((start.source.as_deref(), start.reason.as_deref()), (Some("clear"), None));
+        let end = build_payload("session-end", "claude-code", Some("t1"), Some(r#"{"session_id":"s","reason":" other "}"#));
+        assert_eq!((end.source.as_deref(), end.reason.as_deref()), (None, Some("other")));
+        assert_eq!(parse_line(&build_line(&end).unwrap()).unwrap(), end);
+        // Tipi sbagliati o vuoti: assenti, e assenti anche nel JSON.
+        let bad = build_payload("session-end", "claude-code", Some("t1"), Some(r#"{"source":5,"reason":"  "}"#));
+        assert_eq!((bad.source.as_ref(), bad.reason.as_ref()), (None, None));
+        let ser = serde_json::to_string(&bad).unwrap();
+        assert!(!ser.contains("\"source\"") && !ser.contains("\"reason\""), "{ser}");
     }
 
     #[test]

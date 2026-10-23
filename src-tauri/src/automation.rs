@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
+mod agent_session;
 pub mod auto;
 mod boards;
 mod hooks;
@@ -270,9 +271,13 @@ struct Worker {
     session: String,
     workspace_id: String,
     task_id: String,
+    /// Tentativo (`attempts` del task) per cui il worker e' partito.
+    attempt: u32,
     title: String,
     env: WorkerEnv,
     status: WorkerStatus,
+    /// Sessione dell'agente legata al worker (vedi `agent_session`).
+    agent: agent_session::AgentSession,
     created_at: i64,
     updated_at: i64,
     last_report: Option<String>,
@@ -303,6 +308,12 @@ pub struct HookEvent<'a> {
     pub notification_type: Option<&'a str>,
     pub stop_hook_active: Option<bool>,
     pub background_work: Option<u32>,
+    /// `session_id` dello stdin dell'hook.
+    pub agent_session_id: Option<&'a str>,
+    /// Solo `session-start`: `source` dello stdin.
+    pub source: Option<&'a str>,
+    /// Solo `session-end`: `reason` dello stdin.
+    pub reason: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -333,7 +344,7 @@ impl Registry {
     }
 
     /// Registra un nuovo worker per un task di board.
-    fn spawn_worker(&mut self, ws: &str, tid: &str, new: NewWorker, env: WorkerEnv, now: i64) -> SpawnEvent {
+    fn spawn_worker(&mut self, ws: &str, tid: &str, attempt: u32, new: NewWorker, env: WorkerEnv, now: i64) -> SpawnEvent {
         self.next_worker += 1;
         let id = format!("auto-{now}-{}", self.next_worker);
         let ev = SpawnEvent {
@@ -351,9 +362,11 @@ impl Registry {
                 session: id,
                 workspace_id: ws.to_string(),
                 task_id: tid.to_string(),
+                attempt,
                 title: new.title,
                 env,
                 status: WorkerStatus::Starting,
+                agent: agent_session::AgentSession::default(),
                 created_at: now,
                 updated_at: now,
                 last_report: None,
@@ -498,7 +511,8 @@ impl Registry {
     }
 
     /// `complete_task`: il task diventa `done` (consegnato) o `failed` con il
-    /// report; il tab si chiude dopo `CLOSE_DELAY`.
+    /// report; il tab si chiude dopo `CLOSE_DELAY`. Un task fallito per un
+    /// `session-end` mentre il tab era aperto viene prima riaperto.
     pub fn complete_task(
         &mut self,
         session: &str,
@@ -515,6 +529,7 @@ impl Registry {
             _ => return Err("invalid status (use completed or failed)".to_string()),
         };
         let summary = req_text("summary", summary, SUMMARY_MAX)?;
+        self.reopen_after_session_end(session, now);
         let w = self.live_worker(session)?;
         let (ws, tid) = (w.workspace_id.clone(), w.task_id.clone());
         w.status = if completed { WorkerStatus::Completed } else { WorkerStatus::Failed };
@@ -544,9 +559,17 @@ impl Registry {
 
     /// Evento di un hook con token valido. Per i worker aggiorna lo stato;
     /// ritorna `Some(motivo)` se lo Stop hook va bloccato: il worker ha chiuso
-    /// il turno senza riferire e Claude Code deve proseguire.
+    /// il turno senza riferire e Claude Code deve proseguire. Gli eventi di
+    /// un'altra sessione dell'agente (processi secondari) sono ignorati.
     pub fn on_hook(&mut self, tab: &str, hook: &HookEvent, now: i64) -> Option<String> {
-        let w = self.workers.get(tab).filter(|w| w.tab_open)?;
+        let w = self.workers.get_mut(tab).filter(|w| w.tab_open)?;
+        if !w.agent.admit(hook) {
+            if hook.event == "session-end" {
+                let why = format!("it came from another agent session ({})", hook.agent_session_id.unwrap_or_default());
+                self.note_ignored_session_end(tab, &why, now);
+            }
+            return None;
+        }
         let status = w.status;
         match hook.event {
             // `idle_prompt` (~60 s dopo la fine del turno) non e' una
@@ -588,7 +611,12 @@ impl Registry {
                 }
             }
             "session-end" if !status.is_terminal() => {
-                self.close_worker(tab, "the session ended without a complete_task report", now);
+                if agent_session::switches_session(hook) {
+                    let why = format!("the agent continues in a new session ({})", hook.reason.unwrap_or_default());
+                    self.note_ignored_session_end(tab, &why, now);
+                } else {
+                    self.close_worker(tab, agent_session::SESSION_END_NOTE, now);
+                }
             }
             _ => {}
         }
@@ -680,6 +708,9 @@ pub fn on_hook_event(app: &AppHandle, payload: &crate::agent_notify::NotifyPaylo
         notification_type: payload.notification_type.as_deref(),
         stop_hook_active: payload.stop_hook_active,
         background_work: payload.background_work,
+        agent_session_id: payload.agent_session_id.as_deref(),
+        source: payload.source.as_deref(),
+        reason: payload.reason.as_deref(),
     };
     let st = app.state::<AutomationState>();
     st.run(&TauriHost(app.clone()), |r| r.on_hook(tab, &hook, now_millis()))

@@ -262,11 +262,16 @@ queued --scheduler--> running --complete_task completed--> done (pulizia worktre
                          |--tab chiuso / agente uscito senza report--> failed (note)
                          |--avvio fallito (git, setup, precondizione)--> failed (note)
                          \--utente: Ferma--> failed (note "stopped by the user", tab chiuso)
+failed (session-end, tab aperto) --complete_task dello stesso worker--> done | failed (note "reopened: ...")
 failed --utente: Riprova--> queued (in fondo alla coda; worktree e branch si riusano)
 queued|failed --utente/Intake: Elimina--> rimosso (solo senza dipendenti non done)
 ```
 
 - Al riavvio dell'app i `running` diventano `failed` (`interrupted: the app was restarted`).
+- `session-end` conta solo se viene dalla sessione dell'agente legata al worker (eventi di
+  processi secondari ignorati, con una traccia nella nota). Se fallisce comunque il task mentre
+  il tab del worker e' aperto, il `complete_task` di quel worker lo riapre e lo conclude con il
+  report, purche' nessun retry l'abbia ripreso (dettagli in DESIGN.MD, `automation.rs`).
 - Stop hook del worker: se chiude il turno senza `complete_task` e senza lavoro in
   background, la prima volta l'app risponde con un blocco e il promemoria (inglese): "If the
   task is done, deliver it and call complete_task. If you are waiting for the user's

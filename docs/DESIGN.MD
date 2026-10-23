@@ -155,14 +155,17 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
 - Se stdin non e' un terminale (`IsTerminal`) viene letta (tetto 1 MB, solo dopo
   la decisione di inviare) e parsata come JSON, con tolleranza ai fallimenti:
   `session_id` -> `agent_session_id`, `notification_type`, `message`
-  (troncato), `stop_hook_active` (bool) e `background_work` (numero di
+  (troncato), `source` (`session-start`: `startup|resume|clear|compact|fork`), `reason`
+  (`session-end`: `clear|resume|logout|prompt_input_exit|other`), `stop_hook_active` (bool) e
+  `background_work` (numero di
   `background_tasks` con stato non concluso, tollerante e senza maiuscole, piu' le
   voci di `session_crons`; `None` se i due array mancano). Il self-test lancia
   l'exe con stdin nulla.
 - Payload (una riga JSON su TCP `127.0.0.1:17421`, poi uguale nell'evento Tauri
   `agent-event`):
   `{event, agent, tab_id?, agent_session_id?, notification_type?, message?, token?,
-  stop_hook_active?, background_work?}` (campi opzionali: i client vecchi restano validi).
+  stop_hook_active?, background_work?, source?, reason?}` (campi opzionali: i client vecchi
+  restano validi).
   `token` viene da `CLI_COMPANION_TOKEN`; il listener lo toglie prima dell'`emit`
   verso il frontend e, se valido, passa l'evento hook anche ad `automation`.
 - Sullo stesso socket passano due tipi di riga, distinti dalla chiave `rpc`:
@@ -293,6 +296,8 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   `list_tasks`, `get_task_details`, `update_task`, `delete_task`. `whoami` non e' un tool:
   e' l'handshake con cui il server MCP sceglie i tool.
 - `auto.rs`: fasce orarie e standby (sotto).
+- `agent_session.rs`: legame worker <-> sessione dell'agente e riapertura dopo un
+  `session-end` (sotto).
 
 Stati del worker: `starting` -> `running` (`get_task`) -> `completed` | `failed`
 (`complete_task`) -> `closed` (tab chiuso). In mezzo, dagli hook di `--notify` (solo con token
@@ -303,6 +308,29 @@ con `stop_hook_active == true` -> `idle`. `needs_input` e `idle` = "richiede att
 mandano la notifica. Nessun hook segnala la risposta dell'utente: `pty_write` avvisa il backend
 quando nel terminale di un worker in attesa si preme Invio (`Registry::user_input`) e il worker
 torna `running`.
+
+Sessione dell'agente (`agent_session.rs`). Un processo secondario avviato dal worker (un
+`claude` figlio, un subagent) eredita `CLI_COMPANION_SESSION` e gli hook del plugin: i suoi
+eventi arrivano col tab del worker ma con un altro `session_id`. Il worker lega a se'
+(`AgentSession`) il primo `agent_session_id` che vede (di norma dal suo `session-start`). Gli
+eventi con un id diverso (`session-end`, `finished`, `needs-input`, ...) sono ignorati: niente
+fallimento, niente promemoria dello Stop, niente attenzione. Un `session-start` con un altro id
+rilega il worker solo se `source` e' `clear`, `resume` o `compact` (la stessa sessione utente che
+continua); `startup` o `fork` di un altro id sono processi secondari. Un `session-end` della
+sessione legata con `reason` `clear` o `resume` non chiude il worker: l'agente prosegue nello
+stesso processo con una nuova sessione (che poi rilega col suo `session-start`). Eventi senza
+id (plugin vecchi) e worker non ancora legati si comportano come prima. Un `session-end`
+ignorato lascia una traccia nella nota del task (`ignored a session-end: ...`, con l'id
+estraneo o il `reason`).
+
+Riapertura. Se un `session-end` ha comunque chiuso il worker (stato `closed`, task `failed` con
+la nota `the session ended without a complete_task report`) ma il suo tab e' ancora aperto,
+il `complete_task` di quel worker riapre il task (`Board::reopen_failed`: solo se e' ancora
+`failed` con quella nota e lo stesso `attempts` del worker, cioe' nessun retry l'ha ripreso),
+poi lo conclude come sempre con il report (`done`/`failed`, pulizia, chiusura del tab). La
+nota diventa `reopened: ...`. Tab chiuso davvero (`tab_closed`) o task ripreso da un retry:
+`the session is closed`. La notifica `failed` gia' partita non si ritira; dopo la riapertura
+vale la regola normale (notifica solo se il report e' `failed`, nessuna per `done`).
 
 Notifiche di sistema: evento `task-notify` `{workspace_id, task_id, tab_id?, kind:
 "attention"|"failed", title, body}` (testo in italiano); il frontend mostra la notifica.

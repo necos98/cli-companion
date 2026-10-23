@@ -22,7 +22,7 @@ pub(super) const START_TIMEOUT_MS: i64 = 5 * 60_000;
 pub(super) const PREPARING_TIMEOUT_MS: i64 = HOOK_TIMEOUT.as_millis() as i64 + 2 * 60_000;
 
 /// Lunghezza massima delle note di avviso scritte dall'app sul task.
-const NOTE_MAX: usize = 2000;
+pub(super) const NOTE_MAX: usize = 2000;
 
 /// Task `running` senza sessione da oltre `START_TIMEOUT_MS` (o, con un passo
 /// di preparazione in corso, `PREPARING_TIMEOUT_MS`) dall'ultimo segno di
@@ -278,7 +278,7 @@ impl Registry {
         if !self.start_is_current(ws, tid, job.attempt) {
             return None;
         }
-        let ev = self.spawn_worker(ws, tid, new, env, now);
+        let ev = self.spawn_worker(ws, tid, job.attempt, new, env, now);
         if let Some(t) = self.boards.get_mut(ws).and_then(|b| b.task_mut(tid)) {
             t.session = Some(ev.tab_id.clone());
             t.worker_status = Some(WorkerStatus::Starting);
