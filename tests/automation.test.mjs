@@ -4,7 +4,6 @@ import {
   INTAKE_LAUNCH_ID,
   applyAutomationUpdate,
   automationTooltip,
-  findIntakeTabKey,
   isAutomated,
   isIntakeLaunch,
   persistableTabs,
@@ -166,19 +165,15 @@ describe("automazione: badge del tab", () => {
   });
 });
 
-describe("automazione: tab Intake aperto", () => {
+describe("automazione: più tab Intake nello stesso workspace", () => {
   const tabs = [
-    { key: "a", workspace: { id: "w1" } },
-    { key: "b", workspace: { id: "w2" }, launchId: INTAKE_LAUNCH_ID },
-    { key: "c", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
-    { key: "d", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
+    { key: "a", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
+    { key: "b", workspace: { id: "w1" }, launchId: INTAKE_LAUNCH_ID },
   ];
-  it("trova il primo tab Intake del workspace", () => {
-    assert.equal(findIntakeTabKey(tabs, "w1"), "c");
-    assert.equal(findIntakeTabKey(tabs, "w2"), "b");
+  it("ogni tab Intake ha il badge INTAKE", () => {
+    assert.deepEqual(tabs.map((t) => tabBadge(t)?.text), ["INTAKE", "INTAKE"]);
   });
-  it("nessun tab Intake: null", () => {
-    assert.equal(findIntakeTabKey(tabs, "w3"), null);
-    assert.equal(findIntakeTabKey([tabs[0]], "w1"), null);
+  it("tutti i tab Intake sono persistibili", () => {
+    assert.equal(persistableTabs(tabs).length, 2);
   });
 });

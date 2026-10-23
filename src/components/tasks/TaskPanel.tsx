@@ -46,7 +46,7 @@ export interface TaskPanelProps {
   onBoard: (board: BoardView) => void;
   /** Apre il Tasks Manager del workspace, col dettaglio di `taskId` se dato. */
   onOpenManager: (taskId?: string) => void;
-  /** Mette a fuoco il tab Task Intake del workspace, o ne apre uno nuovo. */
+  /** Apre un nuovo tab Task Intake nel workspace. */
   onOpenIntake: () => void;
   /** Apre il Tasks Manager con il dialog "Nuovo task". */
   onNewTask: () => void;

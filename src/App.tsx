@@ -60,7 +60,6 @@ import {
   INTAKE_LAUNCH_ID,
   applyAutomationUpdate,
   automationTooltip,
-  findIntakeTabKey,
   isAutomated,
   persistableTabs,
 } from "./lib/automation";
@@ -603,16 +602,11 @@ export default function App() {
     noticeTimerRef.current = setTimeout(() => setNotice(null), 6000);
   }, []);
 
-  // Task Intake: mette a fuoco il tab del preset già aperto nel workspace,
-  // altrimenti ne apre uno con la stessa via delle voci rapide della sidebar.
+  // Task Intake: ogni richiesta apre un nuovo tab del preset nel workspace
+  // (più chat in parallelo), con la stessa via delle voci rapide della sidebar.
   // Senza il preset tra gli avvii integrati (backend non aggiornato) avvisa.
   const openIntake = useCallback(
     (workspaceId: string) => {
-      const existing = findIntakeTabKey(tabsRef.current, workspaceId);
-      if (existing) {
-        focusTerminal(existing);
-        return;
-      }
       const ws = workspacesRef.current.find((w) => w.id === workspaceId);
       if (!ws) return;
       const launch = builtinsRef.current.find((b) => b.id === INTAKE_LAUNCH_ID);
@@ -622,7 +616,7 @@ export default function App() {
       }
       spawnTab(ws, launch);
     },
-    [focusTerminal, showNotice, spawnTab],
+    [showNotice, spawnTab],
   );
 
   // Controllo silenzioso all'avvio (plugin updater): se c'e' un update compare

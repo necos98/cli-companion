@@ -52,7 +52,7 @@ export interface TasksManagerProps {
   onBackToTerminals: () => void;
   /** Torna ai terminali e mette a fuoco il tab del worker. */
   onOpenTerminal: (tabId: string) => void;
-  /** Mette a fuoco il tab Task Intake del workspace, o ne apre uno nuovo. */
+  /** Apre un nuovo tab Task Intake nel workspace. */
   onOpenIntake: () => void;
   intent?: TasksManagerIntent | null;
   /**

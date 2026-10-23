@@ -33,7 +33,7 @@ export interface NewTaskDialogProps {
   board: BoardView | null;
   onBoard: (board: BoardView) => void;
   onClose: () => void;
-  /** Apre il tab Task Intake (link del suggerimento). */
+  /** Apre un nuovo tab Task Intake (link del suggerimento). */
   onOpenIntake: () => void;
   /** Repository rilevati del workspace (`workspace_detect_repos`); assente = solo quelli dei task. */
   repos?: string[];

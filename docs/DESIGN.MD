@@ -505,8 +505,8 @@ dello store in `setup` e tutti i comandi. Capability minime in
   dei terminali (compresso/espanso per workspace in localStorage, `lib/taskPanelPrefs.ts`); `TasksManager`
   (Ctrl+Maiusc+B o pulsante "Tasks" della sidebar) copre pannello e griglia: i `TerminalView` restano
   montati (regola del DOM sopra). `DependencyGraph` = React Flow (`@xyflow/react`) + auto-layout con
-  `@dagrejs/dagre` (`boardLayout.ts`). "Task Intake" (`openIntake` in `App.tsx`) mette a fuoco il tab del
-  preset `builtin:preset:task-intake` o ne apre uno; `PaneHeader` mostra il badge INTAKE (il `launchId` del
+  `@dagrejs/dagre` (`boardLayout.ts`). "Task Intake" (`openIntake` in `App.tsx`) apre un nuovo tab del
+  preset `builtin:preset:task-intake` a ogni richiesta (più chat in parallelo); `PaneHeader` mostra il badge INTAKE (il `launchId` del
   tab è già persistito nella sessione). Dettagli in [BOARD.MD](BOARD.MD).
 - `components/ui/dropdown-menu.tsx`: wrapper shadcn di Radix, usato dal menu
   "⋯" della card workspace.

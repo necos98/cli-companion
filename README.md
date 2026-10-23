@@ -63,7 +63,8 @@ Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent:
 **Claude Code** (`claude --dangerously-skip-permissions`) e un avvio per ogni **preset** di
 agente, oggi **Task Intake** (lo stesso comando con la skill `/cli-companion-notify:task-intake`,
 che trasforma le richieste in specifiche di task da proporre alla coda; al ripristino il tab
-riprende la conversazione senza rilanciare la skill). Non si modificano né si eliminano: si
+riprende la conversazione senza rilanciare la skill; ogni apertura è un nuovo tab, così puoi
+tenere più chat Intake in parallelo). Non si modificano né si eliminano: si
 possono solo scegliere come predefiniti. A questi si aggiungono gli avvii personalizzati del
 workspace. Un `builtin:orchestrator` salvato come predefinito diventa Task Intake.
 

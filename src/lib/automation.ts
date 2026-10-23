@@ -55,19 +55,6 @@ export function tabBadge(tab: {
   return null;
 }
 
-/**
- * Chiave del tab Task Intake ancora aperto di un workspace (il primo in ordine
- * di creazione), o null se non ce n'e'.
- */
-export function findIntakeTabKey(
-  tabs: { key: string; workspace: { id: string }; launchId?: string }[],
-  workspaceId: string,
-): string | null {
-  return (
-    tabs.find((t) => t.workspace.id === workspaceId && isIntakeLaunch(t.launchId))?.key ?? null
-  );
-}
-
 /** Lunghezza massima dell'ultimo report nel tooltip. */
 export const REPORT_TOOLTIP_MAX = 240;
 
