@@ -236,6 +236,10 @@ function TerminalView({
     let injectTimer: ReturnType<typeof setTimeout> | undefined;
     let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     let injected = false;
+    // Input prodotto prima di conoscere l'id di sessione (soprattutto la
+    // risposta di xterm all'ESC[6n iniziale di ConPTY, che blocca la console
+    // finche' non riceve risposta): viene tenuto e inviato subito dopo lo spawn.
+    let pendingInput = "";
     // Solo trim: il comando e' gia' limitato alla fonte e quello di ripristino
     // (`--resume <id>`) puo' superare il tetto senza dover essere troncato.
     const wantedCommand = pendingCommandRef.current.trim();
@@ -259,6 +263,7 @@ function TerminalView({
     term.onData((data) => {
       const s = sessionRef.current;
       if (s !== 0) void api.ptyWrite(s, data).catch(() => undefined);
+      else pendingInput += data;
       const enter = data.includes("\r") || data.includes("\n");
       if (enter) status.markEnter();
       // Le risposte automatiche del terminale (focus, CPR...) non sono input.
@@ -391,6 +396,10 @@ function TerminalView({
           return;
         }
         sessionRef.current = id;
+        if (pendingInput !== "") {
+          void api.ptyWrite(id, pendingInput).catch(() => undefined);
+          pendingInput = "";
+        }
         // Lo spawn e' avvenuto con la dimensione iniziale: e' gia' quella nota al pty.
         lastSizeRef.current = { session: id, cols: initialCols, rows: initialRows };
         if (shouldInjectLaunch(wantedCommand)) {
