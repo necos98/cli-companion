@@ -31,8 +31,10 @@ errori RPC, istruzioni del worker, promemoria dello Stop hook, prompt di avvio) 
   `list_agents`.
 - Workflow: `workflow.md`, skill/wizard `workflow`, `get_workflow`, `save_workflow`, pagina
   Impostazioni → Workflow, comandi `workflow_get`/`workflow_save`.
-- Richieste: `ask_user`, `propose_settings`, casella Richieste (`RequestsPanel`), comandi
-  `answer_user_request`, `decide_user_request`, `dismiss_user_request`.
+- Richieste: `ask_user`, casella Richieste (`RequestsPanel`), comandi
+  `answer_user_request`, `decide_user_request`, `dismiss_user_request`. `propose_settings`
+  esisteva già nella v0.11 come richiesta; oggi è tornato con un'altra forma (vedi "Proposte di
+  impostazioni").
 - Board: `submit_plan`, `get_board`, `set_task_status`, `set_board`, integration branch,
   `base_branch`/`base_branches` della board, `integrations`, `owner`, `requests`, colonne
   `review`/`blocked`/`cancelled`/`backlog`, `touches`, `isolation`, `held`, `external`,
@@ -286,7 +288,8 @@ Il server MCP sceglie il ruolo con la RPC interna `whoami` (non è un tool) ed e
 un task) oppure **sessione** (qualunque altro tab di cli-companion: Intake o terminale
 normale). Fuori da cli-companion nessun tool. Descrizioni ed errori in inglese.
 Le istruzioni del server MCP (inglese) dicono: you may propose tasks for this workspace's
-queue with propose_tasks; the user approves them in the app; never wait for workers.
+queue with propose_tasks and read and propose changes to the workspace settings with
+get_workspace_settings and propose_settings; the user approves them in the app; never wait for workers.
 
 Worker:
 - `get_task` → `{ task, title, instructions, environment, delivery, previous_attempt? }`.
@@ -307,6 +310,17 @@ Sessione (workspace = quello del tab):
 - `update_task { id, title?, task?, depends_on?, repo?, model? }` — solo `queued` o
   `failed`; `repo` solo senza worktree. Ritorna il task senza testo.
 - `delete_task { id }` — solo `queued`/`failed` e senza dipendenti non `done`.
+- `get_workspace_settings {}` → le impostazioni che `propose_settings` può cambiare, i
+  repository con la loro configurazione (`null` = nessuna), i valori ammessi, i limiti e le
+  proposte di impostazioni pendenti.
+- `propose_settings { reason, worker_rules?, worker_model?, worker_permission?, worker_allow?,
+  worker_deny?, delivery?, use_schedule?, default_launch?, launches?, repos? }` — cambiano solo i
+  campi passati; liste e `worker_rules` sostituiscono quelle attuali; `delivery` accetta anche
+  solo alcuni dei suoi campi (`mode`, `parallel`, `merge_method`); `repos` ha per chiave la
+  cartella del repository (`.` = root) e per valore `{ base_branch?, container_root?,
+  copy_ignored?, setup?, cleanup?, remove_force? }` oppure `null` per toglierne la
+  configurazione. Validazione tutto-o-niente; ritorna `{ proposal, status: "pending" }` e non
+  aspetta la decisione (vedi "Proposte di impostazioni").
 
 ## Proposte (approvazione)
 
@@ -318,6 +332,25 @@ Sessione (workspace = quello del tab):
   nuova validazione; se fallisce (es. un id nel frattempo occupato) la card mostra l'errore.
 - Scarta → la proposta sparisce. Nessun feedback all'Intake.
 - Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool) -> BoardView`.
+
+### Proposte di impostazioni
+
+- `propose_settings` aggiunge una `SettingsProposal { id, source_tab, created_at, reason, patch }`
+  alla board (campo `settings_proposals`, tetto separato da quello delle proposte di task) →
+  `board-update`. La vista espone anche i valori **attuali** dei soli campi toccati e l'elenco dei
+  campi **sensibili**.
+- Campi sensibili (eseguono comandi o allargano i permessi): `worker_permission`, `worker_allow`,
+  `worker_deny`, `launches`, `default_launch`, `repos[<repo>].setup`, `repos[<repo>].cleanup`.
+- UI: card "Proposta di impostazioni" in cima al pannello Task (e nel Tasks Manager): motivazione
+  e, per ogni campo, il confronto **prima → dopo** (testi lunghi compressi con "Mostra tutto";
+  liste come righe tolte/aggiunte; i repository raggruppati per cartella). I campi sensibili sono
+  evidenziati con un'avvertenza. **Scarta** / **Applica**. Nessuna modifica dalla card.
+- Applica → la patch viene **rivalidata** sul workspace di quel momento (può essere cambiato dopo
+  la proposta) e applicata; se la rivalidazione fallisce la card mostra l'errore e la proposta
+  resta. Consegna e fasce orarie riallineano lo scheduler. Scarta → la proposta sparisce. Nessun
+  feedback all'agente.
+- Comando Tauri `settings_proposal_decide(workspace_id, proposal_id, accept: bool) ->
+  { board: BoardView, workspace: Workspace | null }` (`workspace` valorizzato se applicata).
 
 ## Preset di agenti
 
@@ -341,6 +374,26 @@ della conversazione), come faceva l'orchestratore.
   bastare a un worker che non vede la conversazione.
 - Il pannello dei terminali mostra il badge **INTAKE** sull'intestazione dei tab avviati dal
   preset.
+- Task Intake sa dei tool di impostazioni: se la richiesta riguarda la configurazione del
+  workspace e non il lavoro sul codice, non crea un task ma usa `get_workspace_settings` /
+  `propose_settings`, oppure suggerisce Project Setup.
+- **`project-setup`**, nome "Project Setup" (voce rapida `builtin:preset:project-setup`, skill
+  `/cli-companion-notify:project-setup`). L'agente con cui l'utente configura il workspace e il
+  modo in cui ci lavorano i worker. Skill (inglese): solo proposte, nessuna modifica diretta di
+  file o impostazioni, nessun git che cambia stato; legge prima `get_workspace_settings`;
+  esplora in sola lettura il repository e i sotto-repository per ricavare la configurazione dei
+  worktree (file ignorati ma necessari → `copy_ignored`; docker-compose/Dockerfile → servizio e
+  `container_root`; package manager → comandi `setup` dopo la creazione e `cleanup` prima della
+  rimozione; branch di default → `base_branch`); comandi di setup ripetibili (al retry si
+  rifanno) e su una riga sola; una domanda alla volta e solo se cambia la configurazione;
+  propone solo i campi da cambiare; mostra in chat il prima → dopo e il perché; poi
+  `propose_settings` con un `reason` chiaro (correggendo e richiamando in caso di errore di
+  validazione) e chiude il turno spiegando che la proposta attende nel pannello Task, senza
+  attendere né fare polling. Campi sensibili (permessi, allow/deny, avvii, `setup`/`cleanup`):
+  solo se servono o se l'utente li chiede, con il rischio spiegato, mai `bypass` senza una
+  richiesta esplicita. Spiega le modalità di consegna e che la configurazione dei worktree vale
+  solo con le modalità parallele. Parla con l'utente nella sua lingua; regole e testi per i
+  worker in inglese, salvo diversa richiesta.
 
 ## Fasce orarie (semplificate)
 
@@ -377,6 +430,8 @@ Argomenti camelCase lato JS.
 - `task_move(workspace_id, task_id, before_id: Option<String>) -> BoardView`: riordina un
   `queued` (prima di `before_id`, o in fondo).
 - `proposal_decide(workspace_id, proposal_id, accept) -> BoardView`
+- `settings_proposal_decide(workspace_id, proposal_id, accept) -> { board, workspace? }`
+  (vedi "Proposte di impostazioni").
 - `set_delivery`, `set_use_schedule` (workspace), `schedule_get`/`schedule_set` (invariati).
 - `workspace_detect_repos(workspace_id)` invariato.
 - Eventi: `board-update` (BoardView), `automation-update` (stato dei tab worker),
@@ -405,7 +460,8 @@ Richiede attenzione, verde `status-finished` = Fatto, rosso `destructive` = Fall
   ricordato per workspace (`localStorage`, con try/catch).
 - Intestazione: "Task", pausa/riprendi la coda, "Apri Tasks Manager" (Ctrl+Maiusc+B), comprimi.
   Con la coda in pausa: banner "Coda in pausa…"; con la fascia chiusa: "Fuori fascia oraria".
-- Sezioni: **Proposte** (card Accetta/Scarta), **In corso N/M** (card: titolo, modello · tempo
+- Sezioni: **Proposte** (card Accetta/Scarta e card "Proposta di impostazioni" Applica/Scarta,
+  vedi "Proposte di impostazioni"), **In corso N/M** (card: titolo, modello · tempo
   trascorso oppure "Richiede attenzione"; clic → mette a fuoco il tab del worker nella griglia),
   **In coda N** (numerata, trascinabile per riordinare, "attende X" se aspetta dipendenze; clic
   → dettaglio), **Falliti** (solo se non vuota, con Riprova). Piede: "+ Nuovo task" e "Task

@@ -20,6 +20,10 @@ and deliver it. This only works in a cli-companion terminal, with the app runnin
 - Ask the user a clarifying question only when the answer changes the specification. Otherwise
   decide, and state your assumptions in the task so the worker and the user can see them.
 - Never wait for workers and never poll: you do not receive events and you are never woken up.
+- If the request is about configuring the workspace (delivery, worktrees, worker rules, permissions)
+  and not about work on the code, do not create a task: use `get_workspace_settings` and
+  `propose_settings` (the user approves the proposal in the Task panel), or suggest the
+  Project Setup agent.
 
 ## Sizing
 

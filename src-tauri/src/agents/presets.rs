@@ -34,6 +34,7 @@ pub const LEGACY_ORCHESTRATOR_LAUNCH: &str = "builtin:orchestrator";
 pub static PRESETS: &[Preset] = &[
     Preset { id: "task-intake", name: "Task Intake", skill: include_str!("presets/task-intake.md") },
     Preset { id: "skill-wizard", name: "Skill Wizard", skill: include_str!("presets/skill-wizard.md") },
+    Preset { id: "project-setup", name: "Project Setup", skill: include_str!("presets/project-setup.md") },
 ];
 
 /// Migra l'id del vecchio avvio dell'orchestratore a quello di Task Intake.
@@ -72,7 +73,8 @@ mod tests {
         let skill = p.skill_text();
         for t in [
             "propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "Goal", "Context",
-            "Constraints", "Done when", "Verify", "depends_on", "Task panel",
+            "Constraints", "Done when", "Verify", "depends_on", "Task panel", "get_workspace_settings",
+            "propose_settings", "Project Setup",
         ] {
             assert!(skill.contains(t), "{t}");
         }
@@ -87,6 +89,21 @@ mod tests {
         for t in [
             "save_skill", "list_skills", "delete_skill", "one question at a time", "1024", "third person",
             "frontmatter", "confirmation", "/<name>", "all workspaces", "restarting",
+        ] {
+            assert!(skill.contains(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn project_setup_skill_covers_the_method() {
+        let p = PRESETS.iter().find(|p| p.id == "project-setup").unwrap();
+        assert_eq!(p.name, "Project Setup");
+        assert_eq!(p.launch_id(), "builtin:preset:project-setup");
+        let skill = p.skill_text();
+        for t in [
+            "get_workspace_settings", "propose_settings", "Task panel", "container_root", "copy_ignored", "setup",
+            "cleanup", "bypass", "end your turn", "$CONTAINER_WORKTREE", "repeatable", "single line",
+            "one question at a time", "before -> after",
         ] {
             assert!(skill.contains(t), "{t}");
         }

@@ -257,11 +257,13 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     (`command` = exe come sopra, `args` = `["--mcp"]`) e una skill per ogni preset di
     `agents/presets.rs` (`Preset { id, name, skill }`): `skills/<id>/SKILL.md`, sorgente
     `agents/presets/<id>.md` inclusa con `include_str!` e normalizzata a LF, in inglese,
-    invocabile come `/cli-companion-notify:<id>`. Oggi due preset: `task-intake` (il
-    metodo dell'agente Intake: vedi [BOARD.MD](BOARD.MD)) e `skill-wizard` (intervista l'utente
+    invocabile come `/cli-companion-notify:<id>`. Oggi tre preset: `task-intake` (il
+    metodo dell'agente Intake: vedi [BOARD.MD](BOARD.MD)), `skill-wizard` (intervista l'utente
     e crea una skill globale con i tool MCP `save_skill`, `list_skills`, `delete_skill`; le skill
     utente sono archiviate in `<app data>/user-skills` e sincronizzate come destinazione in
-    `~/.claude/skills`, dove le cartelle gestite portano il marcatore `.cli-companion-managed`);
+    `~/.claude/skills`, dove le cartelle gestite portano il marcatore `.cli-companion-managed`) e
+    `project-setup` (esplora il repository, legge la configurazione con `get_workspace_settings` e
+    la propone con `propose_settings`: vedi [BOARD.MD](BOARD.MD));
     aggiungere un preset = una voce in `PRESETS` + un file md. Le skill `orchestrate` e `workflow` non esistono piu': a ogni
     installazione `remove_obsolete_skills` toglie da `skills/` le cartelle che non sono
     preset. Passi: `plugin validate`,
@@ -296,7 +298,9 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   `wsl.exe -e`). `hooks.rs`: setup e pulizia per repository (`RepoConfig`).
 - `rpc.rs`: `dispatch` smista per ruolo. Worker: `get_task`, `complete_task`. Sessione normale
   (qualunque altro tab di cli-companion, workspace = quello del tab): `propose_tasks`,
-  `list_tasks`, `get_task_details`, `update_task`, `delete_task`. `whoami` non e' un tool:
+  `list_tasks`, `get_task_details`, `update_task`, `delete_task`, `get_workspace_settings`,
+  `propose_settings` (`settings.rs`: patch validata in `workspaces/settings_patch.rs`, proposte
+  in `board/settings.rs`). `whoami` non e' un tool:
   e' l'handshake con cui il server MCP sceglie i tool.
 - `auto.rs`: fasce orarie e standby (sotto).
 - `agent_session.rs`: legame worker <-> sessione dell'agente e riapertura dopo un
@@ -357,7 +361,7 @@ diventano una nota sul task. `failed` conserva worktree e branch per il retry.
 Eventi Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`,
 `board-update`, `task-notify`, `schedule-state`. Comandi: `automation_tab_closed`,
 `automation_sessions`, `board_get`, `board_set`, `task_create`, `task_update`, `task_action`,
-`task_move`, `proposal_decide`, `workspace_detect_repos`. Comando di avvio del worker:
+`task_move`, `proposal_decide`, `settings_proposal_decide`, `workspace_detect_repos`. Comando di avvio del worker:
 `agents::automation_command`; permessi = `Workspace.worker_permission`, modello = `task.model`
 poi `worker_model`.
 
@@ -396,7 +400,7 @@ finche' c'e' un task `running` in un workspace non archiviato. Comandi: `schedul
   (errore RPC -> `isError: true`). Read timeout 30 s.
 - Il ruolo si risolve con `whoami` e decide i tool esposti: worker (`get_task`,
   `complete_task`) o sessione normale (`propose_tasks`, `list_tasks`, `get_task_details`,
-  `update_task`, `delete_task`). Le definizioni sono in `mcp/tools.rs`.
+  `update_task`, `delete_task`, `get_workspace_settings`, `propose_settings`). Le definizioni sono in `mcp/tools.rs`.
   Senza variabili o con l'app non raggiungibile la lista tool e' vuota.
 - Logica pura (`handle_message` con `trait Backend`), testata con un backend finto.
 

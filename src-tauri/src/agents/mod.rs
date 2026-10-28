@@ -1137,8 +1137,16 @@ mod tests {
         let ids: Vec<_> = l.iter().map(|b| b.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["builtin:claude-code", "builtin:preset:task-intake", "builtin:preset:skill-wizard"]
+            vec![
+                "builtin:claude-code",
+                "builtin:preset:task-intake",
+                "builtin:preset:skill-wizard",
+                "builtin:preset:project-setup"
+            ]
         );
+        let s = l.iter().find(|b| b.id == "builtin:preset:project-setup").unwrap();
+        assert_eq!(s.name, "Project Setup");
+        assert_eq!(s.command, "claude --dangerously-skip-permissions \"/cli-companion-notify:project-setup\"");
         let w = l.iter().find(|b| b.id == "builtin:preset:skill-wizard").unwrap();
         assert_eq!(w.name, "Skill Wizard");
         assert_eq!(w.command, "claude --dangerously-skip-permissions \"/cli-companion-notify:skill-wizard\"");

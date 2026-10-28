@@ -64,7 +64,9 @@ Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent:
 agente, oggi **Task Intake** (lo stesso comando con la skill `/cli-companion-notify:task-intake`,
 che trasforma le richieste in specifiche di task da proporre alla coda; al ripristino il tab
 riprende la conversazione senza rilanciare la skill; ogni apertura è un nuovo tab, così puoi
-tenere più chat Intake in parallelo) e **Skill Wizard** (skill `/cli-companion-notify:skill-wizard`:
+tenere più chat Intake in parallelo), **Project Setup** (skill `/cli-companion-notify:project-setup`:
+configura il workspace e il modo in cui ci lavorano i worker, vedi “Impostazioni proposte
+dall'agente”) e **Skill Wizard** (skill `/cli-companion-notify:skill-wizard`:
 intervista l'utente e crea una skill globale, valida in tutti i workspace, salvandola con i tool MCP
 `save_skill`, `list_skills`, `delete_skill`; le skill stanno in `<app data>/user-skills` e vengono
 copiate in `~/.claude/skills`, nelle cartelle col marcatore `.cli-companion-managed`). Non si modificano né si eliminano: si
@@ -157,7 +159,29 @@ retry) e `complete_task` (`completed` | `failed`, riassunto, `commit`, `pr_url`,
 `files_changed`, `tests`, `follow_ups`; il tab si chiude dopo ~1,5 s).
 
 Sessioni normali (Intake compreso, nel workspace del tab): `propose_tasks`, `list_tasks`,
-`get_task_details`, `update_task`, `delete_task`.
+`get_task_details`, `update_task`, `delete_task`, `get_workspace_settings`, `propose_settings`.
+
+### Impostazioni proposte dall'agente
+
+`get_workspace_settings` legge le impostazioni che un agente può proporre (con i repository e la loro
+configurazione, i valori ammessi, i limiti e le proposte pendenti); `propose_settings` ne propone la
+modifica: regole, modello, permessi e regole allow/deny dei worker, consegna, fasce orarie, avvii e,
+per repository, branch base, `container_root`, `copy_ignored`, comandi `setup` e `cleanup`,
+`remove_force`. Passano solo i campi indicati, con validazione tutto-o-niente; non c'è risposta
+all'agente, che non aspetta.
+
+La proposta compare come card **Proposta di impostazioni** in cima al pannello Task (e nel Tasks
+Manager): la motivazione dell'agente e, campo per campo, il confronto **prima → dopo** con i valori
+attuali. I campi che eseguono comandi o allargano i permessi (permessi, allow/deny, avvii, `setup`,
+`cleanup`) sono evidenziati come sensibili. **Applica** rivalida la proposta sul workspace di quel
+momento (se non è più valida compare l'errore e la proposta resta); **Scarta** la elimina. Il comando
+Tauri è `settings_proposal_decide`.
+
+**Project Setup** è il preset pensato per questo: esplora il repository (file ignorati necessari,
+docker-compose, package manager, branch di default), fa solo le domande che cambiano la
+configurazione, mostra in chat la proposta e la manda con `propose_settings`. Non modifica file né
+impostazioni da solo, e non propone permessi `bypass` senza una richiesta esplicita. Anche Task Intake
+può usare i due tool per le richieste che riguardano la configurazione e non il codice.
 
 Fine turno del worker (hook `Stop`): con lavoro in background resta `background`; se chiude il
 turno senza `complete_task`, cli-companion risponde con un promemoria in inglese e la seconda
