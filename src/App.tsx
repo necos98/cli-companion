@@ -1131,6 +1131,7 @@ export default function App() {
                 collapsed={taskPanel.isCollapsed(panelWorkspace.id)}
                 onToggleCollapsed={() => taskPanel.toggle(panelWorkspace.id)}
                 onBoard={storeBoard}
+                onWorkspaceUpdated={handleWorkspaceUpdated}
                 onOpenManager={(taskId) => openManager(panelWorkspace.id, taskId ? { taskId } : undefined)}
                 onOpenIntake={() => openIntake(panelWorkspace.id)}
                 onNewTask={() => openManager(panelWorkspace.id, { newTask: true })}
@@ -1248,6 +1249,7 @@ export default function App() {
                 board={boards[managerWorkspace.id] ?? null}
                 loadError={boardErrors[managerWorkspace.id] ?? null}
                 onBoard={storeBoard}
+                onWorkspaceUpdated={handleWorkspaceUpdated}
                 onBackToTerminals={() => toggleManager(managerWorkspace.id)}
                 onOpenTerminal={focusTerminal}
                 onOpenIntake={() => openIntake(managerWorkspace.id)}

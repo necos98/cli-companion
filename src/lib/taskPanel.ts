@@ -2,7 +2,7 @@
 // Globale: estratti, etichette, riordino per drag & drop, raggruppamento per
 // workspace. Zero dipendenze di UI, importabili anche dai test `node --test`.
 
-import { formatDuration, queuedTasks, runningTasks } from "./board.ts";
+import { formatDuration, pendingProposals, queuedTasks, runningTasks } from "./board.ts";
 import type { BoardView, Task, TaskSpec } from "./board.ts";
 
 // ---------------------------------------------------------------- testi
@@ -102,7 +102,7 @@ export interface ActivityGroup<W> {
 /** Workspace con task in corso, in coda, falliti o proposte, nell'ordine dato. */
 export function activityGroups<W extends { id: string }>(
   workspaces: W[],
-  boards: Record<string, Pick<BoardView, "tasks" | "proposals"> | undefined>,
+  boards: Record<string, Pick<BoardView, "tasks" | "proposals" | "settings_proposals"> | undefined>,
 ): ActivityGroup<W>[] {
   const groups: ActivityGroup<W>[] = [];
   for (const workspace of workspaces) {
@@ -111,7 +111,7 @@ export function activityGroups<W extends { id: string }>(
     const running = runningTasks(board);
     const queued = queuedTasks(board);
     const failed = board.tasks.filter((t) => t.status === "failed").length;
-    const proposals = board.proposals?.length ?? 0;
+    const proposals = pendingProposals(board);
     if (running.length + queued.length + failed + proposals === 0) continue;
     const next = queued.find((t) => (t.waiting_on ?? []).length === 0) ?? queued[0] ?? null;
     groups.push({ workspace, running, queued, failed, proposals, next });

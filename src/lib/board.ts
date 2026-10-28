@@ -333,10 +333,19 @@ export interface TaskCounts {
   total: number;
 }
 
+/** Proposte in attesa di una decisione: di task e di impostazioni. */
+export function pendingProposals(
+  board: Partial<Pick<BoardView, "proposals" | "settings_proposals">> | null | undefined,
+): number {
+  return (board?.proposals?.length ?? 0) + (board?.settings_proposals?.length ?? 0);
+}
+
 /** Conteggi della board; `null` = tutto a zero. */
-export function taskCounts(board: Partial<Pick<BoardView, "tasks" | "proposals">> | null | undefined): TaskCounts {
+export function taskCounts(
+  board: Partial<Pick<BoardView, "tasks" | "proposals" | "settings_proposals">> | null | undefined,
+): TaskCounts {
   const c: TaskCounts = {
-    proposals: board?.proposals?.length ?? 0,
+    proposals: pendingProposals(board),
     queued: 0,
     running: 0,
     done: 0,

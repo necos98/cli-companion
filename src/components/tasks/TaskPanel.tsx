@@ -23,6 +23,7 @@ import type { PanelRailItem } from "./PanelRail";
 import PanelRunningCard from "./PanelRunningCard";
 import PanelSection from "./PanelSection";
 import ProposalCard from "./ProposalCard";
+import SettingsProposalCard from "./SettingsProposalCard";
 import { usePanelNow } from "./usePanelNow";
 
 /**
@@ -44,6 +45,8 @@ export interface TaskPanelProps {
   onToggleCollapsed: () => void;
   /** Aggiorna la board in App con la risposta di un comando. */
   onBoard: (board: BoardView) => void;
+  /** Aggiorna il workspace in App (proposta di impostazioni applicata). */
+  onWorkspaceUpdated: (workspace: Workspace) => void;
   /** Apre il Tasks Manager del workspace, col dettaglio di `taskId` se dato. */
   onOpenManager: (taskId?: string) => void;
   /** Apre un nuovo tab Task Intake nel workspace. */
@@ -65,6 +68,7 @@ export default function TaskPanel({
   collapsed,
   onToggleCollapsed,
   onBoard,
+  onWorkspaceUpdated,
   onOpenManager,
   onOpenIntake,
   onNewTask,
@@ -187,6 +191,15 @@ export default function TaskPanel({
           <>
             {board.proposals.map((p) => (
               <ProposalCard key={p.id} workspaceId={workspaceId} proposal={p} board={board} onBoard={onBoard} />
+            ))}
+            {board.settings_proposals.map((p) => (
+              <SettingsProposalCard
+                key={p.id}
+                workspaceId={workspaceId}
+                proposal={p}
+                onBoard={onBoard}
+                onWorkspace={onWorkspaceUpdated}
+              />
             ))}
 
             {running.length > 0 && (
