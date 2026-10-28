@@ -1,11 +1,12 @@
 import { ExternalLink } from "lucide-react";
-import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { prUrl } from "../../lib/board";
 import type { Task, TaskReport, TaskTestResult } from "../../lib/board";
 import { openExternal } from "../../lib/openExternal";
 import { reviewFindings } from "../../lib/review";
 import type { FindingsList } from "../../lib/review";
+import Collapsible from "./Collapsible";
+import E2eResult from "./E2eResult";
 
 const FINDINGS_TONE: Record<FindingsList["tone"], { box: string; title: string }> = {
   attention: { box: "border-status-attention/50", title: "text-status-attention" },
@@ -34,17 +35,6 @@ function TestRow({ test }: { test: TaskTestResult }) {
   );
 }
 
-function Collapsible({ summary, children }: { summary: string; children: ReactNode }) {
-  return (
-    <details className="group text-xs">
-      <summary className="cursor-pointer select-none rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-        {summary}
-      </summary>
-      <div className="mt-1.5">{children}</div>
-    </details>
-  );
-}
-
 /** Etichetta breve del link della PR: "PR #12" se l'indirizzo la contiene, altrimenti l'indirizzo. */
 function prLabel(url: string): string {
   const m = /\/pull\/(\d+)/.exec(url);
@@ -52,6 +42,7 @@ function prLabel(url: string): string {
 }
 
 function Body({ report, task }: { report: TaskReport; task: Task }) {
+  const e2e = report.e2e ?? task.e2e_run;
   const pr = prUrl(task);
   const tests = report.tests ?? [];
   const files = report.files_changed ?? [];
@@ -99,6 +90,7 @@ function Body({ report, task }: { report: TaskReport; task: Task }) {
           ))}
         </ul>
       )}
+      {e2e && <E2eResult run={e2e} />}
       {files.length > 0 && (
         <Collapsible summary={`File modificati (${files.length})`}>
           <ul className="flex flex-col gap-0.5 font-mono text-[11px] text-text-secondary">
@@ -136,13 +128,13 @@ function Body({ report, task }: { report: TaskReport; task: Task }) {
   );
 }
 
-/** Esito di un task concluso: riepilogo, commit, PR, test, file, follow-up, diffstat. Niente se non c'è un report. */
+/** Esito di un task concluso: riepilogo, commit, PR, test, E2E, file, follow-up, diffstat. Senza report, solo gli E2E in corso. */
 export default function DetailResult({ task }: { task: Task }) {
-  if (!task.report) return null;
+  if (!task.report && !task.e2e_run) return null;
   return (
     <section className="flex min-w-0 flex-col gap-2 rounded-lg border bg-surface p-3">
       <h3 className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Esito</h3>
-      <Body report={task.report} task={task} />
+      {task.report ? <Body report={task.report} task={task} /> : task.e2e_run && <E2eResult run={task.e2e_run} />}
     </section>
   );
 }

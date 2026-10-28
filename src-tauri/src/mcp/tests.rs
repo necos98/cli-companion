@@ -18,10 +18,12 @@ use std::cell::RefCell;
 /// 9_000 = 8_700 plus the `kind` field of the tasks in propose_tasks and update_task (measured 8_998).
 /// 9_500 = 9_000 plus the `e2e` flag of the tasks and the `e2e` object of the repo settings (measured 9_477).
 const SESSION_TOOLS_CEILING: usize = 9_500;
-const WORKER_TOOLS_CEILING: usize = 2_600;
+/// 3_050 = 2_600 plus run_e2e and get_e2e_result (measured 3_002).
+const WORKER_TOOLS_CEILING: usize = 3_050;
 /// The reviewer set (measured 4_005, with the `e2e` flag of propose_tasks): its own get_task and complete_task (verdict, findings, tests) plus the shared
 /// get_task_details and propose_tasks definitions.
-const REVIEWER_TOOLS_CEILING: usize = 4_050;
+/// 5_200 = 4_050 plus run_e2e and get_e2e_result (measured 5_163).
+const REVIEWER_TOOLS_CEILING: usize = 5_200;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
 /// The reviewer server instructions (measured 345).
 const REVIEWER_INSTRUCTIONS_CEILING: usize = 400;
@@ -141,10 +143,13 @@ fn tools_list_depends_on_role() {
     );
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("worker"), json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-    assert_eq!(names(&r), ["get_task", "complete_task"]);
+    assert_eq!(names(&r), ["get_task", "complete_task", "run_e2e", "get_e2e_result"]);
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("reviewer"), json!({"jsonrpc":"2.0","id":3,"method":"tools/list"})).unwrap();
-    assert_eq!(names(&r), ["get_task", "complete_task", "get_task_details", "propose_tasks"]);
+    assert_eq!(
+        names(&r),
+        ["get_task", "complete_task", "get_task_details", "propose_tasks", "run_e2e", "get_e2e_result"]
+    );
     for t in r["result"]["tools"].as_array().unwrap() {
         assert!(!t["description"].as_str().unwrap().is_empty());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -401,6 +406,57 @@ fn reviewer_complete_task_schema_has_verdict_and_findings() {
     // Il worker non ha ne' verdetto ne' findings.
     let worker = &worker_tools()[1]["inputSchema"]["properties"];
     assert!(worker.get("verdict").is_none() && worker.get("findings").is_none());
+}
+
+#[test]
+fn e2e_tools_belong_to_worker_and_reviewer_only() {
+    let has = |tools: &[Value], name: &str| tools.iter().any(|t| t["name"] == name);
+    for tools in [worker_tools(), reviewer_tools()] {
+        assert!(has(&tools, "run_e2e") && has(&tools, "get_e2e_result"));
+    }
+    let session = session_tools();
+    assert!(!has(&session, "run_e2e") && !has(&session, "get_e2e_result"));
+
+    let get = worker_tools().into_iter().find(|t| t["name"] == "get_e2e_result").unwrap();
+    assert_eq!(get["inputSchema"]["required"], json!([]));
+    assert_eq!(get["inputSchema"]["additionalProperties"], false);
+    let props = &get["inputSchema"]["properties"];
+    assert_eq!(keys(props), ["run_id", "wait_seconds"]);
+    assert_eq!(props["run_id"]["maxLength"], 64);
+    assert_eq!(props["wait_seconds"]["type"], "integer");
+    assert_eq!(props["wait_seconds"]["minimum"], 0);
+    assert_eq!(props["wait_seconds"]["maximum"], 25);
+    let run = worker_tools().into_iter().find(|t| t["name"] == "run_e2e").unwrap();
+    assert_eq!(run["inputSchema"]["properties"], json!({}));
+    // Stessa definizione per worker e revisore.
+    for name in ["run_e2e", "get_e2e_result"] {
+        let of = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(of(worker_tools()), of(reviewer_tools()), "{name}");
+    }
+}
+
+#[test]
+fn e2e_calls_are_gated_by_role_and_forwarded_for_workers() {
+    let call = |s: &mut Server, b: &Fake, name: &str, args: Value| {
+        send(s, b, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}})).unwrap()
+    };
+    let session = Fake::new("session");
+    let mut s = Server::default();
+    let r = call(&mut s, &session, "run_e2e", json!({}));
+    assert_eq!(r["result"]["isError"], true);
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown tool, or not available for this session"));
+    assert!(session.calls.borrow().iter().all(|(m, _)| m == "whoami"));
+
+    for role in ["worker", "reviewer"] {
+        let b = Fake::new(role);
+        let mut s = Server::default();
+        let r = call(&mut s, &b, "run_e2e", json!({}));
+        assert!(r["result"].get("isError").is_none(), "{role}");
+        assert_eq!(b.calls.borrow().last().unwrap(), &("run_e2e".to_string(), json!({})));
+        let args = json!({"run_id":"r1","wait_seconds":10});
+        call(&mut s, &b, "get_e2e_result", args.clone());
+        assert_eq!(b.calls.borrow().last().unwrap(), &("get_e2e_result".to_string(), args));
+    }
 }
 
 #[test]

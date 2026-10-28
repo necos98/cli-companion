@@ -73,8 +73,8 @@ Task:
   "title": "Modalità di consegna",       // 1..=80
   "task": "...",            // specifica per il worker, 1..=100000
   "depends_on": ["task-schema"],         // id esistenti, niente cicli, max 50
-  "kind": "work",           // work   "e2e": false,             // true = deve superare gli E2E del repository; omesso se false (vedi "Test E2E")
-| review (default work, vedi "Task di review"); una review richiede almeno una dipendenza
+  "kind": "work",           // work | review (default work, vedi "Task di review"); una review richiede almeno una dipendenza
+  "e2e": false,             // true = deve superare gli E2E del repository; omesso se false (vedi "Test E2E")
   "repo": null,             // cartella relativa alla root; null = la root (multi-repo)
   "agent": "claude-code",
   "model": null,            // null = modello dei worker del workspace
@@ -87,6 +87,7 @@ Task:
   "last_report": null,      // ultimo report breve (200)
   "note": null,             // nota dell'app: errore di avvio, "interrupted: ...", "stopped by the user", ...
   "report": null,           // TaskReport
+  "e2e_run": null,          // E2eRun: ultima esecuzione E2E del tentativo (omesso se assente); azzerata a ogni nuovo tentativo
   "created_at": 0, "updated_at": 0, "started_at": null, "finished_at": null
 }
 ```
@@ -103,7 +104,24 @@ TaskReport (da `complete_task`):
   "follow_ups": [],
   "diffstat": "...",        // calcolato dall'app quando c'è un worktree
   "verdict": "passed",      // solo review completate: passed | issues (omesso se assente)
-  "findings": []            // solo review: problemi (con issues) o suggerimenti (con passed); omesso se vuoto
+  "findings": [],           // solo review: problemi (con issues) o suggerimenti (con passed); omesso se vuoto
+  "e2e": null               // E2eRun: ultima esecuzione E2E al momento di complete_task (qualunque kind); omesso se assente
+}
+```
+
+E2eRun (stesso tipo in `Task.e2e_run` e `TaskReport.e2e`; i campi opzionali sono omessi se assenti):
+
+```jsonc
+{
+  "run_id": "e2e-<millis>-<n>",
+  "status": "running",      // running | passed | failed | error
+  "started_at": 0, "finished_at": 0, "duration_ms": 0,
+  "junit": "out/junit.xml", // percorso del report configurato
+  "code": { "commit": "...", "tree": "...", "changes": "..." }, // impronta all'avvio (vedi "Test E2E")
+  "totals": { "tests": 0, "passed": 0, "failed": 0, "skipped": 0, "flaky": 0 }, // flaky solo se il report lo espone
+  "failed_tests": [{ "name": "...", "file": "...", "message": "..." }], // file opzionale; max 20
+  "error": "...",           // max 1000 caratteri: avvio fallito, timeout, annullata, report non valido, exit != 0 con report pulito
+  "output_tail": "..."      // ultimi 4000 caratteri dell'output: solo se il comando è partito e finito ma il report manca/è illeggibile/non valido/senza test, o exit != 0 con report pulito
 }
 ```
 
@@ -183,6 +201,9 @@ checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branc
 Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
 `info/exclude`, hook del repo (`copy_ignored`, `setup`) dopo la creazione, `setup_done`,
 riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
+- Gli **hook** `setup` e `cleanup` girano con il runner dei processi dell'app (`automation/process.rs`,
+  lo stesso degli E2E): dell'output si tengono solo gli ultimi 64 KiB per stream e, allo scadere
+  del timeout, si uccide l'intero albero di processi (vedi "Test E2E", Annullamento).
 - Le **review** (`kind: "review"`) ricevono il worktree dalla base come ogni task (`task/<id>`);
   la pulizia a `done` funziona anche senza commit sul branch (worktree rimosso, branch cancellato).
 - `pr`: prima della creazione `git fetch origin <base>` (cache 60 s, come oggi) e worktree da
@@ -245,6 +266,25 @@ fa merge): restituisce le istruzioni di `src-tauri/src/automation/reviewer_instr
 (incluso con `include_str!`, in inglese), più `environment` normale e le regole del workspace
 accodate come al solito. Vedi "Task di review".
 
+**Task marcati E2E** (`e2e: true`, `work`). Il testo cambia solo per loro; per gli altri è
+identico a prima. Il passo `E2E_STEP` (`board/texts.rs`) dice di lanciare `run_e2e`, poi
+`get_e2e_result` con `wait_seconds: 25` finché lo stato non è più `running`, che conta solo
+l'esecuzione dell'app (lanciare il comando a mano no) e di proseguire solo con `passed`
+(altrimenti correggere, committare, ripetere verifica e passo, oppure `complete_task failed`).
+Posizione del passo:
+
+- `pr` (parallel e in place): dopo il rebase su `origin/<base>` e prima di `git push`.
+- `local_merge` parallel: dopo `git rebase <base>`, prima del `merge --ff-only`.
+- `local_merge` in place: dopo il commit del lavoro, prima di `git switch <base>`.
+- `push`: dopo `git pull --rebase` (e la ripetizione della verifica), prima di `git push`.
+- `commit`: dopo il commit, ultimo passo.
+
+Prima della chiamata finale a `complete_task` c'è la riga `E2E_GATE`: `completed` è accettato
+solo se l'ultima esecuzione è passata sul codice attuale (stesso albero e stesse modifiche non
+committate); dopo un rebase, merge o commit successivo va rifatto il passo; `failed` è sempre
+accettato. In `environment` una riga `- E2E tests: required for this task...` riporta comando,
+report JUnit e timeout (solo se il repository ha ancora la configurazione).
+
 Al retry di un task fallito `get_task` aggiunge `previous_attempt` (summary del report e
 nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 
@@ -290,6 +330,12 @@ Una review (`kind: "review"`) segue lo stesso ciclo: `complete_task completed` l
 `done`, **anche con `verdict: "issues"`** (il verdetto sta nel report); una review `failed` resta
 `failed`.
 
+**E2E nel ciclo.** `complete_task completed` di un task `work` con `e2e: true` passa dal blocco
+(vedi "Test E2E", Il blocco): se è rifiutato il task resta `running`, senza altri effetti.
+Quando il task lascia `running` (completato, fallito, fermato, tab chiuso) l'app emette
+l'effetto `CancelE2e { ws_id, task_id }`, applicato fuori dal lock, che annulla le sue
+esecuzioni in corso; archiviare o rimuovere il workspace annulla quelle di tutto il workspace.
+
 - Al riavvio dell'app i `running` diventano `failed` (`interrupted: the app was restarted`).
 - `session-end` conta solo se viene dalla sessione dell'agente legata al worker (eventi di
   processi secondari, o senza id dopo il legame, ignorati con una traccia nella nota; senza
@@ -319,7 +365,21 @@ Worker:
 - `complete_task { status: "completed" | "failed", summary, commit?, pr_url?,
   files_changed?, tests?, follow_ups? }` — `blocked` accettato come sinonimo di `failed`.
   Per i task con worktree l'app calcola il diffstat. Il tab si chiude dopo ~1,5 s.
-  `verdict` e `findings` sono un errore su un task `work`.
+  `verdict` e `findings` sono un errore su un task `work`. Per un task marcato E2E
+  `completed` è soggetto al blocco (vedi "Test E2E"); il report riceve in `e2e` l'ultima esecuzione.
+- `run_e2e {}` → `{ run_id, status: "running" }`. Ritorna subito: l'app lancia gli E2E del
+  repository del task nella cartella del worker (vedi "Test E2E"). Errori (inglese): repository
+  senza configurazione E2E ("E2E tests are not configured for repository '<repo>': ask the user
+  to configure them in the repository settings"); esecuzione già in corso nella cartella ("an
+  E2E run is already in progress in this folder (run_id ...): wait for it with get_e2e_result");
+  nessuna porta libera; task non più assegnato alla sessione.
+- `get_e2e_result { run_id?, wait_seconds? }` → l'`E2eRun` dell'ultima esecuzione del task (forma in
+  "Modello dati"). Con `run_id` diverso dall'ultimo: errore `unknown run_id: the last E2E run of
+  this task is <id>`; senza esecuzioni: "no E2E run for this task: call run_e2e first".
+  `wait_seconds` intero 0..=25 (default 0): se l'esecuzione è `running` aspetta fino a quel tempo
+  che finisca (attesa fuori dai lock). Il tetto di 25 s tiene ogni RPC sotto i 30 s di
+  `RPC_TIMEOUT` del server MCP; il chiamante ripete finché lo stato non è più `running`.
+  Valore fuori range: "wait_seconds must be an integer from 0 to 25".
 
 Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_tasks`, tool di
 impostazioni o di skill; tutti gli altri metodi di sessione restano vietati):
@@ -336,6 +396,8 @@ impostazioni o di skill; tutti gli altri metodi di sessione restano vietati):
   errore (`findings` ammessi).
 - `get_task_details { id }` e `propose_tasks { tasks }`: come per la sessione, ma la RPC li
   consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo.
+- `run_e2e` e `get_e2e_result`: gli stessi del worker, sulla cartella e sul task del reviewer
+  (l'esecuzione sta in `Task.e2e_run` della review; non c'è blocco: il verdetto è del reviewer).
 
 Istruzioni del server MCP per il reviewer (inglese): automated reviewer; call get_task first;
 verify the integrated result without changing files; propose fixes with propose_tasks; always
@@ -375,8 +437,11 @@ Sessione (workspace = quello del tab):
 
 ## Test E2E
 
-Gli E2E sono un'attivazione esplicita e facoltativa, in due parti (questo documento ne descrive i
-dati e la validazione; esecuzione e blocco della consegna sono del task `e2e-run-gate`):
+Gli E2E sono un'attivazione esplicita e facoltativa, in tre parti: configurazione del
+repository, flag del task, esecuzione e blocco della consegna a carico dell'app
+(`automation/e2e.rs` e `automation/e2e/`, parte pura in `board/e2e.rs`).
+
+### Configurazione e flag
 
 - **Configurazione del repository** (`RepoConfig.e2e`, `workspaces/e2e.rs`, opzionale, omessa se
   assente): `{ command, junit, timeout_min }`. `command`: una riga, non vuota, max 2000
@@ -389,7 +454,99 @@ dati e la validazione; esecuzione e blocco della consegna sono del task `e2e-run
   configurato (`check_e2e_configured`, `automation/worktrees.rs`), controllato a proposta,
   accettazione, creazione manuale e aggiornamento. Visibile in `list_tasks` (solo se `true`) e
   in `get_task_details`.
-- Nessun effetto sull'esecuzione dei task: finora sono solo dati.
+
+### Esecuzione
+
+Il comando lo lancia l'app, non la shell del worker: conta solo l'esito dell'app. `run_e2e`
+(worker e reviewer; le sessioni normali non hanno questi tool) o l'esecuzione manuale (sotto)
+avviano un job in background su un thread dell'host (`Host::defer`), mai sotto il lock del
+registro: la chiamata ritorna subito lo stato `running`.
+
+- **Dove**: nella cartella del task (worktree o checkout, nel formato del workspace: Windows o
+  WSL); per l'esecuzione manuale la cartella del repository. Un'esecuzione alla volta per
+  cartella (anche fra task e manuale); un'altra richiesta riceve l'errore "già in corso" con il
+  `run_id` attivo.
+- **Timeout**: `timeout_min` (poi `error`, `timed out after N s`).
+- **Ambiente**: le variabili degli hook del repository (`REPO`, `WORKTREE`, `TASK_ID`, `BRANCH`,
+  `BASE`, `CONTAINER_WORKTREE`) più `CLI_COMPANION_E2E_PORT`: una porta TCP locale libera
+  riservata per l'esecuzione (mai la stessa per due esecuzioni in corso, rilasciata alla fine).
+  È un contratto con i preset dei progetti (il nome non cambia): il comando la usa per il
+  server dell'app sotto test. Con WSL2 la libertà della porta si verifica sul lato Windows;
+  il servizio nella distro la riapre da sé.
+- **Report vecchio**: prima di partire l'app cancella il file JUnit configurato (se non ci
+  riesce: `error` "could not delete the old JUnit report"), così il report di un'esecuzione
+  precedente non può essere scambiato per quello nuovo.
+- **Impronta del codice** (`code`), calcolata all'inizio: `commit` (HEAD), `tree` (albero di
+  HEAD) e `changes` (hash FNV-1a a 64 bit, 16 cifre esadecimali, dell'output di `git status
+  --porcelain --untracked-files=no`: modifiche non committate dei file tracciati). Assente se
+  git fallisce.
+- **Output**: del comando si tengono solo gli ultimi 64 KiB per stream (stdout, stderr); in
+  `output_tail` finiscono gli ultimi 4000 caratteri. Il testo d'errore è limitato a 1000.
+
+**Verdetto** (deciso dall'app, senza modelli):
+
+| Situazione | Stato |
+|---|---|
+| exit 0, JUnit presente con almeno 1 test e nessun fallimento/errore | `passed` |
+| JUnit con almeno un fallimento/errore (qualunque exit) | `failed` |
+| exit != 0 con report pulito | `failed` (`error`: "the command exited with an error although the report has no failures") |
+| comando non partito, scaduto o annullato | `error` |
+| JUnit assente, illeggibile (oltre 16 MiB, non UTF-8), XML non valido o senza test | `error` |
+
+**Parser JUnit** (`automation/e2e/junit.rs`, quick-xml, entità esterne mai espanse): tollerante
+sul contenuto (Playwright, Vitest, pytest, Surefire), rigido sulla forma (XML malformato o root
+non `testsuites`/`testsuite` = errore). Conta per `testcase`: fallito se ha `failure` o `error`,
+`skipped` se ha `skipped`; i `testsuite` annidati si contano una volta. Gli attributi
+`failures`/`errors` di `testsuites`/`testsuite` non si perdono: i fallimenti sono il massimo fra
+il conteggio dei testcase e quello degli attributi. `flaky` c'è solo se il report espone dei
+nuovi tentativi (testcase passati dopo un retry). `failed_tests` riporta i primi 20 fallimenti
+nell'ordine del report; `file` viene dal testcase, ripiego sul file o nome della suite; il
+messaggio è la prima riga di `message` (o del testo di `failure`), ripiego "failed". Nome, file
+e messaggio sono troncati (300, 300, 500 caratteri).
+
+**Annullamento.** Le esecuzioni di un task si annullano quando il task lascia `running`
+(completato, fallito, "Ferma", tab chiuso o agente uscito) e quelle del workspace quando lo si
+archivia o rimuove. L'esecuzione annullata finisce `error` ("cancelled") senza leggere il JUnit.
+Il processo e tutti i suoi discendenti (cmd, npx, node, browser) si uccidono: su Windows con
+`taskkill /PID <pid> /T /F`; in WSL prima i processi Linux il cui ambiente contiene il marcatore
+`CLI_COMPANION_RUN=<marcatore univoco>` (ereditato dai discendenti; lo script gira nella distro
+e riceve il marcatore come argomento), poi l'albero di `wsl.exe`. Lo stesso vale per il
+timeout e per gli hook `setup`/`cleanup`.
+
+**Persistenza.** `Task.e2e_run` tiene l'ultima esecuzione (anche `running`) ed è azzerata quando
+parte un nuovo tentativo (retry). L'esito sostituisce `running` solo se il `run_id` è ancora
+quello del task. Alla conclusione `complete_task` copia l'esecuzione in `TaskReport.e2e` per
+ogni tipo di task (anche `failed` e review); se l'esecuzione finisce dopo, l'esito aggiorna
+anche la copia nel report. Al caricamento le esecuzioni `running` (anche nel report) diventano
+`error` con la nota di interruzione, perché il processo non esiste più.
+
+**Esecuzione manuale** (UI, per repository, fuori da ogni task): comandi Tauri `e2e_run_repo` e
+`e2e_last_result` (vedi "Comandi ed eventi Tauri"). Parte nella cartella del repository, richiede
+la configurazione `e2e`, ritorna l'esecuzione `running` ed emette `e2e-update` alla partenza e
+alla fine. L'ultimo esito sta solo in memoria (per repository, perso al riavvio).
+
+### Il blocco della consegna
+
+Si applica solo a `complete_task` con `status: "completed"` di un task `work` con `e2e: true`.
+Task non marcati e review: nessun blocco; `failed` è sempre accettato. L'impronta attuale si
+calcola fuori dal lock (`git rev-parse HEAD HEAD^{tree}` + `git status`). Il rifiuto lascia il
+task `running` con l'errore `complete_task rejected: <motivo> The task stays in progress.`, per:
+
+- nessuna esecuzione ("this task requires a passed E2E run on the delivered code. Call run_e2e...");
+- esecuzione ancora `running`;
+- ultima esecuzione `failed` (test falliti su totali e primi 3 nomi) o `error` (con l'errore);
+- esecuzione `passed` su codice diverso: si confrontano **`tree` e `changes`**, non il commit,
+  quindi uno squash o un rebase che lascia lo stesso albero passa; il messaggio riporta commit
+  allora e adesso e se le modifiche non committate differiscono; senza impronta salvata o con
+  git non leggibile: "cannot verify the code against the last E2E run ... Run run_e2e again".
+
+Configurazione tolta dopo l'assegnazione: nessun blocco; il task si completa con la nota
+`E2E check skipped: the repository no longer has E2E tests configured`.
+
+**Assunzione.** Nelle modalità `push` e `pr` il worker spinge **prima** di `complete_task` (i
+passi di consegna mettono gli E2E prima del push). Il blocco garantisce che un task marcato non
+diventi mai `done` senza un'esecuzione E2E passata sul codice consegnato; l'ordine "E2E prima
+del push" è garantito solo dalle istruzioni (l'app non può impedire un push precedente).
 
 ## Task di review
 
@@ -408,6 +565,12 @@ tutti `done` (nessuna modifica allo scheduler).
   i diff dei task rivisti, esegue build e test richiesti, se una specifica rivista ha scenari E2E esegue la suite E2E sullo stato integrato e controlla che ogni scenario abbia un test (scenario senza test o test che fallisce = difetto reale), controlla ogni "Done when" e
   l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali;
   i miglioramenti opzionali vanno in `findings` come suggerimenti.
+- **E2E**: se almeno un task rivisto ha `e2e: true` **e** il repository della review ha ancora
+  la configurazione `e2e`, le istruzioni del reviewer ricevono in coda un paragrafo (`E2E_REVIEWER`):
+  `run_e2e` sullo stato integrato, `get_e2e_result` con `wait_seconds: 25` finché non è più
+  `running`; esito `failed` o `error` = verdetto `issues` con i test falliti (o l'errore) in
+  `findings`; l'esito va citato nel `summary`, e l'app allega l'esecuzione al report (`e2e`).
+  La review non ha blocco di consegna.
 - **Esito**: `complete_task` con `verdict` `passed` o `issues` (+ `findings`), salvati nel
   `TaskReport`. La review completata va sempre a `done`, anche con `issues`; se non può essere
   eseguita, `status: "failed"` e resta `failed`.
@@ -537,6 +700,12 @@ Argomenti camelCase lato JS.
   dell'utente: il tool MCP `delete_task` non la espone.
 - `task_move(workspace_id, task_id, before_id: Option<String>) -> BoardView`: riordina un
   `queued` (prima di `before_id`, o in fondo).
+- `e2e_run_repo(workspace_id, repo?: String) -> E2eRun`: lancia a mano gli E2E del repository
+  (`repo` assente = la root) nella sua cartella; ritorna subito l'esecuzione `running`. Errori
+  (italiano): "E2E non configurati per il repository", "esecuzione E2E gia' in corso per questo
+  repository", "nessuna porta locale libera per gli E2E: riprova fra un attimo".
+- `e2e_last_result(workspace_id, repo?: String) -> E2eRun | null`: ultimo esito manuale del
+  repository, solo in memoria.
 - `proposal_decide(workspace_id, proposal_id, accept) -> BoardView`
 - `settings_proposal_decide(workspace_id, proposal_id, accept) -> { board, workspace? }`
   (vedi "Proposte di impostazioni").
@@ -544,7 +713,9 @@ Argomenti camelCase lato JS.
 - `workspace_detect_repos(workspace_id)` invariato.
 - Eventi: `board-update` (BoardView), `automation-update` (stato dei tab worker),
   `automation-spawn` (apre il tab del worker: `role` non c'è più, `parent_tab_id` vuoto),
-  `schedule-state`, `task-notify` (notifica di sistema, vedi sotto). L'evento `user-request` non
+  `schedule-state`, `e2e-update` (`{ workspace_id, repo, run: E2eRun }`: l'esecuzione manuale di
+  un repository è partita o conclusa; `repo` = chiave del repository, `.` = la root; le
+  esecuzioni dei task passano da `board-update`), `task-notify` (notifica di sistema, vedi sotto). L'evento `user-request` non
   esiste più.
 - `task-notify`: `{ workspace_id, task_id, tab_id: string|null, kind: "attention"|"failed", title,
   body }`; `title` è il titolo del task, `body` il testo italiano ("<titolo> richiede attenzione" /

@@ -1,0 +1,36 @@
+<testsuites id="" name="" tests="4" failures="1" skipped="1" errors="0" time="1.583688">
+<testsuite name="sample.spec.js" timestamp="2026-10-28T16:05:13.208Z" hostname="" tests="4" failures="1" skipped="1" time="0.013" errors="0">
+<testcase name="passes" classname="sample.spec.js" time="0.005">
+</testcase>
+<testcase name="fails &amp; &lt;escapes&gt;" classname="sample.spec.js" time="0.003">
+<failure message="sample.spec.js:4:1 fails &amp; &lt;escapes&gt;" type="FAILURE">
+<![CDATA[  sample.spec.js:4:1 › fails & <escapes> ───────────────────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: "b"
+    Received: "a"
+
+      2 | const http = require('http');
+      3 | test('passes', async () => { expect(1 + 1).toBe(2); });
+    > 4 | test('fails & <escapes>', async () => { expect('a').toBe('b'); });
+        |                                                     ^
+      5 | test.skip('skipped one', async () => {});
+      6 | test('uses port', async () => { expect(process.env.CLI_COMPANION_E2E_PORT || '').not.toBe('x'); });
+      7 |
+        at C:\work\app\tests\sample.spec.js:4:53
+]]>
+</failure>
+</testcase>
+<testcase name="skipped one" classname="sample.spec.js" time="0">
+<properties>
+<property name="skip" value="">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="uses port" classname="sample.spec.js" time="0.005">
+</testcase>
+</testsuite>
+</testsuites>

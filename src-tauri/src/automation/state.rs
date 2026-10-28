@@ -86,6 +86,9 @@ pub struct AutomationState {
     /// Una decisione alla volta sulle proposte di impostazioni: applicarne una
     /// due volte (doppio clic) duplicherebbe gli avvii senza `id`.
     pub(super) settings_decisions: Arc<Mutex<()>>,
+    /// Esecuzioni E2E in corso e ultimi esiti manuali. Mutex foglia: vedi
+    /// `e2e::runs` per l'ordine dei lock.
+    pub(super) e2e: Arc<e2e::runs::E2eRuns>,
 }
 
 impl AutomationState {
@@ -214,6 +217,7 @@ impl AutomationState {
                     }
                 }
                 Effect::Schedule(state) => host.emit_schedule(&state),
+                Effect::CancelE2e { ws_id, task_id } => self.cancel_e2e(&ws_id, task_id.as_deref()),
             }
         }
     }

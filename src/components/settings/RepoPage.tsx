@@ -15,6 +15,7 @@ import {
 } from "../../lib/repoConfig";
 import type { RepoDraft } from "../../lib/repoConfig";
 import { cn } from "../../lib/utils";
+import RepoE2eRun from "./RepoE2eRun";
 import { Field, Section, SettingsPage, useWorkspaceOp } from "./shared";
 
 const areaClass =
@@ -180,6 +181,7 @@ const RepoCard = memo(function RepoCard({ workspaceId, repo, saved, missing, onW
                 />
               </Field>
             </div>
+            {saved?.e2e && <RepoE2eRun workspaceId={workspaceId} repo={repo} />}
           </div>
           {(validation ?? error) && (
             <p className={cn("text-[11px] text-destructive")}>{validation ?? error}</p>

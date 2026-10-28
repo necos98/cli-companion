@@ -55,7 +55,7 @@ pub(super) type FetchCache = HashMap<String, (std::time::Instant, Option<String>
 // ---------------------------------------------------------------------------
 
 /// Esegue git e ritorna lo stdout (trim); fallimento = errore leggibile.
-fn git<H: Host>(host: &H, ws: &Workspace, dir: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn git<H: Host>(host: &H, ws: &Workspace, dir: &str, args: &[&str]) -> Result<String, String> {
     let out = host.git(ws, dir, args).map_err(|e| format!("git is not available: {e}"))?;
     if out.ok {
         Ok(out.stdout.trim().to_string())

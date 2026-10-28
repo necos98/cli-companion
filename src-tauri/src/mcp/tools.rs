@@ -330,8 +330,46 @@ fn tests_property() -> Value {
     })
 }
 
+/// Attesa massima (secondi) di `get_e2e_result`: il server dell'app valida lo stesso limite.
+pub(crate) const E2E_MAX_WAIT_SECONDS: u64 = 25;
+
+/// `run_e2e` e `get_e2e_result`: eseguiti dall'app, per worker e revisore.
+fn e2e_tools() -> [Value; 2] {
+    [
+        tool(
+            "run_e2e",
+            "Run the E2E tests of this repository through the app, in your working folder: the app runs the configured \
+             command and reads its JUnit report. Returns at once {run_id, status: \"running\"}; then call get_e2e_result. \
+             One run at a time per folder. Fails if the repository has no E2E configuration. Only the app's run counts \
+             for the E2E gate of complete_task.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "get_e2e_result",
+            "Result of the last E2E run of your task: status running, passed, failed or error; totals (tests, passed, \
+             failed, skipped, flaky if reported); failed tests with file and message; duration, commit, JUnit path and, \
+             on error, the output tail. While it is running, call it again with wait_seconds.",
+            json!({
+                "run_id": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Run to read; default the last run of your task."
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": E2E_MAX_WAIT_SECONDS,
+                    "description": "Wait up to this many seconds for a running run to finish (default 0)."
+                }
+            }),
+            &[],
+        ),
+    ]
+}
+
 pub fn worker_tools() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         tool(
             "get_task",
             "FIRST call of every automated session: returns your task, the working instructions, the environment, the delivery \
@@ -373,13 +411,15 @@ pub fn worker_tools() -> Vec<Value> {
             }),
             &["status", "summary"],
         ),
-    ]
+    ];
+    tools.extend(e2e_tools());
+    tools
 }
 
 /// Tool del revisore: i due del worker (con `get_task` e `complete_task` propri)
-/// piu' quelli di sessione che gli servono.
+/// piu' quelli di sessione che gli servono, piu' i due E2E.
 pub fn reviewer_tools() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         tool(
             "get_task",
             "FIRST call of every automated session: returns your review task, the reviewer instructions, the environment and \
@@ -420,7 +460,9 @@ pub fn reviewer_tools() -> Vec<Value> {
         ),
         get_task_details_tool(),
         propose_tasks_tool(),
-    ]
+    ];
+    tools.extend(e2e_tools());
+    tools
 }
 
 pub fn tools_for(role: Role) -> Vec<Value> {

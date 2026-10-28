@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="3" failures="1" errors="0" time="0.0079784">
+    <testsuite name="src/a.test.js" timestamp="2026-10-28T16:05:24.783Z" hostname="build-host" tests="3" failures="1" errors="0" skipped="1" time="0.0079784">
+        <testcase classname="src/a.test.js" name="math &gt; adds" time="0.0009152">
+        </testcase>
+        <testcase classname="src/a.test.js" name="math &gt; breaks &quot;quoted&quot;" time="0.006174">
+            <failure message="expected { a: 1 } to deeply equal { a: 2 }" type="AssertionError">
+AssertionError: expected { a: 1 } to deeply equal { a: 2 }
+
+- Expected
++ Received
+
+  {
+-   &quot;a&quot;: 2,
++   &quot;a&quot;: 1,
+  }
+
+ ❯ src/a.test.js:4:52
+            </failure>
+        </testcase>
+        <testcase classname="src/a.test.js" name="math &gt; later" time="0">
+            <skipped/>
+        </testcase>
+    </testsuite>
+</testsuites>

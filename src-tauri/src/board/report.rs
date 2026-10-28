@@ -1,6 +1,6 @@
 //! Report di `complete_task`: campi strutturati opzionali e loro validazione.
 
-use super::Verdict;
+use super::{E2eRun, Verdict};
 use crate::automation::{clip_chars, req_text};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -48,6 +48,9 @@ pub struct TaskReport {
     /// Problemi trovati da una revisione (suggerimenti se il verdetto e' `passed`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
+    /// Ultima esecuzione degli E2E del task al momento della conclusione.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2e: Option<E2eRun>,
 }
 
 /// Campi strutturati opzionali di `complete_task`.
@@ -162,5 +165,6 @@ pub fn build_report(status: &str, summary: &str, f: ReportFields, diffstat: Opti
         diffstat: diffstat.map(|d| clip_chars(&d, DIFFSTAT_MAX)),
         verdict: f.verdict,
         findings: f.findings,
+        e2e: None,
     }
 }

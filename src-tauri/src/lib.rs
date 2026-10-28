@@ -164,6 +164,8 @@ pub fn run() {
             automation::proposal_decide,
             automation::settings_proposal_decide,
             automation::workspace_detect_repos,
+            automation::e2e_run_repo,
+            automation::e2e_last_result,
             automation::auto::schedule_get,
             automation::auto::schedule_set,
             toast::show_agent_notification,

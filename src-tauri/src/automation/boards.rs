@@ -197,6 +197,7 @@ impl Registry {
     }
 
     pub fn remove_board(&mut self, ws: &str) {
+        self.cancel_e2e(ws, None);
         if self.boards.remove(ws).is_some() {
             self.dirty.retain(|d| d != ws);
             self.next_rev += 1;
@@ -331,6 +332,7 @@ impl Registry {
     /// Workspace archiviato: i task in corso tornano in coda e i worker si
     /// staccano (la chiusura dei loro tab non genera fallimenti).
     pub fn archive_workspace(&mut self, ws: &str, now: i64) {
+        self.cancel_e2e(ws, None);
         let Some(b) = self.boards.get_mut(ws) else {
             return;
         };

@@ -31,8 +31,10 @@ use tauri::{AppHandle, Manager};
 mod agent_session;
 pub mod auto;
 mod boards;
+mod e2e;
 mod hooks;
 mod host;
+mod process;
 mod review;
 mod rpc;
 pub(crate) mod settings;
@@ -52,6 +54,9 @@ pub const CLOSE_DELAY: Duration = Duration::from_millis(1500);
 pub const CLEANUP_DELAY: Duration = Duration::from_secs(2);
 /// Worker (anche chiusi) tenuti in memoria prima di scartare i piu' vecchi.
 const MAX_TRACKED_WORKERS: usize = 256;
+
+/// Il task non e' piu' assegnato alla sessione (lo legge il modello).
+pub(crate) const TASK_UNASSIGNED: &str = "this task is no longer assigned to this session";
 
 pub(crate) const TITLE_MAX: usize = 80;
 pub(crate) const TASK_MAX: usize = 100_000;
@@ -256,6 +261,16 @@ pub enum Effect {
     KeepAwake { on: bool, seq: u64 },
     /// Emettere `schedule-state`.
     Schedule(Box<crate::schedule::ScheduleState>),
+    /// Annullare le esecuzioni E2E del task (o, senza task, di tutto il workspace).
+    CancelE2e { ws_id: String, task_id: Option<String> },
+}
+
+/// Cio' che `complete_task` porta oltre stato e riassunto: i campi del report e
+/// i dati calcolati fuori dal lock (diffstat git, blocco E2E).
+pub struct Completion {
+    pub fields: ReportFields,
+    pub diffstat: Option<String>,
+    pub gate: Option<e2e::E2eGateInput>,
 }
 
 /// Dove e come lavora un worker (calcolato all'avvio, fuori dal lock): serve a
@@ -480,7 +495,7 @@ impl Registry {
     pub fn get_task(&mut self, session: &str, ws: &Workspace, now: i64) -> Result<Value, String> {
         let w = self.live_worker(session)?;
         let (ws_id, tid, env) = (w.workspace_id.clone(), w.task_id.clone(), w.env.clone());
-        let unassigned = || "this task is no longer assigned to this session".to_string();
+        let unassigned = || TASK_UNASSIGNED.to_string();
         let b = self.boards.get(&ws_id).ok_or_else(unassigned)?;
         let t = b
             .task(&tid)
@@ -523,14 +538,15 @@ impl Registry {
 
     /// `complete_task`: il task diventa `done` (consegnato) o `failed` con il
     /// report; il tab si chiude dopo `CLOSE_DELAY`. Un task fallito per un
-    /// `session-end` mentre il tab era aperto viene prima riaperto.
+    /// `session-end` mentre il tab era aperto viene prima riaperto. Un task
+    /// marcato E2E si completa solo con un'esecuzione passata sul codice
+    /// consegnato (`gate`, vedi `e2e`).
     pub fn complete_task(
         &mut self,
         session: &str,
         status: &str,
         summary: &str,
-        fields: ReportFields,
-        diffstat: Option<String>,
+        extra: Completion,
         now: i64,
     ) -> Result<(), String> {
         // `blocked` e' un sinonimo di `failed`.
@@ -542,19 +558,23 @@ impl Registry {
         let summary = req_text("summary", summary, SUMMARY_MAX)?;
         // Il verdetto si valida prima di ogni effetto: un errore lascia il task in corso.
         let kind = self.worker_kind(session).ok_or_else(|| "reserved for automated sessions".to_string())?;
-        board::check_verdict(kind, completed, &fields)?;
+        board::check_verdict(kind, completed, &extra.fields)?;
+        let gate_outcome = self.e2e_gate(session, completed, extra.gate.as_ref())?;
         self.reopen_after_session_end(session, now);
         let w = self.live_worker(session)?;
         let (ws, tid) = (w.workspace_id.clone(), w.task_id.clone());
         w.status = if completed { WorkerStatus::Completed } else { WorkerStatus::Failed };
         w.last_report = Some(clip_chars(&summary, 200));
         let to = if completed { TaskStatus::Done } else { TaskStatus::Failed };
-        let report = build_report(if completed { "completed" } else { "failed" }, &summary, fields, diffstat);
+        let mut report = build_report(if completed { "completed" } else { "failed" }, &summary, extra.fields, extra.diffstat);
+        report.e2e = self.last_e2e_run(&ws, &tid);
+        let note = (gate_outcome == board::GateOutcome::ConfigRemoved).then(|| board::E2E_GATE_SKIPPED_NOTE.to_string());
         let finished = self
             .boards
             .get_mut(&ws)
-            .is_some_and(|b| b.finish_running(&tid, Some(session), to, Some(report), None, now));
+            .is_some_and(|b| b.finish_running(&tid, Some(session), to, Some(report), note, now));
         if finished {
+            self.cancel_e2e(&ws, Some(&tid));
             let has_worktree = self.boards.get(&ws).and_then(|b| b.task(&tid)).is_some_and(|t| t.worktree.is_some());
             if let Some(w) = self.workers.get_mut(session) {
                 w.cleanup_on_close = completed && has_worktree;
@@ -666,6 +686,7 @@ impl Registry {
             .is_some_and(|b| b.finish_running(tid, session, TaskStatus::Failed, None, Some(note.to_string()), now));
         if done {
             self.mark_dirty(ws);
+            self.cancel_e2e(ws, Some(tid));
         }
         done
     }
@@ -891,6 +912,29 @@ pub async fn workspace_detect_repos(app: AppHandle, workspace_id: String) -> Res
         let host = TauriHost(app);
         let ws = host.workspace(&workspace_id).ok_or_else(|| "workspace non trovato".to_string())?;
         host.list_repos(&ws)
+    })
+    .await
+}
+
+/// Lancia a mano gli E2E di un repository (`None` = la root del workspace):
+/// ritorna subito l'esecuzione `running`; l'esito arriva con l'evento `e2e-update`.
+#[tauri::command]
+pub async fn e2e_run_repo(app: AppHandle, workspace_id: String, repo: Option<String>) -> Result<board::E2eRun, String> {
+    crate::blocking(move || {
+        e2e::manual::run_repo(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, repo.as_deref())
+    })
+    .await
+}
+
+/// Ultimo esito degli E2E lanciati a mano per il repository (solo in memoria).
+#[tauri::command]
+pub async fn e2e_last_result(
+    app: AppHandle,
+    workspace_id: String,
+    repo: Option<String>,
+) -> Result<Option<board::E2eRun>, String> {
+    crate::blocking(move || {
+        e2e::manual::last_result(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, repo.as_deref())
     })
     .await
 }

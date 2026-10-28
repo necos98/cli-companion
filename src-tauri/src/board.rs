@@ -5,6 +5,7 @@
 //! `AppHandle`, tempo iniettato. L'integrazione con worker, git e disco e' in
 //! `automation::boards`. Il contratto condiviso col frontend e' `docs/BOARD.MD`.
 
+mod e2e;
 mod report;
 mod review;
 mod settings;
@@ -14,6 +15,10 @@ pub mod texts;
 #[cfg(test)]
 mod tests;
 
+pub use e2e::{
+    check_gate, strip_ansi, CodeFingerprint, E2eFailure, E2eOutcome, E2eRun, E2eStatus, E2eTotals, GateOutcome,
+    E2E_ERROR_MAX, E2E_GATE_SKIPPED_NOTE, E2E_OUTPUT_TAIL_MAX,
+};
 pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
 pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Verdict};
 pub use settings::{SettingsProposal, SettingsProposalView};
@@ -124,6 +129,9 @@ pub struct Task {
     pub last_report: Option<String>,
     pub note: Option<String>,
     pub report: Option<TaskReport>,
+    /// Ultima esecuzione degli E2E del tentativo in corso (o dell'ultimo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2e_run: Option<E2eRun>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_attempt: Option<PreviousAttempt>,
     pub created_at: i64,
@@ -317,6 +325,15 @@ impl Task {
         self.updated_at = now;
     }
 
+    /// Dopo un riavvio dell'app nessuna esecuzione E2E e' piu' in corso
+    /// (nemmeno la copia nel report).
+    fn interrupt_e2e(&mut self) {
+        let in_report = self.report.as_mut().and_then(|r| r.e2e.as_mut());
+        for run in self.e2e_run.iter_mut().chain(in_report) {
+            run.interrupt_if_running();
+        }
+    }
+
     /// Il worker aspetta l'utente.
     pub fn needs_attention(&self) -> bool {
         self.status == TaskStatus::Running
@@ -389,6 +406,9 @@ impl Board {
         b.max_parallel = b.max_parallel.clamp(1, MAX_PARALLEL_LIMIT);
         for t in b.tasks.iter_mut().filter(|t| t.agent.is_empty()) {
             t.agent = DEFAULT_AGENT.to_string();
+        }
+        for t in &mut b.tasks {
+            t.interrupt_e2e();
         }
         Ok(b)
     }
@@ -770,6 +790,7 @@ impl Board {
             t.finished_at = None;
             t.note = None;
             t.report = None;
+            t.e2e_run = None;
             t.last_report = None;
             t.updated_at = now;
         }

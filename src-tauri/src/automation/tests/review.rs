@@ -160,6 +160,34 @@ fn get_task_of_a_review_has_reviewer_instructions_and_the_reports() {
 }
 
 #[test]
+fn get_task_of_a_review_asks_for_the_e2e_run_when_a_reviewed_task_requires_it() {
+    let (st, h, r) = reviewer(DeliveryMode::Commit, false);
+    let marker = "E2E tests: at least one reviewed task requires them.";
+    let instructions = |st: &AutomationState, h: &FakeHost| -> String {
+        call(st, h, &r, "get_task", json!({})).unwrap()["instructions"].as_str().unwrap().to_string()
+    };
+    let flag = |st: &AutomationState, on: bool| {
+        st.inner.lock().unwrap().boards.get_mut("ws-1").unwrap().task_mut("a").unwrap().e2e = on;
+    };
+    let e2e_cfg = RepoConfig {
+        e2e: Some(crate::workspaces::E2eConfig { command: "npm run e2e".into(), junit: "junit.xml".into(), timeout_min: 20 }),
+        ..Default::default()
+    };
+    let plain = instructions(&st, &h);
+    assert!(!plain.contains(marker));
+    // Task revisionato marcato ma repository senza configurazione: niente.
+    flag(&st, true);
+    assert_eq!(instructions(&st, &h), plain);
+    // Configurazione presente: il paragrafo compare.
+    h.repo_cfg.lock().unwrap().insert(".".into(), e2e_cfg.clone());
+    let text = instructions(&st, &h);
+    assert!(text.contains(marker) && text.contains("get_e2e_result") && text.contains("verdict \"issues\""), "{text}");
+    // Task revisionato non marcato: niente, anche con la configurazione.
+    flag(&st, false);
+    assert!(!instructions(&st, &h).contains(marker));
+}
+
+#[test]
 fn a_passed_review_is_done_with_its_verdict() {
     let (st, h, r) = reviewer(DeliveryMode::Commit, false);
     call(&st, &h, &r, "get_task", json!({})).unwrap();

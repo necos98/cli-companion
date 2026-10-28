@@ -306,10 +306,25 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   guardiano degli avvii) e la logica dei comandi e dei tool di sessione.
 - `worktrees.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn), pulizia a
   consegna avvenuta, rilevamento dei repository, esecuzione di git (timeout 120 s, WSL via
-  `wsl.exe -e`). `hooks.rs`: setup e pulizia per repository (`RepoConfig`).
+  `wsl.exe -e`). `hooks.rs`: setup e pulizia per repository (`RepoConfig`), più lettura e
+  cancellazione di file di testo nell'ambiente del workspace (`Host::read_text_file`/`remove_file`).
   `check_e2e_configured` (in `worktrees.rs`) rifiuta un task `e2e` senza configurazione E2E del
   repository.
-- `rpc.rs`: `dispatch` smista per ruolo. Worker: `get_task`, `complete_task`. Sessione normale
+- `process.rs`: runner dei comandi dell'utente (hook `setup`/`cleanup`, E2E): output limitato
+  (ultimi 64 KiB per stream, letti da thread), timeout e annullamento (`CancelFlag`) con
+  uccisione dell'**intero albero** di processi: `taskkill /T /F` su Windows, in WSL anche i
+  processi Linux marcati con `CLI_COMPANION_RUN` nell'ambiente (`wsl.exe` non li porta con sé).
+- `e2e.rs` + `e2e/`: test E2E eseguiti dall'app, contratto in BOARD.MD, "Test E2E". `job`
+  (esecuzione in background via `Host::defer`, mai sotto il lock del registro), `verdict` +
+  `junit` (esito e parser, puri), `runs` (`E2eRuns`: una esecuzione per cartella, porte
+  riservate, ultimi esiti manuali), `tools` (`run_e2e`, `get_e2e_result`), `manual` (comandi
+  Tauri). Il blocco di `complete_task` è puro (`board/e2e.rs`, `check_gate`); l'impronta del
+  codice (git) si calcola prima di prendere il lock e `Effect::CancelE2e` annulla le esecuzioni
+  fuori dal lock. **Ordine dei lock**: il mutex di `E2eRuns` è una **foglia**: non si prende con
+  `AutomationState::inner` in mano e sotto di esso non si prende nessun altro lock; l'attesa di
+  `get_e2e_result` avviene fuori dal mutex, su una `Condvar` per esecuzione.
+- `rpc.rs`: `dispatch` smista per ruolo. Worker: `get_task`, `complete_task`, `run_e2e`,
+  `get_e2e_result` (anche il reviewer). Sessione normale
   (qualunque altro tab di cli-companion, workspace = quello del tab): `propose_tasks`,
   `list_tasks`, `get_task_details`, `update_task`, `delete_task`, `get_workspace_settings`,
   `propose_settings` (`settings.rs`: patch validata in `workspaces/settings_patch.rs`, proposte

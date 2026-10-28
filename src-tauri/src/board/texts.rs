@@ -11,6 +11,20 @@ pub const WORKER_GUARDRAILS: &str = include_str!("../automation/worker_guardrail
 /// Istruzioni del revisore di un task `review` (al posto di quelle e dei passi di consegna del worker).
 pub const REVIEWER_INSTRUCTIONS: &str = include_str!("../automation/reviewer_instructions.md");
 
+/// Passo di consegna dei task con `e2e`: gli E2E li esegue l'app, non il worker.
+pub const E2E_STEP: &str = "Run the E2E tests through the app: call run_e2e, then call get_e2e_result with wait_seconds 25 until the status is no longer \"running\". \
+Only the app's run counts: running the E2E command yourself does not. Continue only if the status is \"passed\"; otherwise fix the code, commit, \
+repeat the verification and this step, or call complete_task with status \"failed\" and the result.";
+
+/// Riga che precede la chiamata finale a `complete_task` nei task con `e2e`.
+pub const E2E_GATE: &str = "E2E gate: complete_task with status \"completed\" is accepted only if the last E2E run passed on the current code \
+(same commit tree and uncommitted changes). After any later rebase, merge or commit, run the E2E step again. Status \"failed\" is always accepted.\n";
+
+/// Paragrafo del revisore quando un task revisionato richiede gli E2E.
+pub const E2E_REVIEWER: &str = "\n\nE2E tests: at least one reviewed task requires them. Call run_e2e on the integrated state, then get_e2e_result with wait_seconds 25 \
+until the status is no longer \"running\". A failed or error result means verdict \"issues\": list the failing tests (or the error) in findings. \
+Mention the result in your summary; the app attaches the run to your report.";
+
 /// Cio' che serve a descrivere dove e come lavora un worker.
 pub struct EnvInfo<'a> {
     /// Consegna del workspace al momento dell'avvio del task.
@@ -59,12 +73,16 @@ pub fn instructions(e: &EnvInfo, workspace_rules: &str) -> String {
 
 /// Istruzioni del revisore di un task `review`: cartella di lavoro, regole del
 /// revisore e del workspace.
-pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str) -> String {
+/// `reviewed_e2e`: almeno un task revisionato ha `e2e` (il paragrafo c'e' solo se il repository ha la configurazione).
+pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str, reviewed_e2e: bool) -> String {
     let mut s = format!(
         "You are an automated cli-companion reviewer. Work only inside {dir}; never touch other folders.\n\n{REVIEWER_INSTRUCTIONS}",
         dir = e.workdir
     );
     s.truncate(s.trim_end().len());
+    if reviewed_e2e && e.repo_cfg.is_some_and(|c| c.e2e.is_some()) {
+        s.push_str(E2E_REVIEWER);
+    }
     push_workspace_rules(&mut s, workspace_rules);
     s
 }
@@ -142,6 +160,12 @@ pub fn environment(e: &EnvInfo) -> String {
             ));
         }
     }
+    if let (true, Some(cfg)) = (t.e2e, e.repo_cfg.and_then(|c| c.e2e.as_ref())) {
+        s.push_str(&format!(
+            "- E2E tests: required for this task. The app runs `{}` in your working folder through run_e2e and reads the JUnit report {} (timeout {} min).\n",
+            cfg.command, cfg.junit, cfg.timeout_min
+        ));
+    }
     s
 }
 
@@ -153,9 +177,12 @@ fn numbered(steps: &[String]) -> String {
 fn pr_publish_steps(e: &EnvInfo, branch: &str, base: &str) -> Vec<String> {
     let title = e.task.title.replace('"', "'");
     let method = e.delivery.merge_method.as_str();
-    vec![
+    let mut v = vec![
         "git fetch origin".to_string(),
         format!("git rebase origin/{base}. Resolve conflicts, then repeat the verification the task asks for."),
+    ];
+    push_e2e_step(e, &mut v);
+    v.extend([
         format!("git push -u origin {branch} (use --force-with-lease after a rebase)."),
         format!(
             "gh pr create --base {base} --head {branch} --title \"{title}\" --body \"<short summary of the work>\". \
@@ -168,7 +195,15 @@ fn pr_publish_steps(e: &EnvInfo, branch: &str, base: &str) -> Vec<String> {
         ),
         "If the base branch advanced meanwhile, repeat the rebase and the push.".to_string(),
         format!("git push origin --delete {branch} (ignore the error if the branch is already deleted)."),
-    ]
+    ]);
+    v
+}
+
+/// Aggiunge il passo E2E se il task e' marcato `e2e`.
+fn push_e2e_step(e: &EnvInfo, steps: &mut Vec<String>) {
+    if e.task.e2e {
+        steps.push(E2E_STEP.to_string());
+    }
 }
 
 /// Passi di consegna della modalita' del workspace (testo `delivery` di `get_task`).
@@ -197,32 +232,50 @@ pub fn delivery_steps(e: &EnvInfo) -> String {
         }
         (DeliveryMode::LocalMerge, true) => {
             tail = "Do not check out other branches in the worktree.\n".to_string();
-            vec![
+            let mut v = vec![
                 format!("Commit your work on {branch} (your worktree is already on it)."),
                 format!("git rebase {base}. Resolve conflicts, then repeat the verification the task asks for."),
+            ];
+            push_e2e_step(e, &mut v);
+            v.extend([
                 format!("git -C \"{}\" merge --ff-only {branch}", e.repo_dir),
                 format!(
                     "If it fails because {base} advanced, rebase again and retry. If the main checkout has changes that prevent the \
                      merge, call complete_task with status \"failed\" and the reason."
                 ),
-            ]
+            ]);
+            v
         }
-        (DeliveryMode::LocalMerge, false) => vec![
-            format!("git switch -c {branch} {base}"),
-            "Do the work and commit it.".to_string(),
-            format!("git switch {base}"),
-            format!("git merge --ff-only {branch}. If it is not a fast-forward: git rebase {base} {branch}, then git switch {base} and retry the merge."),
-            format!("git branch -d {branch}"),
-        ],
-        (DeliveryMode::Push, _) => vec![
-            "Commit your work on the current branch.".to_string(),
-            "git pull --rebase. If it brought changes, repeat the verification the task asks for.".to_string(),
-            "git push".to_string(),
-        ],
-        (DeliveryMode::Commit, _) => vec!["Commit your work on the current branch. Do not push.".to_string()],
+        (DeliveryMode::LocalMerge, false) => {
+            let mut v = vec![format!("git switch -c {branch} {base}"), "Do the work and commit it.".to_string()];
+            push_e2e_step(e, &mut v);
+            v.extend([
+                format!("git switch {base}"),
+                format!("git merge --ff-only {branch}. If it is not a fast-forward: git rebase {base} {branch}, then git switch {base} and retry the merge."),
+                format!("git branch -d {branch}"),
+            ]);
+            v
+        }
+        (DeliveryMode::Push, _) => {
+            let mut v = vec![
+                "Commit your work on the current branch.".to_string(),
+                "git pull --rebase. If it brought changes, repeat the verification the task asks for.".to_string(),
+            ];
+            push_e2e_step(e, &mut v);
+            v.push("git push".to_string());
+            v
+        }
+        (DeliveryMode::Commit, _) => {
+            let mut v = vec!["Commit your work on the current branch. Do not push.".to_string()];
+            push_e2e_step(e, &mut v);
+            v
+        }
     };
     head.push_str(&numbered(&steps));
     head.push_str(&tail);
+    if e.task.e2e {
+        head.push_str(E2E_GATE);
+    }
     let pr = if e.delivery.mode == DeliveryMode::Pr { " and `pr_url`" } else { "" };
     head.push_str(&format!("Then call complete_task with status \"completed\", `commit`{pr}."));
     head

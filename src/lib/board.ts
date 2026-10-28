@@ -63,6 +63,46 @@ export interface TaskReport {
   verdict?: ReviewVerdict | null;
   /** Solo per le review: problemi (con `issues`) o suggerimenti (con `passed`). */
   findings?: string[];
+  /** Esito degli E2E al momento della conclusione (solo task E2E verificati dall'app). */
+  e2e?: E2eRun;
+}
+
+export type E2eStatus = "running" | "passed" | "failed" | "error";
+
+/** Codice su cui sono girati gli E2E. */
+export interface E2eCode {
+  commit: string;
+  tree: string;
+  changes: string;
+}
+
+export interface E2eTotals {
+  tests: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  flaky?: number;
+}
+
+export interface E2eFailure {
+  name: string;
+  file?: string;
+  message: string;
+}
+
+/** Un'esecuzione degli E2E eseguita dall'app (vedi `E2eRun` in board/e2e.rs). */
+export interface E2eRun {
+  run_id: string;
+  status: E2eStatus;
+  started_at: number;
+  finished_at?: number;
+  duration_ms?: number;
+  junit: string;
+  code?: E2eCode;
+  totals?: E2eTotals;
+  failed_tests?: E2eFailure[];
+  error?: string;
+  output_tail?: string;
 }
 
 /** Esito del tentativo precedente, dopo "Riprova". */
@@ -103,6 +143,8 @@ export interface Task {
   /** Passo di preparazione in corso (setup del repository): il worker non c'è ancora. */
   preparing?: string | null;
   previous_attempt?: PreviousAttempt | null;
+  /** Ultima esecuzione degli E2E del task, anche in corso. */
+  e2e_run?: E2eRun;
   /** Dipendenze non ancora `done` (solo per i task `queued`). */
   waiting_on: string[];
   /** Il worker aspetta l'utente (`needs_input`/`idle`): badge "Richiede attenzione". */

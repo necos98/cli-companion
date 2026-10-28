@@ -1,6 +1,6 @@
 //! Dispatch delle RPC dei tool MCP. Tre ruoli: il worker di un task
-//! (`get_task`, `complete_task`), il revisore, cioe' il worker di un task
-//! `review` (gli stessi due piu' `get_task_details` e `propose_tasks`), e la
+//! (`get_task`, `complete_task`, `run_e2e`, `get_e2e_result`), il revisore, cioe' il worker di un task
+//! `review` (gli stessi piu' `get_task_details` e `propose_tasks`), e la
 //! sessione normale, Intake compreso (`propose_tasks`, `list_tasks`,
 //! `get_task_details`, `update_task`, `delete_task`, piu' le skill globali di
 //! `skills` e le impostazioni del workspace di `settings`). `whoami` e'
@@ -13,7 +13,7 @@ use super::*;
 use crate::board::TaskKind;
 use serde_json::json;
 
-const WORKER_METHODS: [&str; 2] = ["get_task", "complete_task"];
+const WORKER_METHODS: [&str; 4] = ["get_task", "complete_task", "run_e2e", "get_e2e_result"];
 const SESSION_METHODS: [&str; 5] = ["propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task"];
 
 /// Esegue un metodo RPC per `session`.
@@ -46,6 +46,8 @@ pub fn dispatch<H: Host>(
         "whoami" => Ok(whoami(host, session, kind)),
         "get_task" => get_task(st, host, session),
         "complete_task" => complete_task(st, host, session, params),
+        "run_e2e" => e2e::tools::run_e2e(st, host, session),
+        "get_e2e_result" => e2e::tools::get_e2e_result(st, session, params),
         m if reviewer_call => review::rpc_reviewer(st, host, session, m, params),
         m if SKILL_METHODS.contains(&m) => skills::rpc(host, m, params),
         m if SETTINGS_METHODS.contains(&m) => settings::rpc(st, host, session, m, params),
@@ -87,6 +89,8 @@ fn complete_task<H: Host>(st: &AutomationState, host: &H, session: &str, params:
         let ws = host.workspace(&ws_id)?;
         worktrees::compute_diffstat(host, &ws, &wt)
     });
-    st.run(host, |r| r.complete_task(session, status, summary, fields, diffstat, now_millis()))?;
+    // Il blocco E2E (git) si prepara fuori dal lock, solo se serve.
+    let gate = e2e::gate_input(st, host, session, status);
+    st.run(host, |r| r.complete_task(session, status, summary, Completion { fields, diffstat, gate }, now_millis()))?;
     Ok(json!({ "closing": true }))
 }

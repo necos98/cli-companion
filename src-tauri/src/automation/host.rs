@@ -2,6 +2,7 @@
 //! git, file, timer, workspace) e la sua implementazione reale `TauriHost`.
 //! I test usano un host finto (vedi `tests`).
 
+use super::process::CancelFlag;
 use super::*;
 use crate::agents::{self, AutomationRequest};
 use crate::schedule::{Schedule, ScheduleState};
@@ -16,6 +17,7 @@ const UPDATE_EVENT: &str = "automation-update";
 const BOARD_EVENT: &str = "board-update";
 const NOTICE_EVENT: &str = "task-notify";
 const SCHEDULE_EVENT: &str = "schedule-state";
+const E2E_EVENT: &str = "e2e-update";
 
 /// Effetti verso l'esterno. `Clone + Send + 'static`: i timer li portano in
 /// un thread.
@@ -50,8 +52,10 @@ pub trait Host: Clone + Send + 'static {
     fn path_exists(&self, ws: &Workspace, path: &str) -> bool;
     /// Copia ricorsiva `src` -> `dst` (file o cartella), creando le cartelle padre.
     fn copy_path(&self, ws: &Workspace, src: &str, dst: &str) -> Result<(), String>;
-    /// Esegue un comando dell'utente (setup / pulizia) con la shell della
-    /// piattaforma, cwd `dir`, `env` in piu'. `Err` solo se non parte o scade.
+    /// Esegue un comando dell'utente (setup / pulizia / E2E) con la shell della
+    /// piattaforma, cwd `dir`, `env` in piu'. `Err` solo se non parte, scade o
+    /// viene annullato. Annullabile: con `cancel` alzato il comando e tutto il
+    /// suo albero di processi vengono uccisi ("cancelled"); gia' alzato = non parte.
     fn run_hook(
         &self,
         ws: &Workspace,
@@ -59,10 +63,19 @@ pub trait Host: Clone + Send + 'static {
         command: &str,
         env: &[(String, String)],
         timeout: Duration,
+        cancel: Option<&CancelFlag>,
     ) -> Result<GitOut, String>;
+    /// Legge un file di testo UTF-8 (BOM tolto) nell'ambiente del workspace.
+    /// `Ok(None)` se non esiste; `Err` se supera `max_bytes`, non e' UTF-8 o
+    /// non e' leggibile.
+    fn read_text_file(&self, ws: &Workspace, path: &str, max_bytes: u64) -> Result<Option<String>, String>;
+    /// Elimina un file (mai una cartella). Ok anche se non esiste.
+    fn remove_file(&self, ws: &Workspace, path: &str) -> Result<(), String>;
     fn save_board(&self, board: &Board) -> Result<(), String>;
     fn delete_board(&self, ws_id: &str);
     fn emit_board(&self, view: &BoardView);
+    /// Esecuzione E2E manuale di un repository partita o conclusa (evento `e2e-update`).
+    fn emit_e2e(&self, ev: &e2e::E2eEvent);
     /// Notifica di sistema (evento `task-notify`): il frontend la mostra.
     fn emit_notice(&self, notice: &Notice);
     /// Tutti i workspace.
@@ -247,8 +260,17 @@ impl Host for TauriHost {
         command: &str,
         env: &[(String, String)],
         timeout: Duration,
+        cancel: Option<&CancelFlag>,
     ) -> Result<GitOut, String> {
-        hooks::run_hook_real(ws, dir, command, env, timeout)
+        hooks::run_hook_real(ws, dir, command, env, timeout, cancel)
+    }
+
+    fn read_text_file(&self, ws: &Workspace, path: &str, max_bytes: u64) -> Result<Option<String>, String> {
+        hooks::read_text_file_real(ws, path, max_bytes)
+    }
+
+    fn remove_file(&self, ws: &Workspace, path: &str) -> Result<(), String> {
+        hooks::remove_file_real(ws, path)
     }
 
     fn save_board(&self, board: &Board) -> Result<(), String> {
@@ -269,6 +291,10 @@ impl Host for TauriHost {
 
     fn emit_board(&self, view: &BoardView) {
         let _ = self.0.emit(BOARD_EVENT, view);
+    }
+
+    fn emit_e2e(&self, ev: &e2e::E2eEvent) {
+        let _ = self.0.emit(E2E_EVENT, ev);
     }
 
     fn emit_notice(&self, notice: &Notice) {

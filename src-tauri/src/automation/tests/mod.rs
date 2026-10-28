@@ -2,6 +2,7 @@
 //! i comandi della UI da `boards::*`, i timer dell'host girano in linea (quindi
 //! un task scelto dallo scheduler e' gia' avviato quando `run` ritorna).
 
+use super::process::CancelFlag;
 use super::*;
 use crate::agents::AutomationRequest;
 use crate::schedule::{Schedule, ScheduleState};
@@ -9,6 +10,9 @@ use crate::workspaces::{DeliveryMode, MergeMethod, RepoConfig, SettingsPatch};
 use serde_json::json;
 
 mod board_flow;
+mod e2e;
+mod e2e_cancel;
+mod e2e_manual;
 mod review;
 mod schedule;
 mod session_end;
@@ -44,6 +48,9 @@ pub(super) fn ws(id: &str, name: &str, kind: &str) -> Workspace {
 
 /// Ambiente e cartella (o errore) di una cartella target delle skill.
 type SkillDir = (String, Result<std::path::PathBuf, String>);
+
+/// Lavoro differito di `Host::defer`.
+type Job = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, Default)]
 struct FakeHost {
@@ -90,6 +97,14 @@ struct FakeHost {
     hook_rules: Arc<Mutex<Vec<(String, GitOut)>>>,
     /// Percorsi che "esistono" per `path_exists` (copie dei file ignorati).
     files: Arc<Mutex<Vec<String>>>,
+    /// Job di `defer` messi in coda invece che eseguiti in linea (`None` = in linea).
+    held: Arc<Mutex<Option<Vec<Job>>>>,
+    /// File scritti da un hook quando parte: (testo del comando, percorso, contenuto).
+    hook_writes: Arc<Mutex<Vec<(String, String, String)>>>,
+    /// Eventi `e2e-update` emessi.
+    e2e_events: Arc<Mutex<Vec<crate::automation::e2e::E2eEvent>>>,
+    /// File di testo per `read_text_file` / `remove_file` (percorso -> contenuto).
+    text_files: Arc<Mutex<HashMap<String, String>>>,
     /// Errore forzato di `append_exclude`.
     exclude_err: Arc<Mutex<Option<String>>>,
     /// Archivio delle skill utente e cartelle target (ambiente, cartella).
@@ -147,8 +162,26 @@ impl FakeHost {
         *self.repo_cfg.lock().unwrap() = w.repos.clone();
         *self.ws1_base.lock().unwrap() = Some(w);
     }
+    fn set_text_file(&self, path: &str, content: &str) {
+        self.text_files.lock().unwrap().insert(path.to_string(), content.to_string());
+    }
+    fn text_file(&self, path: &str) -> Option<String> {
+        self.text_files.lock().unwrap().get(path).cloned()
+    }
     fn applies(&self) -> u32 {
         *self.applies.lock().unwrap()
+    }
+    /// Da ora i job di `defer` restano in coda (vedi `run_held`).
+    fn hold_defers(&self) {
+        *self.held.lock().unwrap() = Some(Vec::new());
+    }
+    /// Esegue i job in coda e torna all'esecuzione in linea.
+    fn run_held(&self) {
+        let jobs = self.held.lock().unwrap().take().unwrap_or_default();
+        jobs.into_iter().for_each(|job| job());
+    }
+    fn e2e_events(&self) -> Vec<crate::automation::e2e::E2eEvent> {
+        self.e2e_events.lock().unwrap().clone()
     }
 }
 
@@ -182,6 +215,10 @@ impl Host for FakeHost {
     }
     fn defer(&self, delay: Duration, job: Box<dyn FnOnce() + Send>) {
         self.log.lock().unwrap().push(format!("defer:{}", delay.as_millis()));
+        if let Some(queue) = self.held.lock().unwrap().as_mut() {
+            queue.push(job);
+            return;
+        }
         job();
     }
     fn workspace(&self, id: &str) -> Option<Workspace> {
@@ -227,16 +264,42 @@ impl Host for FakeHost {
         self.hook_log.lock().unwrap().push(format!("copy {src}->{dst}"));
         Ok(())
     }
-    fn run_hook(&self, _ws: &Workspace, dir: &str, command: &str, env: &[(String, String)], _timeout: Duration) -> Result<GitOut, String> {
+    fn run_hook(
+        &self,
+        _ws: &Workspace,
+        dir: &str,
+        command: &str,
+        env: &[(String, String)],
+        _timeout: Duration,
+        cancel: Option<&CancelFlag>,
+    ) -> Result<GitOut, String> {
         let vars: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let line = format!("{dir}|{command}");
         self.hook_log.lock().unwrap().push(format!("{line}|{}", vars.join(",")));
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return Err("cancelled".to_string());
+        }
+        for (_, path, content) in self.hook_writes.lock().unwrap().iter().filter(|(n, ..)| line.contains(n.as_str())) {
+            self.text_files.lock().unwrap().insert(path.clone(), content.clone());
+        }
         // Anche nel log di git: serve a provare l'ordine rispetto ai comandi git.
         self.git_log.lock().unwrap().push(format!("hook|{command}"));
         if let Some((_, out)) = self.hook_rules.lock().unwrap().iter().find(|(n, _)| line.contains(n.as_str())) {
             return Ok(out.clone());
         }
         Ok(GitOut { ok: true, stdout: String::new(), stderr: String::new() })
+    }
+    fn read_text_file(&self, _ws: &Workspace, path: &str, max_bytes: u64) -> Result<Option<String>, String> {
+        match self.text_files.lock().unwrap().get(path) {
+            None => Ok(None),
+            Some(t) if t.len() as u64 > max_bytes => Err(format!("file too large (max {max_bytes} bytes)")),
+            Some(t) => Ok(Some(t.clone())),
+        }
+    }
+    fn remove_file(&self, _ws: &Workspace, path: &str) -> Result<(), String> {
+        self.text_files.lock().unwrap().remove(path);
+        self.hook_log.lock().unwrap().push(format!("rm {path}"));
+        Ok(())
     }
     fn save_board(&self, board: &Board) -> Result<(), String> {
         self.saved.lock().unwrap().insert(board.workspace_id.clone(), board.clone());
@@ -248,6 +311,9 @@ impl Host for FakeHost {
     }
     fn emit_board(&self, view: &BoardView) {
         self.board_events.lock().unwrap().push(view.clone());
+    }
+    fn emit_e2e(&self, ev: &crate::automation::e2e::E2eEvent) {
+        self.e2e_events.lock().unwrap().push(ev.clone());
     }
     fn emit_notice(&self, notice: &Notice) {
         self.notices.lock().unwrap().push(notice.clone());
@@ -360,4 +426,22 @@ fn tab_closed(st: &AutomationState, h: &FakeHost, tab: &str) {
 fn finish(st: &AutomationState, h: &FakeHost, session: &str, status: &str) {
     call(st, h, session, "get_task", json!({})).unwrap();
     call(st, h, session, "complete_task", json!({"status": status, "summary": "fatto"})).unwrap();
+}
+
+#[test]
+fn fake_host_text_files_and_cancelled_hooks() {
+    let h = FakeHost::default();
+    let w = ws("ws-1", "Proj", "windows");
+    assert_eq!(h.read_text_file(&w, "/a.txt", 10), Ok(None));
+    h.set_text_file("/a.txt", "0123456789ab");
+    assert!(h.read_text_file(&w, "/a.txt", 10).unwrap_err().contains("too large"));
+    assert_eq!(h.read_text_file(&w, "/a.txt", 100).unwrap().as_deref(), Some("0123456789ab"));
+    h.remove_file(&w, "/a.txt").unwrap();
+    assert_eq!(h.text_file("/a.txt"), None);
+    assert_eq!(h.hook_log.lock().unwrap().last().map(String::as_str), Some("rm /a.txt"));
+
+    let flag = CancelFlag::default();
+    assert!(h.run_hook(&w, "/d", "x", &[], Duration::from_secs(1), Some(&flag)).is_ok());
+    flag.cancel();
+    assert_eq!(h.run_hook(&w, "/d", "x", &[], Duration::from_secs(1), Some(&flag)).unwrap_err(), "cancelled");
 }

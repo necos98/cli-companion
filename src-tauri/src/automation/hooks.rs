@@ -7,6 +7,7 @@
 //! env K=V... sh -c <comando>` (argv, mai interpolato: `WSLENV` non porta
 //! variabili arbitrarie, `env` si). Windows: `cmd /D /S /C` senza finestra.
 
+use super::process::{new_run_marker, run_command, CancelFlag, KillTree, RUN_MARKER_VAR};
 use super::worktrees::{join_path, output_with_timeout, GitOut};
 use super::*;
 use crate::workspaces::RepoConfig;
@@ -81,27 +82,28 @@ fn distro_of(ws: &Workspace) -> Result<&str, String> {
     ws.distro.as_deref().filter(|d| !d.is_empty()).ok_or_else(|| "WSL distro missing".to_string())
 }
 
-fn out_of(output: std::process::Output) -> GitOut {
-    GitOut {
-        ok: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
 /// Esegue un comando dell'utente nella shell della piattaforma (vedi il
-/// modulo). `Err` solo se non parte o scade.
+/// modulo), con output limitato e albero di processi ucciso a timeout o
+/// annullamento. `Err` solo se non parte, scade o viene annullato.
 pub(super) fn run_hook_real(
     ws: &Workspace,
     dir: &str,
     command: &str,
     env: &[(String, String)],
     timeout: Duration,
+    cancel: Option<&CancelFlag>,
 ) -> Result<GitOut, String> {
+    let mut kill = KillTree::Native;
     let cmd = if ws.kind == "wsl" {
-        let argv = wsl_hook_argv(command, env);
+        let distro = distro_of(ws)?;
+        // Il marcatore e' ereditato da tutti i discendenti Linux: serve a ucciderli.
+        let marker = new_run_marker();
+        let mut env = env.to_vec();
+        env.push((RUN_MARKER_VAR.to_string(), marker.clone()));
+        let argv = wsl_hook_argv(command, &env);
         let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        crate::wsl::wsl_run_command(distro_of(ws)?, dir, &refs)
+        kill = KillTree::Wsl { distro: distro.to_string(), marker };
+        crate::wsl::wsl_run_command(distro, dir, &refs)
     } else {
         let mut cmd;
         #[cfg(windows)]
@@ -119,7 +121,49 @@ pub(super) fn run_hook_real(
         cmd.current_dir(dir).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd
     };
-    output_with_timeout(cmd, timeout).map(out_of)
+    run_command(cmd, timeout, cancel, &kill)
+}
+
+/// Percorso del filesystem Windows per un percorso nel formato del workspace
+/// (WSL: `\\wsl.localhost\<distro>\...`).
+fn fs_path(ws: &Workspace, path: &str) -> Result<std::path::PathBuf, String> {
+    if ws.kind == "wsl" {
+        let converted = crate::wsl::wsl_to_windows_path(distro_of(ws)?, path);
+        return converted.map(std::path::PathBuf::from).ok_or_else(|| format!("invalid WSL path: {path}"));
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// Legge un file di testo UTF-8 (senza BOM) di al piu' `max_bytes`. `Ok(None)`
+/// se non esiste. La dimensione si controlla prima di leggere.
+pub(super) fn read_text_file_real(ws: &Workspace, path: &str, max_bytes: u64) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(fs_path(ws, path)?) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {path}: {e}")),
+    };
+    let too_large = || format!("file too large (max {max_bytes} bytes)");
+    let len = file.metadata().map_err(|e| format!("cannot read {path}: {e}"))?.len();
+    if len > max_bytes {
+        return Err(too_large());
+    }
+    let mut buf = Vec::new();
+    file.take(max_bytes.saturating_add(1)).read_to_end(&mut buf).map_err(|e| format!("cannot read {path}: {e}"))?;
+    if buf.len() as u64 > max_bytes {
+        return Err(too_large());
+    }
+    let bytes = buf.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&buf);
+    String::from_utf8(bytes.to_vec()).map(Some).map_err(|_| format!("{path} is not valid UTF-8"))
+}
+
+/// Elimina un file (non una cartella). Ok anche se non esiste.
+pub(super) fn remove_file_real(ws: &Workspace, path: &str) -> Result<(), String> {
+    match std::fs::remove_file(fs_path(ws, path)?) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove {path}: {e}")),
+    }
 }
 
 /// Il percorso (file o cartella) esiste?
@@ -220,7 +264,7 @@ pub(super) fn run_setup<H: Host>(host: &H, c: &SetupCtx, report: &dyn Fn(&str)) 
         let step = format!("setup {}/{n}: {}", i + 1, clip_chars(cmd, 60));
         report(&step);
         let fail = |why: String| format!("worktree setup of '{}' failed at {step}: {why}", c.repo);
-        match host.run_hook(ws, c.worktree, cmd, &env, HOOK_TIMEOUT) {
+        match host.run_hook(ws, c.worktree, cmd, &env, HOOK_TIMEOUT, None) {
             Ok(o) if o.ok => {}
             Ok(o) => return Err(fail(describe(&o))),
             Err(e) => return Err(fail(e)),
@@ -237,7 +281,7 @@ pub(super) fn run_cleanup<H: Host>(host: &H, ws: &Workspace, cfg: &RepoConfig, v
     let mut warnings = Vec::new();
     for (i, cmd) in cfg.cleanup.iter().enumerate() {
         let step = format!("cleanup {}/{n}: {}", i + 1, clip_chars(cmd, 60));
-        match host.run_hook(ws, v.worktree, cmd, &env, CLEANUP_TIMEOUT) {
+        match host.run_hook(ws, v.worktree, cmd, &env, CLEANUP_TIMEOUT, None) {
             Ok(o) if o.ok => {}
             Ok(o) => warnings.push(format!("{step} failed: {}", describe(&o))),
             Err(e) => warnings.push(format!("{step} failed: {e}")),
@@ -290,10 +334,8 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[test]
-    fn windows_hook_runs_in_cwd_with_env() {
-        let dir = std::env::temp_dir();
-        let ws = Workspace {
+    fn windows_ws(dir: &std::path::Path) -> Workspace {
+        Workspace {
             id: "w".into(),
             name: "w".into(),
             kind: "windows".into(),
@@ -312,12 +354,49 @@ mod tests {
             worker_rules: String::new(),
             repos: Default::default(),
             archived: false,
-        };
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_runs_in_cwd_with_env() {
+        let dir = std::env::temp_dir();
+        let ws = windows_ws(&dir);
         let env = vec![("TASK_ID".to_string(), "t 1".to_string())];
-        let o = run_hook_real(&ws, &dir.to_string_lossy(), "echo id=%TASK_ID% && cd", &env, Duration::from_secs(20)).unwrap();
+        let o = run_hook_real(&ws, &dir.to_string_lossy(), "echo id=%TASK_ID% && cd", &env, Duration::from_secs(20), None).unwrap();
         assert!(o.ok, "{o:?}");
         assert!(o.stdout.contains("id=t 1"), "{o:?}");
-        let fail = run_hook_real(&ws, &dir.to_string_lossy(), "exit 3", &[], Duration::from_secs(20)).unwrap();
+        let fail = run_hook_real(&ws, &dir.to_string_lossy(), "exit 3", &[], Duration::from_secs(20), None).unwrap();
         assert!(!fail.ok);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn text_files_real_read_and_remove() {
+        let dir = std::env::temp_dir().join(format!("cc-hooks-{}", new_run_marker()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws = windows_ws(&dir);
+        let p = |n: &str| dir.join(n).to_string_lossy().into_owned();
+
+        assert_eq!(read_text_file_real(&ws, &p("missing.txt"), 100).unwrap(), None);
+        std::fs::write(p("bom.txt"), b"\xEF\xBB\xBFciao").unwrap();
+        assert_eq!(read_text_file_real(&ws, &p("bom.txt"), 100).unwrap().as_deref(), Some("ciao"));
+        std::fs::write(p("big.txt"), vec![b'a'; 101]).unwrap();
+        let e = read_text_file_real(&ws, &p("big.txt"), 100).unwrap_err();
+        assert_eq!(e, "file too large (max 100 bytes)");
+        std::fs::write(p("bad.txt"), [0xFF, 0xFE, 0x41]).unwrap();
+        assert!(read_text_file_real(&ws, &p("bad.txt"), 100).unwrap_err().contains("UTF-8"));
+
+        remove_file_real(&ws, &p("bom.txt")).unwrap();
+        assert!(!dir.join("bom.txt").exists());
+        remove_file_real(&ws, &p("bom.txt")).unwrap();
+        assert!(remove_file_real(&ws, &dir.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wsl_run_gets_a_unique_marker_in_env() {
+        let argv = wsl_hook_argv("true", &[(RUN_MARKER_VAR.to_string(), "1-2-3".to_string())]);
+        assert_eq!(argv, ["env", "CLI_COMPANION_RUN=1-2-3", "sh", "-c", "true"]);
     }
 }

@@ -4,6 +4,7 @@ import type { WorkerPermission } from "./workerPermission";
 import type {
   BoardView,
   Delivery,
+  E2eRun,
   NewTaskSpec,
   TaskAction,
   TaskNotifyEvent,
@@ -347,6 +348,13 @@ export const api = {
   // Coda dei task (backend: src-tauri, contratto in docs/BOARD.MD).
   boardGet: (workspaceId: string) => invoke<BoardView>("board_get", { workspaceId }),
 
+  /** Avvia a mano gli E2E di un repository ("." = root); ritorna l'esecuzione in corso. */
+  e2eRunRepo: (workspaceId: string, repo: string) => invoke<E2eRun>("e2e_run_repo", { workspaceId, repo }),
+
+  /** Ultimo esito manuale degli E2E di un repository, se c'è. */
+  e2eLastResult: (workspaceId: string, repo: string) =>
+    invoke<E2eRun | null>("e2e_last_result", { workspaceId, repo }),
+
   /** Repository del workspace: "." se la root è un repo, più le sottocartelle con un .git. */
   workspaceDetectRepos: (workspaceId: string) =>
     invoke<string[]>("workspace_detect_repos", { workspaceId }),
@@ -425,6 +433,18 @@ export function onScheduleState(cb: (s: ScheduleState) => void) {
 
 export function onBoardUpdate(cb: (b: BoardView) => void) {
   return listen<BoardView>("board-update", (event) => cb(event.payload));
+}
+
+/** Un'esecuzione manuale degli E2E è partita o finita. */
+export interface E2eUpdateEvent {
+  workspace_id: string;
+  /** Chiave del repository ("." = root). */
+  repo: string;
+  run: E2eRun;
+}
+
+export function onE2eUpdate(cb: (e: E2eUpdateEvent) => void) {
+  return listen<E2eUpdateEvent>("e2e-update", (event) => cb(event.payload));
 }
 
 /** Un task richiede attenzione o e' fallito: notifica di sistema. */

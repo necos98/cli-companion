@@ -15,10 +15,12 @@ pub(super) const REVIEWER_METHODS: [&str; 2] = ["get_task_details", "propose_tas
 /// Risposta di `get_task` per un task di revisione: niente passi di consegna,
 /// invece i report dei task revisionati.
 pub(super) fn get_task_json(info: &EnvInfo, workspace_rules: &str, board: &Board) -> Value {
+    // Il revisore lancia gli E2E se almeno un task revisionato li richiede.
+    let reviewed_e2e = info.task.depends_on.iter().any(|d| board.task(d).is_some_and(|t| t.e2e));
     json!({
         "task": info.task.task,
         "title": info.task.title,
-        "instructions": texts::reviewer_instructions(info, workspace_rules),
+        "instructions": texts::reviewer_instructions(info, workspace_rules, reviewed_e2e),
         "environment": texts::environment(info),
         "reviewed_tasks": board::reviewed_tasks(board, info.task),
     })

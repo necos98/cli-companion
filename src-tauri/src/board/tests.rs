@@ -702,6 +702,191 @@ fn delivery_steps_per_mode() {
     assert!(text.contains("--rebase") && text.contains("--title \"Say 'hi'\""), "{text}");
 }
 
+/// Testi di consegna congelati: senza `e2e` non devono cambiare di un byte.
+#[test]
+fn delivery_steps_are_byte_identical_for_unflagged_tasks() {
+    let pr_merge = "gh pr merge <pr-url> --squash. If the repository requires checks or reviews, use --auto and wait until \
+                    `gh pr view <pr-url> --json state` reports MERGED. If the merge is not possible, call complete_task with status \
+                    \"failed\", the reason and the PR link.";
+    let pr_create = "gh pr create --base main --head task/a --title \"Task a\" --body \"<short summary of the work>\". \
+                     If a PR for this branch already exists, reuse it.";
+    let last = "Then call complete_task with status \"completed\", `commit`";
+    let cases: Vec<(DeliveryMode, bool, String)> = vec![
+        (
+            DeliveryMode::Pr,
+            true,
+            format!(
+                "Delivery: pull request, one worktree per task\n\
+                 1. Commit your work on task/a (your worktree is already on it).\n\
+                 2. git fetch origin\n\
+                 3. git rebase origin/main. Resolve conflicts, then repeat the verification the task asks for.\n\
+                 4. git push -u origin task/a (use --force-with-lease after a rebase).\n\
+                 5. {pr_create}\n\
+                 6. {pr_merge}\n\
+                 7. If the base branch advanced meanwhile, repeat the rebase and the push.\n\
+                 8. git push origin --delete task/a (ignore the error if the branch is already deleted).\n\
+                 Do not check out other branches: the worktree stays on task/a.\n\
+                 {last} and `pr_url`."
+            ),
+        ),
+        (
+            DeliveryMode::Pr,
+            false,
+            format!(
+                "Delivery: pull request, in place in the repository checkout\n\
+                 1. Make sure the checkout has no uncommitted changes in the files you will touch (the user may have other work in progress there).\n\
+                 2. git fetch origin\n\
+                 3. git switch -c task/a origin/main (or main if the repository has no remote).\n\
+                 4. Do the work and commit it.\n\
+                 5. git rebase origin/main. Resolve conflicts, then repeat the verification the task asks for.\n\
+                 6. git push -u origin task/a (use --force-with-lease after a rebase).\n\
+                 7. {pr_create}\n\
+                 8. {pr_merge}\n\
+                 9. If the base branch advanced meanwhile, repeat the rebase and the push.\n\
+                 10. git push origin --delete task/a (ignore the error if the branch is already deleted).\n\
+                 11. git switch main && git pull --ff-only, then git branch -D task/a.\n\
+                 {last} and `pr_url`."
+            ),
+        ),
+        (
+            DeliveryMode::LocalMerge,
+            true,
+            format!(
+                "Delivery: local merge, one worktree per task\n\
+                 1. Commit your work on task/a (your worktree is already on it).\n\
+                 2. git rebase main. Resolve conflicts, then repeat the verification the task asks for.\n\
+                 3. git -C \"C:\\proj\" merge --ff-only task/a\n\
+                 4. If it fails because main advanced, rebase again and retry. If the main checkout has changes that prevent the merge, call complete_task with status \"failed\" and the reason.\n\
+                 Do not check out other branches in the worktree.\n\
+                 {last}."
+            ),
+        ),
+        (
+            DeliveryMode::LocalMerge,
+            false,
+            format!(
+                "Delivery: local merge, in place in the repository checkout\n\
+                 1. git switch -c task/a main\n\
+                 2. Do the work and commit it.\n\
+                 3. git switch main\n\
+                 4. git merge --ff-only task/a. If it is not a fast-forward: git rebase main task/a, then git switch main and retry the merge.\n\
+                 5. git branch -d task/a\n\
+                 {last}."
+            ),
+        ),
+        (
+            DeliveryMode::Push,
+            true,
+            format!(
+                "Delivery: commit and push on the current branch\n\
+                 1. Commit your work on the current branch.\n\
+                 2. git pull --rebase. If it brought changes, repeat the verification the task asks for.\n\
+                 3. git push\n\
+                 {last}."
+            ),
+        ),
+        (
+            DeliveryMode::Commit,
+            false,
+            format!(
+                "Delivery: commit on the current branch\n\
+                 1. Commit your work on the current branch. Do not push.\n\
+                 {last}."
+            ),
+        ),
+    ];
+    for (mode, parallel, expected) in cases {
+        let d = delivery(mode, parallel);
+        let t = worktree_task(&d);
+        assert_eq!(texts::delivery_steps(&env(&d, &t, None)), expected, "{mode:?}/{parallel}");
+    }
+}
+
+#[test]
+fn flagged_tasks_get_the_e2e_step_before_publishing_and_the_gate_line() {
+    // (modo, parallelo, passo che precede gli E2E, primo passo di pubblicazione dopo).
+    let cases: [(DeliveryMode, bool, &str, Option<&str>); 6] = [
+        (DeliveryMode::Pr, true, "git rebase origin/main", Some("git push -u")),
+        (DeliveryMode::Pr, false, "git rebase origin/main", Some("git push -u")),
+        (DeliveryMode::LocalMerge, true, "git rebase main.", Some("merge --ff-only task/a")),
+        (DeliveryMode::LocalMerge, false, "Do the work and commit it.", Some("git switch main\n")),
+        (DeliveryMode::Push, true, "git pull --rebase", Some("git push\n")),
+        (DeliveryMode::Commit, false, "Commit your work on the current branch", None),
+    ];
+    for (mode, parallel, before, after) in cases {
+        let d = delivery(mode, parallel);
+        let mut t = worktree_task(&d);
+        let plain = texts::delivery_steps(&env(&d, &t, None));
+        t.e2e = true;
+        let text = texts::delivery_steps(&env(&d, &t, None));
+        let ctx = format!("{mode:?}/{parallel}:\n{text}");
+        assert_eq!(text.matches(texts::E2E_STEP).count(), 1, "{ctx}");
+        assert_eq!(text.matches(texts::E2E_GATE).count(), 1, "{ctx}");
+        let step = text.find(texts::E2E_STEP).unwrap();
+        assert!(text.find(before).unwrap() < step, "{ctx}");
+        if let Some(a) = after {
+            assert!(step < text.find(a).unwrap(), "{ctx}");
+        }
+        // Numerata di seguito: un passo in piu' rispetto al testo senza E2E.
+        let numbered = |s: &str| s.lines().filter(|l| l.split_once(". ").is_some_and(|(n, _)| n.parse::<u32>().is_ok())).count();
+        assert_eq!(numbered(&text), numbered(&plain) + 1, "{ctx}");
+        let num_of = |pred: &dyn Fn(&str) -> bool| -> usize {
+            let l = text.lines().find(|l| pred(l)).expect(&ctx);
+            l.split_once(". ").unwrap().0.parse().unwrap()
+        };
+        assert_eq!(num_of(&|l| l.ends_with(texts::E2E_STEP)), num_of(&|l| l.contains(before)) + 1, "{ctx}");
+        assert!(text.find(texts::E2E_GATE).unwrap() < text.find("Then call complete_task").unwrap(), "{ctx}");
+        assert!(text.is_ascii());
+    }
+}
+
+#[test]
+fn environment_mentions_the_e2e_run_only_for_flagged_tasks_with_a_config() {
+    let d = delivery(DeliveryMode::Pr, true);
+    let mut t = worktree_task(&d);
+    let cfg = RepoConfig {
+        e2e: Some(crate::workspaces::E2eConfig { command: "npm run e2e".into(), junit: "out/junit.xml".into(), timeout_min: 7 }),
+        ..Default::default()
+    };
+    let plain = texts::environment(&env(&d, &t, None));
+    // Non marcato, anche con la configurazione: come oggi.
+    assert_eq!(texts::environment(&env(&d, &t, Some(&cfg))), plain);
+    t.e2e = true;
+    // Marcato ma senza configurazione: il gate non si applica, nessuna riga.
+    assert_eq!(texts::environment(&env(&d, &t, None)), plain);
+    let text = texts::environment(&env(&d, &t, Some(&cfg)));
+    let line = "- E2E tests: required for this task. The app runs `npm run e2e` in your working folder through run_e2e and reads the JUnit report out/junit.xml (timeout 7 min).\n";
+    assert_eq!(text, format!("{plain}{line}"));
+}
+
+#[test]
+fn reviewer_instructions_add_the_e2e_paragraph_only_when_reviewed_and_configured() {
+    let d = delivery(DeliveryMode::Pr, true);
+    let t = worktree_task(&d);
+    let cfg = RepoConfig {
+        e2e: Some(crate::workspaces::E2eConfig { command: "x".into(), junit: "j.xml".into(), timeout_min: 5 }),
+        ..Default::default()
+    };
+    let base = format!(
+        "You are an automated cli-companion reviewer. Work only inside C:\\proj\\.worktrees\\a; never touch other folders.\n\n{}",
+        texts::REVIEWER_INSTRUCTIONS.trim_end()
+    );
+    for rules in ["", "  keep it short ", "r"] {
+        let tail = if rules.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\n\nWorkspace rules (always apply; they add project specifics and never relax the security rules above):\n{}", rules.trim())
+        };
+        let plain = format!("{base}{tail}");
+        for (flag, config) in [(false, None), (false, Some(&cfg)), (true, None)] {
+            assert_eq!(texts::reviewer_instructions(&env(&d, &t, config), rules, flag), plain, "{flag}/{}", config.is_some());
+        }
+        let text = texts::reviewer_instructions(&env(&d, &t, Some(&cfg)), rules, true);
+        assert_eq!(text, format!("{base}{}{tail}", texts::E2E_REVIEWER));
+        assert!(texts::E2E_REVIEWER.contains("run_e2e") && texts::E2E_REVIEWER.contains("get_e2e_result"));
+    }
+}
+
 #[test]
 fn environment_describes_where_and_how_the_worker_runs() {
     let d = delivery(DeliveryMode::Pr, true);
