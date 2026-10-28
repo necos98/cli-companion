@@ -27,9 +27,12 @@ pub struct TaskSpec {
     pub repo: Option<String>,
     pub model: Option<String>,
     pub kind: TaskKind,
+    /// Il task deve superare gli E2E del repository.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub e2e: bool,
 }
 
-const SPEC_KEYS: [&str; 7] = ["id", "title", "task", "depends_on", "repo", "model", "kind"];
+const SPEC_KEYS: [&str; 8] = ["id", "title", "task", "depends_on", "repo", "model", "kind", "e2e"];
 
 impl TaskSpec {
     pub fn from_task(t: &Task) -> TaskSpec {
@@ -41,6 +44,7 @@ impl TaskSpec {
             repo: t.repo.clone(),
             model: t.model.clone(),
             kind: t.kind,
+            e2e: t.e2e,
         }
     }
 }
@@ -193,7 +197,13 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
             .ok_or_else(|| format!("invalid kind '{}' (allowed: work, review)", clip_chars(s, 20)))?,
         Some(_) => return Err("kind must be a string".to_string()),
     };
-    Ok(TaskSpec { id, title, task, depends_on, repo, model, kind })
+    let e2e = match obj.get("e2e") {
+        None => base.is_some_and(|b| b.e2e),
+        Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("e2e must be a boolean".to_string()),
+    };
+    Ok(TaskSpec { id, title, task, depends_on, repo, model, kind, e2e })
 }
 
 /// Parametri di `propose_tasks`: `{ tasks: [TaskSpec] }`, ogni task con id.

@@ -6,7 +6,8 @@
 use crate::agents::PermissionMode;
 use crate::automation::settings::REASON_MAX;
 use crate::workspaces::{
-    DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
+    DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_E2E_TIMEOUT_MIN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_LAUNCHES,
+    MAX_PATCH_REPOS, MIN_E2E_TIMEOUT_MIN, MAX_REPO_PATH_LEN,
     MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_RULES_LEN,
 };
 use crate::worker_permissions::{MAX_RULES, MAX_RULE_CHARS};
@@ -70,6 +71,10 @@ fn task_properties(with_id: bool) -> Value {
             "type": "string",
             "enum": ["work", "review"],
             "description": "review = a reviewer checks the integrated result of its depends_on (at least one) and proposes fixes; default work."
+        },
+        "e2e": {
+            "type": "boolean",
+            "description": "Must pass the repo E2E tests; needs the repo E2E config. Default false."
         }
     });
     if with_id {
@@ -259,7 +264,17 @@ fn settings_properties() -> Value {
                     "copy_ignored": { "type": "array", "items": { "type": "string" }, "maxItems": MAX_REPO_COMMANDS },
                     "setup": commands,
                     "cleanup": commands,
-                    "remove_force": { "type": "boolean" }
+                    "remove_force": { "type": "boolean" },
+                    "e2e": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "command": { "type": "string", "maxLength": MAX_REPO_COMMAND_LEN },
+                            "junit": { "type": "string", "maxLength": MAX_REPO_PATH_LEN },
+                            "timeout_min": { "type": "integer", "minimum": MIN_E2E_TIMEOUT_MIN, "maximum": MAX_E2E_TIMEOUT_MIN }
+                        },
+                        "required": ["command", "junit"],
+                        "additionalProperties": false
+                    }
                 },
                 "additionalProperties": false
             },

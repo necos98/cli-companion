@@ -113,6 +113,9 @@ pub struct Task {
     pub model: Option<String>,
     /// `work` consegna; `review` verifica il risultato integrato dei task da cui dipende.
     pub kind: TaskKind,
+    /// Il task deve superare gli E2E del repository (richiede `RepoConfig::e2e`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub e2e: bool,
     pub status: TaskStatus,
     pub worker_status: Option<WorkerStatus>,
     pub session: Option<String>,
@@ -245,6 +248,9 @@ fn compact_row(v: &TaskView) -> Value {
     if t.kind == TaskKind::Review {
         o["kind"] = Value::from(t.kind.as_str());
     }
+    if t.e2e {
+        o["e2e"] = Value::Bool(true);
+    }
     if let Some(r) = &t.report {
         o["summary"] = Value::from(clip_with_ellipsis(&r.summary, COMPACT_SUMMARY_MAX));
         if let Some(v) = r.verdict {
@@ -293,6 +299,7 @@ impl Task {
             agent: DEFAULT_AGENT.to_string(),
             model: s.model,
             kind: s.kind,
+            e2e: s.e2e,
             created_at: now,
             updated_at: now,
             ..Task::default()
@@ -306,6 +313,7 @@ impl Task {
         self.repo = s.repo;
         self.model = s.model;
         self.kind = s.kind;
+        self.e2e = s.e2e;
         self.updated_at = now;
     }
 

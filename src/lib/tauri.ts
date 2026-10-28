@@ -80,6 +80,16 @@ export interface RepoConfig {
   setup: string[];
   cleanup: string[];
   remove_force: boolean;
+  /** Test E2E facoltativi del repository; assente = nessuno. */
+  e2e?: E2eConfig;
+}
+
+/** Come l'app esegue gli E2E di un repository (vedi `E2eConfig` in workspaces/e2e.rs). */
+export interface E2eConfig {
+  command: string;
+  /** Percorso del report JUnit, relativo alla cartella del task. */
+  junit: string;
+  timeout_min: number;
 }
 
 /** Messaggi sul canale dedicato di una sessione pty (vedi PtyEvent in pty.rs). */

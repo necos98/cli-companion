@@ -5,7 +5,7 @@ use crate::automation::settings::REASON_MAX;
 use crate::worker_permissions::{MAX_RULES, MAX_RULE_CHARS};
 use crate::workspaces::{
     DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
-    MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_RULES_LEN,
+    MAX_E2E_TIMEOUT_MIN, MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_RULES_LEN,
 };
 use std::cell::RefCell;
 
@@ -16,11 +16,12 @@ use std::cell::RefCell;
 /// 8_700 = 5_600 plus the two settings tools (propose_settings is a schema of eleven fields with
 /// their limits and enums, measured 8_604 after trimming every description that was not needed).
 /// 9_000 = 8_700 plus the `kind` field of the tasks in propose_tasks and update_task (measured 8_998).
-const SESSION_TOOLS_CEILING: usize = 9_000;
+/// 9_500 = 9_000 plus the `e2e` flag of the tasks and the `e2e` object of the repo settings (measured 9_477).
+const SESSION_TOOLS_CEILING: usize = 9_500;
 const WORKER_TOOLS_CEILING: usize = 2_600;
-/// The reviewer set (measured 3_892): its own get_task and complete_task (verdict, findings, tests) plus the shared
+/// The reviewer set (measured 4_005, with the `e2e` flag of propose_tasks): its own get_task and complete_task (verdict, findings, tests) plus the shared
 /// get_task_details and propose_tasks definitions.
-const REVIEWER_TOOLS_CEILING: usize = 3_900;
+const REVIEWER_TOOLS_CEILING: usize = 4_050;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
 /// The reviewer server instructions (measured 345).
 const REVIEWER_INSTRUCTIONS_CEILING: usize = 400;
@@ -174,7 +175,7 @@ fn schemas_match_the_rust_validation() {
     let by = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
     let propose = by("propose_tasks");
     let item = &propose["inputSchema"]["properties"]["tasks"]["items"];
-    assert_eq!(keys(&item["properties"]), ["depends_on", "id", "kind", "model", "repo", "task", "title"]);
+    assert_eq!(keys(&item["properties"]), ["depends_on", "e2e", "id", "kind", "model", "repo", "task", "title"]);
     assert_eq!(item["properties"]["kind"]["enum"], json!(["work", "review"]));
     assert_eq!(item["required"], json!(["id", "title", "task", "model"]));
     assert_eq!(item["properties"]["model"]["type"], "string");
@@ -183,7 +184,7 @@ fn schemas_match_the_rust_validation() {
     assert_eq!(propose["inputSchema"]["properties"]["tasks"]["maxItems"], 20);
     assert!(propose["description"].as_str().unwrap().contains("never wait"));
     let upd = by("update_task");
-    assert_eq!(keys(&upd["inputSchema"]["properties"]), ["depends_on", "id", "kind", "model", "repo", "task", "title"]);
+    assert_eq!(keys(&upd["inputSchema"]["properties"]), ["depends_on", "e2e", "id", "kind", "model", "repo", "task", "title"]);
     assert_eq!(upd["inputSchema"]["required"], json!(["id"]));
     assert_eq!(upd["inputSchema"]["properties"]["model"]["type"], json!(["string", "null"]));
     assert_eq!(keys(&by("list_tasks")["inputSchema"]["properties"]), ["status"]);
@@ -240,7 +241,7 @@ fn schemas_match_the_rust_validation() {
     assert_eq!(repo["additionalProperties"], false);
     assert_eq!(
         keys(&repo["properties"]),
-        ["base_branch", "cleanup", "container_root", "copy_ignored", "remove_force", "setup"]
+        ["base_branch", "cleanup", "container_root", "copy_ignored", "e2e", "remove_force", "setup"]
     );
     for list in ["copy_ignored", "setup", "cleanup"] {
         assert_eq!(repo["properties"][list]["maxItems"], MAX_REPO_COMMANDS, "{list}");
@@ -248,6 +249,11 @@ fn schemas_match_the_rust_validation() {
     for list in ["setup", "cleanup"] {
         assert_eq!(repo["properties"][list]["items"]["maxLength"], MAX_REPO_COMMAND_LEN, "{list}");
     }
+    let e2e = &repo["properties"]["e2e"];
+    assert_eq!(e2e["type"], json!(["object", "null"]));
+    assert_eq!(e2e["required"], json!(["command", "junit"]));
+    assert_eq!(keys(&e2e["properties"]), ["command", "junit", "timeout_min"]);
+    assert_eq!(e2e["properties"]["timeout_min"]["maximum"], MAX_E2E_TIMEOUT_MIN);
     let description = settings["description"].as_str().unwrap();
     assert!(description.contains("NO feedback") && description.contains("never wait") && description.contains("sensitive"));
 

@@ -5,8 +5,8 @@
 use super::{
     check_default_launch, clear_default_if_removed, find_ws_mut, next_launch_id, normalize_permission_rules,
     normalize_rules, normalize_worker_model, parse_worker_permission, persist, repo_config_key, validate_launch,
-    Delivery, DeliveryMode, Launch, MergeMethod, RepoConfig, StoreData, Workspace, ALLOW_RULES_LABEL,
-    DENY_RULES_LABEL, MAX_LAUNCH_NAME_LEN, MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_REPO_PATH_LEN,
+    Delivery, DeliveryMode, E2eConfig, Launch, MergeMethod, RepoConfig, StoreData, Workspace, ALLOW_RULES_LABEL,
+    DENY_RULES_LABEL, MAX_E2E_TIMEOUT_MIN, MAX_LAUNCH_NAME_LEN, MIN_E2E_TIMEOUT_MIN, MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_REPO_PATH_LEN,
     MAX_RULES_LEN,
 };
 use crate::worker_permissions::{MAX_RULES, MAX_RULE_CHARS};
@@ -110,6 +110,9 @@ pub struct RepoPatch {
     pub cleanup: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_force: Option<bool>,
+    /// Oggetto intero al posto di quello attuale; `null` lo rimuove.
+    #[serde(default, deserialize_with = "de_double_option", skip_serializing_if = "Option::is_none")]
+    pub e2e: Option<Option<E2eConfig>>,
 }
 
 impl RepoPatch {
@@ -138,6 +141,9 @@ impl RepoPatch {
         if let Some(v) = self.remove_force {
             c.remove_force = v;
         }
+        if let Some(v) = &self.e2e {
+            c.e2e = v.clone();
+        }
         c.normalized()
     }
 
@@ -150,6 +156,7 @@ impl RepoPatch {
             setup: self.setup.as_ref().map(|_| cfg.setup.clone()),
             cleanup: self.cleanup.as_ref().map(|_| cfg.cleanup.clone()),
             remove_force: self.remove_force.map(|_| cfg.remove_force),
+            e2e: self.e2e.as_ref().map(|_| cfg.e2e.clone()),
         }
     }
 
@@ -162,6 +169,7 @@ impl RepoPatch {
             setup: Some(cfg.setup.clone()),
             cleanup: Some(cfg.cleanup.clone()),
             remove_force: Some(cfg.remove_force),
+            e2e: Some(cfg.e2e.clone()),
         }
     }
 }
@@ -349,8 +357,9 @@ impl SettingsPatch {
     /// l'interfaccia. Ordine: `worker_permission`, `worker_allow`,
     /// `worker_deny`, `launches`, `default_launch`; poi, per ogni repository
     /// (chiavi ordinate) con patch non nulla, `repos[<chiave>].setup` e
-    /// `repos[<chiave>].cleanup` se presenti (es. `repos[.].setup`,
-    /// `repos[api/web].cleanup`). Le rimozioni non sono sensibili.
+    /// `repos[<chiave>].cleanup` se presenti, e `repos[<chiave>].e2e` se
+    /// impostato (es. `repos[.].setup`, `repos[api/web].cleanup`,
+    /// `repos[.].e2e`). Le rimozioni non sono sensibili.
     pub fn sensitive(&self) -> Vec<String> {
         let direct = [
             ("worker_permission", self.worker_permission.is_some()),
@@ -367,6 +376,9 @@ impl SettingsPatch {
             }
             if p.cleanup.is_some() {
                 out.push(format!("repos[{key}].cleanup"));
+            }
+            if matches!(p.e2e, Some(Some(_))) {
+                out.push(format!("repos[{key}].e2e"));
             }
         }
         out
@@ -506,7 +518,21 @@ fn message_table() -> Vec<(&'static str, String)> {
         ),
         ("troppi comandi di setup", format!("too many setup commands (max {MAX_REPO_COMMANDS})")),
         ("troppi comandi di pulizia", format!("too many cleanup commands (max {MAX_REPO_COMMANDS})")),
-        ("nome avvio mancante", "launch name is missing".to_string()),
+        ("comando E2E mancante", "e2e command is missing".to_string()),
+        ("il comando E2E", "e2e command must be single-line".to_string()),
+        ("comando E2E troppo lungo", format!("e2e command too long (max {MAX_REPO_COMMAND_LEN} characters)")),
+        (
+            "timeout E2E non valido",
+            format!("invalid e2e timeout_min (from {MIN_E2E_TIMEOUT_MIN} to {MAX_E2E_TIMEOUT_MIN} minutes)"),
+        ),
+        ("percorso JUnit E2E mancante", "e2e junit path is missing".to_string()),
+        ("il percorso JUnit E2E", "e2e junit path must be relative to the repository".to_string()),
+        ("percorso JUnit E2E non valido (niente", "invalid e2e junit path (no '..')".to_string()),
+        (
+            "percorso JUnit E2E non valido",
+            format!("invalid e2e junit path (no control characters, max {MAX_REPO_PATH_LEN} characters)"),
+        ),
+        ("nome avvio mancante","launch name is missing".to_string()),
         ("nome avvio troppo lungo", format!("launch name too long (max {MAX_LAUNCH_NAME_LEN} characters)")),
         ("comando avvio mancante", "launch command is missing".to_string()),
         ("avvio non trovato", "launch not found: an id must be one of the workspace's current launches".to_string()),

@@ -5,7 +5,7 @@
 //! `crate::board`. Il contratto e' `docs/BOARD.MD`.
 
 use super::hooks::HOOK_TIMEOUT;
-use super::worktrees::{ensure_repos, CleanupTarget, StartJob};
+use super::worktrees::{check_e2e_configured, ensure_repos, CleanupTarget, StartJob};
 use super::*;
 use crate::board::{self, parse_proposal, parse_spec, SchedCtx, Task, TaskSpec, TaskView};
 use serde_json::json;
@@ -460,6 +460,7 @@ pub(super) fn task_create<H: Host>(st: &AutomationState, host: &H, ws_id: &str, 
         if spec.id.is_empty() {
             spec.id = r.free_id(ws_id, &spec.title);
         }
+        check_e2e_configured(&ws, std::slice::from_ref(&spec))?;
         r.create_task(ws_id, spec, now)
     })?;
     st.view(host, ws_id)
@@ -478,6 +479,7 @@ pub(super) fn update_checked<H: Host>(
     if spec.repo != current.task.repo {
         ensure_repos(host, ws, [spec.repo.as_deref()])?;
     }
+    check_e2e_configured(ws, std::slice::from_ref(&spec))?;
     let now = now_millis();
     st.run(host, |r| r.update_task(&ws.id, id, patch, now))
 }
@@ -540,6 +542,7 @@ pub(super) fn proposal_decide<H: Host>(
         // Nuova validazione: la modalita' di consegna o i repository possono essere cambiati.
         let specs = st.run(host, |r| r.proposal_specs(ws_id, proposal_id))?;
         ensure_repos(host, &ws, specs.iter().map(|s| s.repo.as_deref()))?;
+        check_e2e_configured(&ws, &specs)?;
     }
     let now = now_millis();
     st.run(host, |r| r.decide_proposal(ws_id, proposal_id, accept, now))?;
@@ -595,6 +598,7 @@ pub(super) fn propose_tasks<H: Host>(
 ) -> Result<Value, String> {
     let specs = parse_proposal(params)?;
     ensure_repos(host, ws, specs.iter().map(|s| s.repo.as_deref()))?;
+    check_e2e_configured(ws, &specs)?;
     let now = now_millis();
     let id = st.run(host, |r| r.propose(&ws.id, tab, source_task, specs, now))?;
     Ok(json!({

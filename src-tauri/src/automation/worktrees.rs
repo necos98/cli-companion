@@ -6,7 +6,7 @@
 use super::hooks;
 use super::*;
 use crate::agents::AutomationRequest;
-use crate::board::{repo_key, valid_branch, Task, WorktreeInfo};
+use crate::board::{repo_key, valid_branch, Task, TaskSpec, WorktreeInfo};
 use crate::workspaces::{DeliveryMode, RepoConfig};
 use std::path::PathBuf;
 
@@ -94,6 +94,18 @@ pub(super) fn repo_dir(ws: &Workspace, repo: Option<&str>) -> String {
 
 fn repo_cfg<'a>(ws: &'a Workspace, repo: Option<&str>) -> Option<&'a RepoConfig> {
     ws.repos.get(&repo_key(repo))
+}
+
+/// Un task `e2e` richiede che il suo repository abbia gli E2E configurati.
+pub(super) fn check_e2e_configured(ws: &Workspace, specs: &[TaskSpec]) -> Result<(), String> {
+    match specs.iter().find(|s| s.e2e && !repo_cfg(ws, s.repo.as_deref()).is_some_and(|c| c.e2e.is_some())) {
+        Some(s) => Err(format!(
+            "task '{}': e2e requires an E2E command configured for repository '{}'",
+            s.id,
+            repo_key(s.repo.as_deref())
+        )),
+        None => Ok(()),
+    }
 }
 
 /// I repository esistono e, se la modalita' di consegna usa i branch, sono

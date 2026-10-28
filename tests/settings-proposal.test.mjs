@@ -9,8 +9,10 @@ import {
   MODEL_DEFAULT_TEXT,
   NOTE_RUNS_COMMANDS,
   NOTE_WIDENS_PERMISSIONS,
+  E2E_NONE_TEXT,
   UNKNOWN_TEXT,
   diffLaunches,
+  e2eText,
   repoGroupTitle,
   sensitiveNote,
   settingsProposalRows,
@@ -247,5 +249,36 @@ describe("conteggio delle proposte", () => {
     assert.equal(taskCounts(board).proposals, 3);
     assert.equal(pendingProposals({ proposals: [{}] }), 1);
     assert.equal(pendingProposals(null), 0);
+  });
+});
+
+describe("settingsProposalRows: test E2E del repository", () => {
+  const old = { command: "npm test", junit: "j.xml", timeout_min: 20 };
+  const next = { command: "npx playwright test", junit: "out/junit.xml", timeout_min: 30 };
+
+  it("prima e dopo come riga di valore, sensibile quando si imposta", () => {
+    const r = rows({ repos: { ".": { e2e: next } } }, { repos: { ".": { e2e: old } } }, ["repos[.].e2e"]);
+    const row = byField(r, "repos[.].e2e");
+    assert.deepEqual(
+      [row.kind, row.label, row.group, row.before, row.after, row.sensitive],
+      [
+        "value",
+        "Test E2E",
+        repoGroupTitle("."),
+        "npm test (JUnit: j.xml, timeout 20 min)",
+        "npx playwright test (JUnit: out/junit.xml, timeout 30 min)",
+        NOTE_RUNS_COMMANDS,
+      ],
+    );
+  });
+
+  it("senza configurazione prima o dopo mostra Nessuno; la rimozione non e' sensibile", () => {
+    const added = rows({ repos: { a: { e2e: next } } }, { repos: { a: { e2e: null } } }, ["repos[a].e2e"]);
+    assert.equal(byField(added, "repos[a].e2e").before, E2E_NONE_TEXT);
+    const removed = rows({ repos: { a: { e2e: null } } }, { repos: { a: { e2e: old } } });
+    const row = byField(removed, "repos[a].e2e");
+    assert.deepEqual([row.after, row.sensitive], [E2E_NONE_TEXT, null]);
+    assert.equal(byField(rows({ repos: { a: { e2e: next } } }), "repos[a].e2e").before, null);
+    assert.equal(e2eText(undefined), E2E_NONE_TEXT);
   });
 });

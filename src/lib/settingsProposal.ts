@@ -6,6 +6,7 @@
 
 import { deliveryLabel, mergeMethodLabel } from "./board.ts";
 import type { RepoPatch, SettingsPatch, SettingsProposalView } from "./board.ts";
+import type { E2eConfig } from "./tauri.ts";
 import { SHELL_LAUNCH_ID } from "./launch.ts";
 import { WORKER_PERMISSIONS, workerPermissionLabel } from "./workerPermission.ts";
 import type { WorkerPermission } from "./workerPermission.ts";
@@ -24,6 +25,7 @@ export const CONTAINER_ROOT_NONE_TEXT = "Nessuno";
 export const FLAG_ON_TEXT = "Acceso";
 export const FLAG_OFF_TEXT = "Spento";
 export const REMOVE_REPO_TEXT = "Rimuovi configurazione";
+export const E2E_NONE_TEXT = "Nessuno";
 
 /** Note dei campi sensibili. */
 export const NOTE_RUNS_COMMANDS = "esegue comandi sul tuo PC";
@@ -51,6 +53,7 @@ const LABEL = {
   setup: "Comandi di setup",
   cleanup: "Comandi di pulizia",
   remove_force: "Rimuovi il worktree anche se sporco (--force)",
+  e2e: "Test E2E",
 } as const;
 
 /** Valore singolo: prima e dopo come testo (`before` null = non noto). */
@@ -113,6 +116,12 @@ function missingFrom(before: readonly string[], after: readonly string[]): strin
 
 const textOrEmpty = (s: string | null | undefined, empty = EMPTY_TEXT): string => (s ? s : empty);
 const flagText = (v: boolean): string => (v ? FLAG_ON_TEXT : FLAG_OFF_TEXT);
+
+/** Comando, report e timeout di una configurazione E2E su una riga. */
+export function e2eText(e2e: E2eConfig | null | undefined): string {
+  if (!e2e) return E2E_NONE_TEXT;
+  return `${e2e.command} (JUnit: ${e2e.junit}, timeout ${e2e.timeout_min} min)`;
+}
 
 function permissionText(v: string): string {
   return WORKER_PERMISSIONS.includes(v as WorkerPermission) ? workerPermissionLabel(v as WorkerPermission) : v;
@@ -300,6 +309,10 @@ function repoRows(ctx: Ctx, key: string, patch: RepoPatch | null, current: RepoP
   if (patch.remove_force !== undefined) {
     const before = known ? flagText(now.remove_force ?? false) : null;
     rows.push(valueRow(ctx, field("remove_force"), LABEL.remove_force, before, flagText(patch.remove_force), group));
+  }
+  if (patch.e2e !== undefined) {
+    const before = known ? e2eText(now.e2e) : null;
+    rows.push(valueRow(ctx, field("e2e"), LABEL.e2e, before, e2eText(patch.e2e), group));
   }
   return rows;
 }

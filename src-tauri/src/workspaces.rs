@@ -5,7 +5,9 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
+mod e2e;
 mod settings_patch;
+pub use e2e::{E2eConfig, MAX_E2E_TIMEOUT_MIN, MIN_E2E_TIMEOUT_MIN};
 pub use settings_patch::{
     apply_settings_patch, validation_error_en, SettingsPatch, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
 };
@@ -18,7 +20,7 @@ pub const MAX_RULES_LEN: usize = 4000;
 /// Limiti di `RepoConfig`: voci per elenco, lunghezza di un comando e di un percorso.
 pub const MAX_REPO_COMMANDS: usize = 30;
 pub const MAX_REPO_COMMAND_LEN: usize = 2000;
-const MAX_REPO_PATH_LEN: usize = 300;
+pub(crate) const MAX_REPO_PATH_LEN: usize = 300;
 
 /// Avvio personalizzato di un workspace: comando eseguito all'apertura di un
 /// nuovo terminale.
@@ -107,6 +109,9 @@ pub struct RepoConfig {
     pub cleanup: Vec<String>,
     /// `git worktree remove --force`.
     pub remove_force: bool,
+    /// Test E2E facoltativi del repository (vedi `E2eConfig`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e2e: Option<E2eConfig>,
 }
 
 impl RepoConfig {
@@ -158,6 +163,7 @@ impl RepoConfig {
         self.copy_ignored = copy;
         self.setup = normalize_commands(&self.setup, "setup")?;
         self.cleanup = normalize_commands(&self.cleanup, "pulizia")?;
+        self.e2e = self.e2e.map(E2eConfig::normalized).transpose()?;
         Ok(self)
     }
 }
@@ -1078,6 +1084,22 @@ mod tests {
         let back: Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
         assert_eq!(back.repos["DDB"].setup, ["x"]);
         assert!(back.repos["DDB"].remove_force);
+    }
+
+    #[test]
+    fn repo_config_e2e_is_validated_optional_and_persisted() {
+        let e2e = |command: &str, junit: &str| E2eConfig { command: command.into(), junit: junit.into(), timeout_min: 20 };
+        let c = rc(|c| c.e2e = Some(e2e(" npm run e2e ", "out\\j.xml"))).unwrap();
+        assert_eq!(c.e2e, Some(e2e("npm run e2e", "out/j.xml")));
+        assert!(rc(|c| c.e2e = Some(e2e("", "j.xml"))).is_err());
+        assert!(rc(|c| c.e2e = Some(e2e("x", "../j.xml"))).is_err());
+        // Una configurazione senza e2e, o con e2e senza timeout, si legge; senza e2e non lo scrive.
+        let old: RepoConfig = serde_json::from_str(r#"{"setup":["s"]}"#).unwrap();
+        assert!(old.e2e.is_none() && !serde_json::to_string(&old).unwrap().contains("e2e"));
+        let new: RepoConfig = serde_json::from_str(r#"{"e2e":{"command":"c","junit":"j.xml"}}"#).unwrap();
+        assert_eq!(new.e2e.as_ref().map(|e| e.timeout_min), Some(20));
+        let back: RepoConfig = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
     }
 
     fn launch(id: &str, is_default: bool) -> Launch {

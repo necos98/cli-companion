@@ -73,6 +73,9 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
     false, solo pr/local_merge), merge_method: squash|merge|rebase (default squash) }`; comando
     `set_delivery(id, delivery)` (normalizza `parallel`) e riallineamento dello scheduler.
   - `use_schedule`: bool, i task partono solo nelle fasce orarie; `set_use_schedule(id, value)`.
+  - `repos`: `RepoConfig` per repository (branch base, file da copiare, setup e pulizia dei worktree,
+    `e2e` opzionale: `E2eConfig { command, junit, timeout_min }` in `workspaces/e2e.rs`; vedi
+    BOARD.MD, "Test E2E").
   - Migrazioni al caricamento (`parse_workspaces`, sul JSON): `auto_orchestrate.enabled` ->
     `use_schedule`; `worktree_setup` -> `repos["."].setup` se vuoto; i due campi spariscono.
 - Stato condiviso `WorkspaceStore` (in memoria + salvataggio su ogni modifica).
@@ -304,6 +307,8 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
 - `worktrees.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn), pulizia a
   consegna avvenuta, rilevamento dei repository, esecuzione di git (timeout 120 s, WSL via
   `wsl.exe -e`). `hooks.rs`: setup e pulizia per repository (`RepoConfig`).
+  `check_e2e_configured` (in `worktrees.rs`) rifiuta un task `e2e` senza configurazione E2E del
+  repository.
 - `rpc.rs`: `dispatch` smista per ruolo. Worker: `get_task`, `complete_task`. Sessione normale
   (qualunque altro tab di cli-companion, workspace = quello del tab): `propose_tasks`,
   `list_tasks`, `get_task_details`, `update_task`, `delete_task`, `get_workspace_settings`,

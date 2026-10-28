@@ -7,7 +7,10 @@ import type { RepoConfig, Workspace } from "../../lib/tauri";
 import {
   configFromDraft,
   draftFromConfig,
+  DEFAULT_E2E_TIMEOUT_MIN,
   draftIsSaved,
+  MAX_E2E_TIMEOUT_MIN,
+  MIN_E2E_TIMEOUT_MIN,
   repoRows,
 } from "../../lib/repoConfig";
 import type { RepoDraft } from "../../lib/repoConfig";
@@ -139,6 +142,45 @@ const RepoCard = memo(function RepoCard({ workspaceId, repo, saved, missing, onW
             />
             Rimuovi il worktree anche se sporco (--force)
           </label>
+          <div className="flex flex-col gap-3 border-t pt-3">
+            <div>
+              <h4 className="text-[12px] font-semibold">Test E2E</h4>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Facoltativi: senza comando nessun task viene verificato. L’app esegue il comando nella cartella del
+                task e legge il report JUnit. Il server di sviluppo del task deve ascoltare sulla porta in{" "}
+                <span className="font-mono">CLI_COMPANION_E2E_PORT</span>. Il blocco vale solo per i task marcati E2E.
+              </p>
+            </div>
+            <Field label="Comando E2E" help="Una riga, eseguita nella cartella del task (es. npx playwright test).">
+              <Input
+                value={draft.e2e_command}
+                onChange={(e) => patch({ e2e_command: e.target.value })}
+                placeholder="npx playwright test --reporter=junit"
+                className="h-8 font-mono text-[12px]"
+              />
+            </Field>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Percorso del report JUnit" help="Relativo alla cartella del task.">
+                <Input
+                  value={draft.e2e_junit}
+                  onChange={(e) => patch({ e2e_junit: e.target.value })}
+                  placeholder="test-results/junit.xml"
+                  className="h-8 font-mono text-[12px]"
+                />
+              </Field>
+              <Field label="Timeout (minuti)" help={`Da ${MIN_E2E_TIMEOUT_MIN} a ${MAX_E2E_TIMEOUT_MIN}; vuoto = ${DEFAULT_E2E_TIMEOUT_MIN}.`}>
+                <Input
+                  type="number"
+                  min={MIN_E2E_TIMEOUT_MIN}
+                  max={MAX_E2E_TIMEOUT_MIN}
+                  value={draft.e2e_timeout}
+                  onChange={(e) => patch({ e2e_timeout: e.target.value })}
+                  placeholder={String(DEFAULT_E2E_TIMEOUT_MIN)}
+                  className="h-8 font-mono text-[12px]"
+                />
+              </Field>
+            </div>
+          </div>
           {(validation ?? error) && (
             <p className={cn("text-[11px] text-destructive")}>{validation ?? error}</p>
           )}

@@ -782,3 +782,27 @@ fn instructions_carry_rules_guardrails_and_the_working_folder() {
     // Senza regole niente blocco.
     assert!(!texts::instructions(&env(&d, &t, None), "  ").contains("Workspace rules"));
 }
+
+#[test]
+fn e2e_flag_defaults_to_false_is_parsed_and_omitted_when_false() {
+    let base = spec("a", &[]);
+    assert!(!parse_spec(&json!({"title": "T", "task": "x"}), None).unwrap().e2e);
+    assert!(parse_spec(&json!({"title": "T", "task": "x", "e2e": true}), None).unwrap().e2e);
+    assert!(!parse_spec(&json!({"title": "T", "task": "x", "e2e": null}), None).unwrap().e2e);
+    assert!(parse_spec(&json!({"title": "T", "task": "x", "e2e": "yes"}), None).is_err());
+    // Modifica parziale: assente = invariato, false lo toglie.
+    let on = TaskSpec { e2e: true, ..base.clone() };
+    assert!(parse_spec(&json!({"title": "New"}), Some(&on)).unwrap().e2e);
+    assert!(!parse_spec(&json!({"e2e": false}), Some(&on)).unwrap().e2e);
+    // Il task lo porta, la serializzazione lo omette se false.
+    let t = Task::from_spec(on.clone(), 1);
+    assert!(t.e2e && TaskSpec::from_task(&t).e2e);
+    assert_eq!(serde_json::to_value(&t).unwrap()["e2e"], true);
+    assert!(serde_json::to_value(Task::from_spec(base.clone(), 1)).unwrap().get("e2e").is_none());
+    assert!(serde_json::to_value(&base).unwrap().get("e2e").is_none());
+    // Un task salvato prima del campo si legge.
+    let old: Task = serde_json::from_value(json!({"id": "a", "title": "T", "task": "x"})).unwrap();
+    assert!(!old.e2e);
+    let old_spec: TaskSpec = serde_json::from_value(json!({"id": "a", "title": "T", "task": "x"})).unwrap();
+    assert!(!old_spec.e2e);
+}

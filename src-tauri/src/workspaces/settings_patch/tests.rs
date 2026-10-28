@@ -405,3 +405,61 @@ fn needs_reconcile_and_repo_keys() {
     assert_eq!(n.repo_keys(), [".", "a", "b"]);
     assert!(patch(json!({})).repo_keys().is_empty());
 }
+
+#[test]
+fn e2e_is_set_kept_and_removed_by_a_patch() {
+    let mut w = ws();
+    let set = json!({"repos": {"api": {"e2e": {"command": " npm run e2e ", "junit": ".\\out\\junit.xml"}}}});
+    apply(&patch(set), &mut w).unwrap();
+    let e2e = w.repos["api"].e2e.clone().unwrap();
+    assert_eq!((e2e.command.as_str(), e2e.junit.as_str(), e2e.timeout_min), ("npm run e2e", "out/junit.xml", 20));
+    // Assente: resta; altri campi non lo toccano.
+    apply(&patch(json!({"repos": {"api": {"remove_force": true}}})), &mut w).unwrap();
+    assert_eq!(w.repos["api"].e2e.as_ref(), Some(&e2e));
+    // null: lo rimuove.
+    apply(&patch(json!({"repos": {"api": {"e2e": null}}})), &mut w).unwrap();
+    assert!(w.repos["api"].e2e.is_none());
+    // Invalido: nulla cambia.
+    let before = w.clone();
+    let bad = json!({"repos": {"api": {"e2e": {"command": "x", "junit": "../j.xml"}}}});
+    assert!(apply(&patch(bad), &mut w).is_err());
+    assert_eq!(w, before);
+    assert!(SettingsPatch::parse(&json!({"repos": {"api": {"e2e": {"command": "x", "junit": "j", "cwd": "."}}}})).is_err());
+    assert!(SettingsPatch::parse(&json!({"repos": {"api": {"e2e": {"command": "x"}}}})).is_err());
+}
+
+#[test]
+fn e2e_current_and_sensitive() {
+    let mut w = ws();
+    let cfg = crate::workspaces::E2eConfig { command: "c".into(), junit: "j.xml".into(), timeout_min: 5 };
+    w.repos.insert("api".into(), RepoConfig { e2e: Some(cfg.clone()), ..Default::default() });
+    let set = patch(json!({"repos": {"api": {"e2e": {"command": "d", "junit": "j.xml"}}, "web": {"e2e": null}}}));
+    assert_eq!(set.sensitive(), ["repos[api].e2e"], "a removal is not sensitive");
+    let cur = set.current(&w);
+    assert_eq!(cur.repos.as_ref().unwrap()["api"].as_ref().unwrap().e2e, Some(Some(cfg.clone())));
+    assert_eq!(cur.repos.as_ref().unwrap()["web"], None);
+    // Rimuovere un repository mostra l'e2e attuale tra i valori persi.
+    let gone = patch(json!({"repos": {"api": null}})).current(&w);
+    assert_eq!(gone.repos.unwrap()["api"].as_ref().unwrap().e2e, Some(Some(cfg)));
+}
+
+#[test]
+fn e2e_errors_are_translated() {
+    let w = ws();
+    let cases = [
+        (json!({"command": "  ", "junit": "j"}), "repos['x']: e2e command is missing"),
+        (json!({"command": "a\nb", "junit": "j"}), "repos['x']: e2e command must be single-line"),
+        (json!({"command": "y".repeat(MAX_REPO_COMMAND_LEN + 1), "junit": "j"}), "repos['x']: e2e command too long"),
+        (json!({"command": "c", "junit": ""}), "repos['x']: e2e junit path is missing"),
+        (json!({"command": "c", "junit": "/abs"}), "repos['x']: e2e junit path must be relative"),
+        (json!({"command": "c", "junit": "../j"}), "repos['x']: invalid e2e junit path (no '..')"),
+        (json!({"command": "c", "junit": "j", "timeout_min": 0}), "repos['x']: invalid e2e timeout_min"),
+        (json!({"command": "c", "junit": "j", "timeout_min": 61}), "repos['x']: invalid e2e timeout_min"),
+    ];
+    for (e2e, expect) in cases {
+        let err = patch(json!({"repos": {"x": {"e2e": e2e}}})).normalized(&w).unwrap_err();
+        let en = validation_error_en(&err);
+        assert!(en.contains(expect), "{e2e}: {en} (it: {err})");
+        assert_ne!(en, err);
+    }
+}

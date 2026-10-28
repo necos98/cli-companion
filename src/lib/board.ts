@@ -4,6 +4,7 @@
 // importabili sia dall'app sia dai test `node --test`.
 
 import { statusWord, truncateReport } from "./automation.ts";
+import type { E2eConfig } from "./tauri.ts";
 import type { WorkerPermission } from "./workerPermission.ts";
 
 // ---------------------------------------------------------------- tipi
@@ -79,6 +80,8 @@ export interface Task {
   depends_on: string[];
   /** Tipo di task; assente = `work`. Una `review` verifica i task da cui dipende. */
   kind?: TaskKind;
+  /** Il task deve superare gli E2E del repository; assente = `false`. */
+  e2e?: boolean;
   /** Repository (cartella relativa alla root del workspace); null/assente = la root. */
   repo?: string | null;
   agent: string;
@@ -116,6 +119,8 @@ export interface TaskSpec {
   model?: string | null;
   /** Tipo di task; assente = `work`. Una `review` richiede almeno una dipendenza. */
   kind?: TaskKind;
+  /** Il task deve superare gli E2E del repository; assente = `false`. */
+  e2e?: boolean;
 }
 
 /** Proposta di Task Intake in attesa di Accetta / Scarta. */
@@ -137,6 +142,8 @@ export interface RepoPatch {
   setup?: string[];
   cleanup?: string[];
   remove_force?: boolean;
+  /** Oggetto intero al posto di quello attuale; `null` lo rimuove. */
+  e2e?: E2eConfig | null;
 }
 
 /** Modifiche alle impostazioni del workspace: ogni campo assente = invariato. */
@@ -194,6 +201,8 @@ export interface NewTaskSpec {
   model?: string | null;
   /** Tipo di task; assente = `work`. Una `review` richiede almeno una dipendenza. */
   kind?: TaskKind;
+  /** Il task deve superare gli E2E del repository (richiede la configurazione E2E del repository). */
+  e2e?: boolean;
 }
 
 /** Argomento di `task_update`: i campi assenti non cambiano, `null` azzera repo/model. */
@@ -205,6 +214,8 @@ export interface TaskPatch {
   model?: string | null;
   /** Tipo di task; assente = invariato (e nei file vecchi `work`). */
   kind?: TaskKind;
+  /** Assente = invariato. */
+  e2e?: boolean;
 }
 
 /** Evento `task-notify`: notifica di sistema per un task. */

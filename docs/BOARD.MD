@@ -73,7 +73,8 @@ Task:
   "title": "Modalità di consegna",       // 1..=80
   "task": "...",            // specifica per il worker, 1..=100000
   "depends_on": ["task-schema"],         // id esistenti, niente cicli, max 50
-  "kind": "work",           // work | review (default work, vedi "Task di review"); una review richiede almeno una dipendenza
+  "kind": "work",           // work   "e2e": false,             // true = deve superare gli E2E del repository; omesso se false (vedi "Test E2E")
+| review (default work, vedi "Task di review"); una review richiede almeno una dipendenza
   "repo": null,             // cartella relativa alla root; null = la root (multi-repo)
   "agent": "claude-code",
   "model": null,            // null = modello dei worker del workspace
@@ -115,7 +116,7 @@ Proposal:
   "created_at": 0,
   "source_task": "review-x", // opzionale: task di review il cui reviewer l'ha proposta (omesso se assente);
                              // in quel caso source_tab è il tab del reviewer
-  "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, model, kind */ ]
+  "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, model, kind, e2e */ ]
 }
 ```
 
@@ -345,16 +346,18 @@ Sessione (workspace = quello del tab):
   depends_on?, repo?, kind? }` (`model` obbligatorio nelle proposte; `kind` `work` | `review`,
   default `work`; una `review` richiede almeno una dipendenza, controllata a proposta,
   accettazione, creazione manuale e aggiornamento: "task '<id>': a review task needs at least one
-  dependency (depends_on: the tasks it reviews)"). Valida tutto (id unici anche rispetto ai task esistenti e alle altre
+  dependency (depends_on: the tasks it reviews)"). `e2e` (bool, default `false`) richiede che il
+  repository del task abbia `e2e` configurato, controllato negli stessi quattro punti: "task
+  '<id>': e2e requires an E2E command configured for repository '<repo>'". Valida tutto (id unici anche rispetto ai task esistenti e alle altre
   proposte, dipendenze verso la proposta stessa o task esistenti, niente cicli, `repo`
   esistente e git se la modalità usa branch). Crea una **proposta** pendente e ritorna
   `{ proposal, status: "pending" }`: "the user will accept or discard it in the app". Non
   aspetta la decisione.
 - `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, kind? (solo
-  `review`), verdict? (se il report ne ha uno), attention?,
+  `review`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
   waiting_on?, summary? (300), note? (200) }` + `counts` + `proposals_pending`.
 - `get_task_details { id }` → task completo (testo, report, worktree).
-- `update_task { id, title?, task?, depends_on?, repo?, model?, kind? }` — solo `queued` o
+- `update_task { id, title?, task?, depends_on?, repo?, model?, kind?, e2e? }` — solo `queued` o
   `failed`; `repo` solo senza worktree. Ritorna il task senza testo.
 - `delete_task { id }` — solo `queued`/`failed` e senza dipendenti non `done`.
 - `get_workspace_settings {}` → le impostazioni che `propose_settings` può cambiare, i
@@ -365,9 +368,28 @@ Sessione (workspace = quello del tab):
   campi passati; liste e `worker_rules` sostituiscono quelle attuali; `delivery` accetta anche
   solo alcuni dei suoi campi (`mode`, `parallel`, `merge_method`); `repos` ha per chiave la
   cartella del repository (`.` = root) e per valore `{ base_branch?, container_root?,
-  copy_ignored?, setup?, cleanup?, remove_force? }` oppure `null` per toglierne la
+  copy_ignored?, setup?, cleanup?, remove_force?, e2e? }` (`e2e`: `{ command, junit,
+  timeout_min? }` al posto dell'attuale, `null` lo toglie) oppure `null` per toglierne la
   configurazione. Validazione tutto-o-niente; ritorna `{ proposal, status: "pending" }` e non
   aspetta la decisione (vedi "Proposte di impostazioni").
+
+## Test E2E
+
+Gli E2E sono un'attivazione esplicita e facoltativa, in due parti (questo documento ne descrive i
+dati e la validazione; esecuzione e blocco della consegna sono del task `e2e-run-gate`):
+
+- **Configurazione del repository** (`RepoConfig.e2e`, `workspaces/e2e.rs`, opzionale, omessa se
+  assente): `{ command, junit, timeout_min }`. `command`: una riga, non vuota, max 2000
+  caratteri. `junit`: percorso relativo alla cartella del task, `/` come separatore, senza `..`,
+  max 300 caratteri. `timeout_min`: da 1 a 60, predefinito 20 (i vecchi file senza il campo
+  si leggono). Validata da `RepoConfig::normalized`, quindi anche da `set_repo_config` e da
+  `propose_settings`; `get_workspace_settings` la restituisce con il resto della configurazione.
+- **Flag del task** (`Task.e2e` / `TaskSpec.e2e`, bool, default `false`, omesso dal JSON se
+  `false`): "questo task deve superare gli E2E". Ammesso solo se il repository del task ha `e2e`
+  configurato (`check_e2e_configured`, `automation/worktrees.rs`), controllato a proposta,
+  accettazione, creazione manuale e aggiornamento. Visibile in `list_tasks` (solo se `true`) e
+  in `get_task_details`.
+- Nessun effetto sull'esecuzione dei task: finora sono solo dati.
 
 ## Task di review
 
@@ -417,7 +439,8 @@ tutti `done` (nessuna modifica allo scheduler).
   `board-update`. La vista espone anche i valori **attuali** dei soli campi toccati e l'elenco dei
   campi **sensibili**.
 - Campi sensibili (eseguono comandi o allargano i permessi): `worker_permission`, `worker_allow`,
-  `worker_deny`, `launches`, `default_launch`, `repos[<repo>].setup`, `repos[<repo>].cleanup`.
+  `worker_deny`, `launches`, `default_launch`, `repos[<repo>].setup`, `repos[<repo>].cleanup`,
+  `repos[<repo>].e2e` (se impostato; toglierlo non è sensibile).
 - UI: card "Proposta di impostazioni" in cima al pannello Task (e nel Tasks Manager): motivazione
   e, per ogni campo, il confronto **prima → dopo** (testi lunghi compressi con "Mostra tutto";
   liste come righe tolte/aggiunte; i repository raggruppati per cartella). I campi sensibili sono
@@ -600,6 +623,11 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   (4 opzioni con una riga di spiegazione ciascuna), "Worker in parallelo (worktree)" solo per
   PR/merge locale, metodo di merge solo per PR, avviso prerequisiti (`gh` autenticato per PR;
   per merge locale il checkout deve stare sulla base).
+- Workspace → **Repository**, per ogni repository: sezione "Test E2E" (comando, percorso JUnit,
+  timeout in minuti; tutto vuoto = nessun E2E) con un testo di aiuto: gli E2E sono facoltativi,
+  l'app esegue il comando nella cartella del task e legge il JUnit, la porta del server di
+  sviluppo arriva in `CLI_COMPANION_E2E_PORT`, il blocco vale solo per i task marcati E2E. Nelle
+  proposte di impostazioni la card mostra `e2e` prima e dopo, come campo sensibile.
 - Workspace → "Rispetta le fasce orarie" (toggle `use_schedule`); Generale → Fasce orarie
   invariata (senza riferimenti all'orchestratore).
 - Rimosse: pagina Orchestratore, pagina Workflow, campo "comando di setup del worktree".

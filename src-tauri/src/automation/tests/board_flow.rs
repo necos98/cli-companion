@@ -716,3 +716,62 @@ fn repo_detection_list_parsing() {
     assert_eq!(worktrees::join_path("wsl", "/home/u/", "a/b"), "/home/u/a/b");
     assert_eq!(worktrees::repo_dir(&ws("w", "w", "wsl"), Some("api")), "/home/u/api");
 }
+
+fn e2e_config() -> RepoConfig {
+    RepoConfig {
+        e2e: Some(crate::workspaces::E2eConfig { command: "npm run e2e".into(), junit: "junit.xml".into(), timeout_min: 20 }),
+        ..Default::default()
+    }
+}
+
+fn e2e_spec(id: &str) -> Value {
+    json!({"id": id, "title": "T", "task": "x", "model": "sonnet", "e2e": true})
+}
+
+#[test]
+fn e2e_flag_requires_the_repository_configuration_at_every_entry_point() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let refused = "task 'a': e2e requires an E2E command configured for repository '.'";
+    // Proposta, creazione manuale e aggiornamento sono rifiutati senza configurazione.
+    let e = call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [e2e_spec("a")]})).unwrap_err();
+    assert_eq!(e, refused);
+    let e = boards::task_create(&st, &h, "ws-1", &json!({"id": "a", "title": "T", "task": "x", "e2e": true})).unwrap_err();
+    assert_eq!(e, refused);
+    let e = boards::task_create(&st, &h, "ws-1", &json!({"title": "T", "task": "x", "e2e": true})).unwrap_err();
+    assert!(e.contains("task 't': e2e requires"), "generated id: {e}");
+    assert!(view(&st, &h).tasks.is_empty() && view(&st, &h).proposals.is_empty());
+    // "a" parte (modalita' seriale): si aggiorna "b", che aspetta.
+    queue(&st, &h, vec![spec("a", &[]), spec("b", &["a"])]);
+    let e = call(&st, &h, INTAKE, "update_task", json!({"id": "b", "e2e": true})).unwrap_err();
+    assert_eq!(e, "task 'b': e2e requires an E2E command configured for repository '.'");
+    assert_eq!(task(&st, &h, "b").get("e2e"), None);
+    let e = call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [{"id": "b", "title": "T", "task": "x", "model": "sonnet", "e2e": "yes"}]}))
+        .unwrap_err();
+    assert!(e.contains("e2e must be a boolean"), "{e}");
+
+    // Con la configurazione passano, e il flag e' visibile.
+    h.repo_cfg.lock().unwrap().insert(".".into(), e2e_config());
+    boards::task_create(&st, &h, "ws-1", &json!({"id": "c", "title": "T", "task": "x", "e2e": true})).unwrap();
+    assert_eq!(task(&st, &h, "c")["e2e"], true);
+    call(&st, &h, INTAKE, "update_task", json!({"id": "b", "e2e": true})).unwrap();
+    assert_eq!(task(&st, &h, "b")["e2e"], true);
+    call(&st, &h, INTAKE, "update_task", json!({"id": "b", "e2e": false})).unwrap();
+    assert_eq!(task(&st, &h, "b").get("e2e"), None, "omitted when false");
+    let listed = call(&st, &h, INTAKE, "list_tasks", json!({})).unwrap().to_string();
+    assert!(listed.contains("\"e2e\":true") && listed.matches("e2e").count() == 1, "only the flagged row: {listed}");
+}
+
+#[test]
+fn e2e_flag_is_checked_again_when_a_proposal_is_accepted() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    h.repo_cfg.lock().unwrap().insert(".".into(), e2e_config());
+    let p = call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [e2e_spec("a")]})).unwrap();
+    let id = p["proposal"].as_str().unwrap();
+    h.repo_cfg.lock().unwrap().clear();
+    let e = boards::proposal_decide(&st, &h, "ws-1", id, true).unwrap_err();
+    assert!(e.contains("e2e requires an E2E command"), "{e}");
+    assert_eq!(view(&st, &h).proposals.len(), 1, "the proposal stays pending");
+    h.repo_cfg.lock().unwrap().insert(".".into(), e2e_config());
+    assert!(boards::proposal_decide(&st, &h, "ws-1", id, true).is_ok());
+    assert_eq!(task(&st, &h, "a")["e2e"], true);
+}
