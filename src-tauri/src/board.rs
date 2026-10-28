@@ -6,6 +6,7 @@
 //! `automation::boards`. Il contratto condiviso col frontend e' `docs/BOARD.MD`.
 
 mod report;
+mod review;
 mod settings;
 mod spec;
 pub mod texts;
@@ -14,6 +15,7 @@ pub mod texts;
 mod tests;
 
 pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
+pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Verdict};
 pub use settings::{SettingsProposal, SettingsProposalView};
 pub use spec::{
     id_from_title, normalize_repo, parse_max_parallel, parse_proposal, parse_spec, repo_key, valid_branch, valid_id,
@@ -109,6 +111,8 @@ pub struct Task {
     pub repo: Option<String>,
     pub agent: String,
     pub model: Option<String>,
+    /// `work` consegna; `review` verifica il risultato integrato dei task da cui dipende.
+    pub kind: TaskKind,
     pub status: TaskStatus,
     pub worker_status: Option<WorkerStatus>,
     pub session: Option<String>,
@@ -137,8 +141,11 @@ pub struct Task {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proposal {
     pub id: String,
-    /// Tab dell'Intake che l'ha proposta.
+    /// Tab che l'ha proposta (Intake o revisore).
     pub source_tab: String,
+    /// Task di revisione il cui revisore l'ha proposta (assente: viene dall'Intake).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_task: Option<String>,
     pub created_at: i64,
     pub tasks: Vec<TaskSpec>,
 }
@@ -235,8 +242,14 @@ fn compact_row(v: &TaskView) -> Value {
     if !v.waiting_on.is_empty() {
         o["waiting_on"] = json!(v.waiting_on);
     }
+    if t.kind == TaskKind::Review {
+        o["kind"] = Value::from(t.kind.as_str());
+    }
     if let Some(r) = &t.report {
         o["summary"] = Value::from(clip_with_ellipsis(&r.summary, COMPACT_SUMMARY_MAX));
+        if let Some(v) = r.verdict {
+            o["verdict"] = Value::from(v.as_str());
+        }
     }
     if let Some(n) = &t.note {
         o["note"] = Value::from(clip_with_ellipsis(n, COMPACT_NOTE_MAX));
@@ -279,6 +292,7 @@ impl Task {
             repo: s.repo,
             agent: DEFAULT_AGENT.to_string(),
             model: s.model,
+            kind: s.kind,
             created_at: now,
             updated_at: now,
             ..Task::default()
@@ -291,6 +305,7 @@ impl Task {
         self.depends_on = s.depends_on;
         self.repo = s.repo;
         self.model = s.model;
+        self.kind = s.kind;
         self.updated_at = now;
     }
 
@@ -457,6 +472,7 @@ impl Board {
             if !valid_id(&s.id) {
                 return Err(format!("invalid task id: {}", clip_chars(&s.id, 50)));
             }
+            check_review_deps(s)?;
             if reserved.contains(s.id.as_str()) {
                 return Err(format!("duplicate task id: {} (already used by a pending proposal)", s.id));
             }
@@ -496,15 +512,22 @@ impl Board {
         Ok(self.push_specs(vec![spec], now).remove(0))
     }
 
-    /// Nuova proposta pendente dell'Intake.
-    pub fn add_proposal(&mut self, id: String, source_tab: &str, specs: Vec<TaskSpec>, now: i64) -> Result<(), String> {
+    /// Nuova proposta pendente (dell'Intake o di un revisore).
+    pub fn add_proposal(
+        &mut self,
+        id: String,
+        source_tab: &str,
+        source_task: Option<String>,
+        specs: Vec<TaskSpec>,
+        now: i64,
+    ) -> Result<(), String> {
         if self.proposals.len() >= MAX_PENDING_PROPOSALS {
             return Err(format!(
                 "too many pending proposals (max {MAX_PENDING_PROPOSALS}): wait for the user to accept or discard some"
             ));
         }
         self.check_specs(&specs, &self.pending_ids(None))?;
-        self.proposals.push(Proposal { id, source_tab: source_tab.to_string(), created_at: now, tasks: specs });
+        self.proposals.push(Proposal { id, source_tab: source_tab.to_string(), source_task, created_at: now, tasks: specs });
         self.updated_at = now;
         Ok(())
     }
@@ -544,6 +567,7 @@ impl Board {
             return Err(format!("task '{id}' is {}: only queued or failed tasks can be updated", t.status.as_str()));
         }
         let spec = parse_spec(patch, Some(&TaskSpec::from_task(t)))?;
+        check_review_deps(&spec)?;
         if patch.as_object().is_some_and(|o| o.keys().all(|k| k == "id")) {
             return Err("no fields to update".to_string());
         }

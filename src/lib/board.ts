@@ -11,6 +11,12 @@ import type { WorkerPermission } from "./workerPermission.ts";
 /** Stati di un task: i soli quattro del contratto. */
 export type TaskStatus = "queued" | "running" | "done" | "failed";
 
+/** Tipo di task: `work` (default) o `review` (verifica del lavoro dei task da cui dipende). */
+export type TaskKind = "work" | "review";
+
+/** Verdetto di una review completata. */
+export type ReviewVerdict = "passed" | "issues";
+
 /** Stato mostrato: i quattro stati più "Richiede attenzione" (running con `attention`). */
 export type DisplayStatus = TaskStatus | "attention";
 
@@ -52,6 +58,10 @@ export interface TaskReport {
   tests?: TaskTestResult[];
   follow_ups?: string[];
   diffstat?: string | null;
+  /** Solo per i task di review completati: esito della verifica. */
+  verdict?: ReviewVerdict | null;
+  /** Solo per le review: problemi (con `issues`) o suggerimenti (con `passed`). */
+  findings?: string[];
 }
 
 /** Esito del tentativo precedente, dopo "Riprova". */
@@ -67,6 +77,8 @@ export interface Task {
   /** Specifica per il worker (markdown). */
   task: string;
   depends_on: string[];
+  /** Tipo di task; assente = `work`. Una `review` verifica i task da cui dipende. */
+  kind?: TaskKind;
   /** Repository (cartella relativa alla root del workspace); null/assente = la root. */
   repo?: string | null;
   agent: string;
@@ -102,13 +114,17 @@ export interface TaskSpec {
   depends_on: string[];
   repo?: string | null;
   model?: string | null;
+  /** Tipo di task; assente = `work`. Una `review` richiede almeno una dipendenza. */
+  kind?: TaskKind;
 }
 
 /** Proposta di Task Intake in attesa di Accetta / Scarta. */
 export interface Proposal {
   id: string;
-  /** Tab dell'Intake che l'ha proposta. */
+  /** Tab dell'Intake (o del reviewer) che l'ha proposta. */
   source_tab: string;
+  /** Task di review il cui reviewer l'ha proposta; assente/null = proposta dell'Intake. */
+  source_task?: string | null;
   created_at: number;
   tasks: TaskSpec[];
 }
@@ -176,6 +192,8 @@ export interface NewTaskSpec {
   depends_on?: string[];
   repo?: string | null;
   model?: string | null;
+  /** Tipo di task; assente = `work`. Una `review` richiede almeno una dipendenza. */
+  kind?: TaskKind;
 }
 
 /** Argomento di `task_update`: i campi assenti non cambiano, `null` azzera repo/model. */
@@ -185,6 +203,8 @@ export interface TaskPatch {
   depends_on?: string[];
   repo?: string | null;
   model?: string | null;
+  /** Tipo di task; assente = invariato (e nei file vecchi `work`). */
+  kind?: TaskKind;
 }
 
 /** Evento `task-notify`: notifica di sistema per un task. */

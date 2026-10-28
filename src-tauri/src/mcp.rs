@@ -6,10 +6,11 @@
 //! vedi `agent_notify::rpc_call`).
 //!
 //! L'insieme dei tool dipende dal ruolo (`whoami`): un worker legge il task e
-//! riferisce l'esito; una sessione normale (Intake compreso) propone task e
-//! consulta la coda. Fuori da cli-companion (variabili d'ambiente assenti o app
-//! non raggiungibile) la lista dei tool e' vuota, cosi' il plugin non fa rumore
-//! altrove. Le definizioni dei tool sono in `tools`.
+//! riferisce l'esito, un revisore (worker di un task di revisione) verifica il
+//! risultato integrato e puo' proporre task di correzione; una sessione normale
+//! (Intake compreso) propone task e consulta la coda. Fuori da cli-companion
+//! (variabili d'ambiente assenti o app non raggiungibile) la lista dei tool e' vuota,
+//! cosi' il plugin non fa rumore altrove. Le definizioni dei tool sono in `tools`.
 //!
 //! Su stdout passano solo messaggi MCP (una riga JSON ciascuno): in release
 //! l'exe non ha console e qualunque altro output sporcherebbe il protocollo.
@@ -52,6 +53,7 @@ impl Server {
         let role = match v.get("role").and_then(Value::as_str) {
             Some("session") => Role::Session,
             Some("worker") => Role::Worker,
+            Some("reviewer") => Role::Reviewer,
             _ => return Err("unknown role in the whoami response".to_string()),
         };
         self.workspace = v.get("workspace").and_then(|w| {

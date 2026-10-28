@@ -101,7 +101,7 @@ fn v011_board_is_normalized_on_load() {
 #[test]
 fn a_current_board_roundtrips() {
     let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"])]);
-    b.add_proposal("p-1".into(), "tab-1", vec![spec("c", &[])], 5).unwrap();
+    b.add_proposal("p-1".into(), "tab-1", None, vec![spec("c", &[])], 5).unwrap();
     let back = Board::from_json(&serde_json::to_string(&b).unwrap(), 9).unwrap();
     assert_eq!(back.tasks, b.tasks);
     assert_eq!(back.proposals, b.proposals);
@@ -237,12 +237,12 @@ fn check_specs_validates_ids_graph_and_limits() {
 #[test]
 fn proposals_accept_discard_and_revalidate() {
     let mut b = board_with(vec![spec("a", &[])]);
-    b.add_proposal("p-1".into(), "tab-1", vec![spec("b", &["a"]), spec("c", &["b"])], 5).unwrap();
+    b.add_proposal("p-1".into(), "tab-1", None, vec![spec("b", &["a"]), spec("c", &["b"])], 5).unwrap();
     // Un id usato da una proposta pendente non si ripropone (ne' si crea a mano).
-    assert!(b.add_proposal("p-2".into(), "tab-1", vec![spec("b", &[])], 6).is_err());
+    assert!(b.add_proposal("p-2".into(), "tab-1", None, vec![spec("b", &[])], 6).is_err());
     assert!(b.create_task(spec("c", &[]), 6).is_err());
     assert!(b.id_taken("b") && b.id_taken("a") && !b.id_taken("zz"));
-    b.add_proposal("p-2".into(), "tab-2", vec![spec("d", &[])], 6).unwrap();
+    b.add_proposal("p-2".into(), "tab-2", None, vec![spec("d", &[])], 6).unwrap();
     // Accetta: in fondo alla coda, nell'ordine della proposta.
     assert_eq!(b.accept_proposal("p-1", 7).unwrap(), ["b", "c"]);
     assert_eq!(ids(&b), ["a", "b", "c"]);
@@ -254,7 +254,7 @@ fn proposals_accept_discard_and_revalidate() {
     assert!(b.accept_proposal("p-2", 9).unwrap_err().contains("proposal not found"));
     assert!(b.discard_proposal("p-9", 9).is_err());
     // Rivalidazione: un id nel frattempo occupato fa fallire l'accettazione e la proposta resta.
-    b.add_proposal("p-3".into(), "tab-1", vec![spec("e", &[])], 10).unwrap();
+    b.add_proposal("p-3".into(), "tab-1", None, vec![spec("e", &[])], 10).unwrap();
     b.create_task(spec("e", &[]), 11).unwrap_err(); // riservato dalla proposta
     b.tasks.push(Task::from_spec(spec("e", &[]), 11)); // occupato aggirando i controlli (es. altra via)
     assert!(b.accept_proposal("p-3", 12).unwrap_err().contains("duplicate"));
@@ -265,9 +265,9 @@ fn proposals_accept_discard_and_revalidate() {
 fn pending_proposals_are_capped() {
     let mut b = Board::new("w");
     for i in 0..MAX_PENDING_PROPOSALS {
-        b.add_proposal(format!("p-{i}"), "t", vec![spec(&format!("t{i}"), &[])], 0).unwrap();
+        b.add_proposal(format!("p-{i}"), "t", None, vec![spec(&format!("t{i}"), &[])], 0).unwrap();
     }
-    assert!(b.add_proposal("p-x".into(), "t", vec![spec("zz", &[])], 0).unwrap_err().contains("too many pending"));
+    assert!(b.add_proposal("p-x".into(), "t", None, vec![spec("zz", &[])], 0).unwrap_err().contains("too many pending"));
 }
 
 // --- coda: ordine, retry, delete, update ---

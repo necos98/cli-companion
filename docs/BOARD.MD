@@ -73,6 +73,7 @@ Task:
   "title": "Modalità di consegna",       // 1..=80
   "task": "...",            // specifica per il worker, 1..=100000
   "depends_on": ["task-schema"],         // id esistenti, niente cicli, max 50
+  "kind": "work",           // work | review (default work, vedi "Task di review"); una review richiede almeno una dipendenza
   "repo": null,             // cartella relativa alla root; null = la root (multi-repo)
   "agent": "claude-code",
   "model": null,            // null = modello dei worker del workspace
@@ -99,7 +100,9 @@ TaskReport (da `complete_task`):
   "pr_url": "https://...",  // opzionale (modalità PR)
   "files_changed": [], "tests": [{ "command", "result": "passed|failed|not_run", "details" }],
   "follow_ups": [],
-  "diffstat": "..."         // calcolato dall'app quando c'è un worktree
+  "diffstat": "...",        // calcolato dall'app quando c'è un worktree
+  "verdict": "passed",      // solo review completate: passed | issues (omesso se assente)
+  "findings": []            // solo review: problemi (con issues) o suggerimenti (con passed); omesso se vuoto
 }
 ```
 
@@ -110,7 +113,9 @@ Proposal:
   "id": "p-<millis>-<n>",
   "source_tab": "tab-...",  // tab dell'Intake che l'ha proposta
   "created_at": 0,
-  "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, model */ ]
+  "source_task": "review-x", // opzionale: task di review il cui reviewer l'ha proposta (omesso se assente);
+                             // in quel caso source_tab è il tab del reviewer
+  "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, model, kind */ ]
 }
 ```
 
@@ -140,6 +145,7 @@ Stesso file, letto così com'è. Al caricamento:
 - `cancelled` → rimosso (e tolto dai `depends_on` degli altri);
 - `done` (anche `external`) → `done`;
 - `report.status` `blocked` → `failed`;
+- `kind` assente (task e `TaskSpec` delle proposte) → `work`; `source_task`, `verdict` e `findings` assenti → nessuno;
 - i campi rimossi si ignorano; `requests`, `owner`, `integrations` & co. spariscono al prossimo salvataggio.
 
 ## Consegna (impostazione del workspace)
@@ -176,6 +182,8 @@ checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branc
 Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
 `info/exclude`, hook del repo (`copy_ignored`, `setup`) dopo la creazione, `setup_done`,
 riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
+- Le **review** (`kind: "review"`) ricevono il worktree dalla base come ogni task (`task/<id>`);
+  la pulizia a `done` funziona anche senza commit sul branch (worktree rimosso, branch cancellato).
 - `pr`: prima della creazione `git fetch origin <base>` (cache 60 s, come oggi) e worktree da
   `origin/<base>` se esiste, altrimenti dal `<base>` locale.
 - `local_merge`: worktree dal `<base>` locale. **Precondizione** all'avvio: il checkout del
@@ -230,6 +238,12 @@ modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalit�
   modifiche; `git push`.
 - **commit**: commit sul branch corrente. Niente push.
 
+**Istruzioni del reviewer.** Per i task `review` `get_task` non restituisce né le istruzioni del
+worker né `delivery` (nessun passo di consegna: il reviewer non committa, non pusha, non
+fa merge): restituisce le istruzioni di `src-tauri/src/automation/reviewer_instructions.md`
+(incluso con `include_str!`, in inglese), più `environment` normale e le regole del workspace
+accodate come al solito. Vedi "Task di review".
+
 Al retry di un task fallito `get_task` aggiunge `previous_attempt` (summary del report e
 nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 
@@ -269,6 +283,10 @@ failed --utente: Riprova--> queued (in fondo alla coda; worktree e branch si riu
 queued|failed --utente/Intake: Elimina--> rimosso (solo senza dipendenti non done)
 ```
 
+Una review (`kind: "review"`) segue lo stesso ciclo: `complete_task completed` la porta sempre a
+`done`, **anche con `verdict: "issues"`** (il verdetto sta nel report); una review `failed` resta
+`failed`.
+
 - Al riavvio dell'app i `running` diventano `failed` (`interrupted: the app was restarted`).
 - `session-end` conta solo se viene dalla sessione dell'agente legata al worker (eventi di
   processi secondari ignorati, con una traccia nella nota). Se fallisce comunque il task mentre
@@ -284,8 +302,9 @@ queued|failed --utente/Intake: Elimina--> rimosso (solo senza dipendenti non don
 
 ## Tool MCP
 
-Il server MCP sceglie il ruolo con la RPC interna `whoami` (non è un tool) ed espone tool diversi in base al tab: **worker** (tab registrato come worker di
-un task) oppure **sessione** (qualunque altro tab di cli-companion: Intake o terminale
+Il server MCP sceglie il ruolo con la RPC interna `whoami` (non è un tool) ed espone tool diversi in base al tab: **worker** (`role: "worker"`, tab registrato come worker di
+un task `work`), **reviewer** (`role: "reviewer"`, worker di un task `review`) oppure **sessione**
+(`role: "session"`, qualunque altro tab di cli-companion: Intake o terminale
 normale). Fuori da cli-companion nessun tool. Descrizioni ed errori in inglese.
 Le istruzioni del server MCP (inglese) dicono: you may propose tasks for this workspace's
 queue with propose_tasks and read and propose changes to the workspace settings with
@@ -296,18 +315,43 @@ Worker:
 - `complete_task { status: "completed" | "failed", summary, commit?, pr_url?,
   files_changed?, tests?, follow_ups? }` — `blocked` accettato come sinonimo di `failed`.
   Per i task con worktree l'app calcola il diffstat. Il tab si chiude dopo ~1,5 s.
+  `verdict` e `findings` sono un errore su un task `work`.
+
+Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_tasks`, tool di
+impostazioni o di skill; tutti gli altri metodi di sessione restano vietati):
+- `get_task` → `{ task, title, instructions, environment, reviewed_tasks, previous_attempt? }`.
+  `instructions` sono quelle del reviewer, **senza `delivery`**. `reviewed_tasks` ha, per ogni
+  dipendenza diretta, `{ id, title, status, summary (troncato), commit, pr_url, files_changed,
+  diffstat, tests, follow_ups, truncated? }` (liste e testi limitati; `truncated: true` se
+  qualcosa è stato tagliato). Non include la specifica: il reviewer la legge con
+  `get_task_details`.
+- `complete_task { status, summary, verdict?, findings?, ... }` (come sopra, più i campi di verdetto):
+  con `status: "completed"` serve `verdict: "passed" | "issues"`; `findings: string[]` (stessi
+  limiti di `follow_ups`: max 100 voci, 1..=2000 caratteri) è obbligatorio e non vuoto con
+  `issues`, ammesso come suggerimenti con `passed`. Con `status: "failed"` `verdict` è un
+  errore (`findings` ammessi).
+- `get_task_details { id }` e `propose_tasks { tasks }`: come per la sessione, ma la RPC li
+  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo.
+
+Istruzioni del server MCP per il reviewer (inglese): automated reviewer; call get_task first;
+verify the integrated result without changing files; propose fixes with propose_tasks; always
+finish with complete_task and a verdict.
 
 Sessione (workspace = quello del tab):
 - `propose_tasks { tasks: TaskSpec[] }` — `TaskSpec = { id, title, task, model,
-  depends_on?, repo? }` (`model` obbligatorio nelle proposte). Valida tutto (id unici anche rispetto ai task esistenti e alle altre
+  depends_on?, repo?, kind? }` (`model` obbligatorio nelle proposte; `kind` `work` | `review`,
+  default `work`; una `review` richiede almeno una dipendenza, controllata a proposta,
+  accettazione, creazione manuale e aggiornamento: "task '<id>': a review task needs at least one
+  dependency (depends_on: the tasks it reviews)"). Valida tutto (id unici anche rispetto ai task esistenti e alle altre
   proposte, dipendenze verso la proposta stessa o task esistenti, niente cicli, `repo`
   esistente e git se la modalità usa branch). Crea una **proposta** pendente e ritorna
   `{ proposal, status: "pending" }`: "the user will accept or discard it in the app". Non
   aspetta la decisione.
-- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, attention?,
+- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, kind? (solo
+  `review`), verdict? (se il report ne ha uno), attention?,
   waiting_on?, summary? (300), note? (200) }` + `counts` + `proposals_pending`.
 - `get_task_details { id }` → task completo (testo, report, worktree).
-- `update_task { id, title?, task?, depends_on?, repo?, model? }` — solo `queued` o
+- `update_task { id, title?, task?, depends_on?, repo?, model?, kind? }` — solo `queued` o
   `failed`; `repo` solo senza worktree. Ritorna il task senza testo.
 - `delete_task { id }` — solo `queued`/`failed` e senza dipendenti non `done`.
 - `get_workspace_settings {}` → le impostazioni che `propose_settings` può cambiare, i
@@ -322,6 +366,34 @@ Sessione (workspace = quello del tab):
   configurazione. Validazione tutto-o-niente; ritorna `{ proposal, status: "pending" }` e non
   aspetta la decisione (vedi "Proposte di impostazioni").
 
+## Task di review
+
+Contratto del backend. La UI è documentata da un task separato (`review-tasks-ui`).
+
+Una **review** è un task `kind: "review"` che verifica il lavoro di altri task. È un normale
+task di coda con `depends_on` su tutti i task di un obiettivo: lo scheduler lo avvia quando sono
+tutti `done` (nessuna modifica allo scheduler).
+
+- **Chi la crea**: Task Intake, quando serve, includendola nella proposta (nessun automatismo
+  nell'app). Deve avere almeno una dipendenza.
+- **Chi la esegue**: un **reviewer** (`whoami` → `role: "reviewer"`), con istruzioni proprie
+  (`reviewer_instructions.md`) e i tool descritti in "Tool MCP". Non modifica file tracciati, non
+  fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
+  integrato con `git fetch origin` e `origin/<base>`. Legge le specifiche con `get_task_details`,
+  i diff dei task rivisti, esegue build e test richiesti, controlla ogni "Done when" e
+  l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali;
+  i miglioramenti opzionali vanno in `findings` come suggerimenti.
+- **Esito**: `complete_task` con `verdict` `passed` o `issues` (+ `findings`), salvati nel
+  `TaskReport`. La review completata va sempre a `done`, anche con `issues`; se non può essere
+  eseguita, `status: "failed"` e resta `failed`.
+- **Problemi**: il reviewer chiama `propose_tasks` con task di correzione autosufficienti
+  (Goal, Context, Constraints, Done when, Verify; `model` obbligatorio; nella lingua del testo
+  dei task) più una nuova `review` che dipende dalle correzioni e riafferma l'obiettivo, poi
+  `complete_task` con `verdict: "issues"`. Non attende la decisione sulla proposta, che porta
+  `source_task`.
+- **Nessun ciclo automatico**: le correzioni le decide l'utente accettando o scartando la
+  proposta.
+
 ## Proposte (approvazione)
 
 - `propose_tasks` aggiunge una `Proposal` alla board → `board-update`.
@@ -331,6 +403,8 @@ Sessione (workspace = quello del tab):
 - Accetta → i task entrano in coda (`queued`, in fondo, nell'ordine della proposta) dopo una
   nuova validazione; se fallisce (es. un id nel frattempo occupato) la card mostra l'errore.
 - Scarta → la proposta sparisce. Nessun feedback all'Intake.
+- Una proposta fatta dal reviewer di una review registra `source_task` (id della review) e
+  `source_tab` (tab del reviewer); le proposte dell'Intake non hanno `source_task`.
 - Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool) -> BoardView`.
 
 ### Proposte di impostazioni
@@ -419,7 +493,7 @@ della conversazione), come faceva l'orchestratore.
 Argomenti camelCase lato JS.
 - `board_get(workspace_id) -> BoardView`
 - `board_set(workspace_id, max_parallel?, paused?) -> BoardView`
-- `task_create(workspace_id, spec: { title, task, depends_on?, repo?, model? }) -> BoardView`
+- `task_create(workspace_id, spec: { title, task, depends_on?, repo?, model?, kind? }) -> BoardView`
   (id generato dal titolo: slug ASCII, max 40, suffisso `-2`, `-3`… se occupato; vuoto →
   `task-<n>`). Manuale, senza proposta.
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).

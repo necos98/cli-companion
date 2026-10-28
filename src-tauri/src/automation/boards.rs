@@ -90,11 +90,18 @@ impl Registry {
         self.edit(ws, |b| b.create_task(spec, now))
     }
 
-    /// Nuova proposta dell'Intake: ritorna l'id.
-    pub fn propose(&mut self, ws: &str, source_tab: &str, specs: Vec<TaskSpec>, now: i64) -> Result<String, String> {
+    /// Nuova proposta (dell'Intake o del revisore di `source_task`): ritorna l'id.
+    pub fn propose(
+        &mut self,
+        ws: &str,
+        source_tab: &str,
+        source_task: Option<String>,
+        specs: Vec<TaskSpec>,
+        now: i64,
+    ) -> Result<String, String> {
         self.next_proposal += 1;
         let id = format!("p-{now}-{}", self.next_proposal);
-        self.edit(ws, |b| b.add_proposal(id.clone(), source_tab, specs, now))?;
+        self.edit(ws, |b| b.add_proposal(id.clone(), source_tab, source_task, specs, now))?;
         Ok(id)
     }
 
@@ -539,27 +546,14 @@ pub(super) fn rpc_session<H: Host>(
     let params = if params.is_null() { &empty } else { params };
     let now = now_millis();
     match method {
-        "propose_tasks" => {
-            let specs = parse_proposal(params)?;
-            ensure_repos(host, &ws, specs.iter().map(|s| s.repo.as_deref()))?;
-            let id = st.run(host, |r| r.propose(&ws.id, session, specs, now))?;
-            Ok(json!({
-                "proposal": id,
-                "status": "pending",
-                "message": "The user will accept or discard it in the app. Do not wait for the decision."
-            }))
-        }
+        "propose_tasks" => propose_tasks(st, host, &ws, session, None, params),
         "list_tasks" => {
             let statuses = parse_statuses(params)?;
             let minute = host.local_minute(now);
             let view = st.run(host, |r| r.board_view(&ws, minute));
             Ok(view.to_list_json(statuses.as_deref()))
         }
-        "get_task_details" => {
-            let id = req_str(params, "id")?.trim();
-            let view = st.run(host, |r| r.task_view(&ws.id, id)).ok_or_else(|| format!("task not found: {id}"))?;
-            Ok(json!({ "task": view.to_json(true) }))
-        }
+        "get_task_details" => task_details(st, host, &ws, params),
         "update_task" => {
             let id = req_str(params, "id")?.trim().to_string();
             update_checked(st, host, &ws, &id, params)?;
@@ -573,6 +567,34 @@ pub(super) fn rpc_session<H: Host>(
         }
         _ => Err(format!("unknown method: {method}")),
     }
+}
+
+/// `propose_tasks`: proposta di task per la coda di `ws`. `tab` e' il tab che la fa;
+/// `source_task` il task di revisione, se a farla e' il suo revisore.
+pub(super) fn propose_tasks<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws: &Workspace,
+    tab: &str,
+    source_task: Option<String>,
+    params: &Value,
+) -> Result<Value, String> {
+    let specs = parse_proposal(params)?;
+    ensure_repos(host, ws, specs.iter().map(|s| s.repo.as_deref()))?;
+    let now = now_millis();
+    let id = st.run(host, |r| r.propose(&ws.id, tab, source_task, specs, now))?;
+    Ok(json!({
+        "proposal": id,
+        "status": "pending",
+        "message": "The user will accept or discard it in the app. Do not wait for the decision."
+    }))
+}
+
+/// `get_task_details`: il task di `ws` con il testo della specifica.
+pub(super) fn task_details<H: Host>(st: &AutomationState, host: &H, ws: &Workspace, params: &Value) -> Result<Value, String> {
+    let id = req_str(params, "id")?.trim();
+    let view = st.run(host, |r| r.task_view(&ws.id, id)).ok_or_else(|| format!("task not found: {id}"))?;
+    Ok(json!({ "task": view.to_json(true) }))
 }
 
 /// `status` di `list_tasks`: elenco opzionale di stati validi.

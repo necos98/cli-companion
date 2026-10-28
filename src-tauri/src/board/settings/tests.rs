@@ -57,7 +57,7 @@ fn pending_settings_proposals_are_capped_apart_from_task_proposals() {
     assert!(err.contains("too many pending settings proposals"), "{err}");
     assert_eq!(b.settings_proposals.len(), MAX_PENDING_PROPOSALS);
     let spec = TaskSpec { id: "a".into(), title: "T".into(), task: "x".into(), ..TaskSpec::default() };
-    b.add_proposal("p-1".into(), "tab-1", vec![spec], 3).unwrap();
+    b.add_proposal("p-1".into(), "tab-1", None, vec![spec], 3).unwrap();
 }
 
 #[test]

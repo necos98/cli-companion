@@ -9,6 +9,7 @@ use crate::workspaces::{DeliveryMode, MergeMethod, RepoConfig, SettingsPatch};
 use serde_json::json;
 
 mod board_flow;
+mod review;
 mod schedule;
 mod session_end;
 mod settings;
@@ -298,6 +299,12 @@ impl Host for FakeHost {
 }
 
 // --- helper comuni ---
+
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+    k.sort();
+    k
+}
 
 fn call(st: &AutomationState, h: &FakeHost, session: &str, method: &str, params: Value) -> Result<Value, String> {
     rpc::dispatch(st, h, session, method, &params)

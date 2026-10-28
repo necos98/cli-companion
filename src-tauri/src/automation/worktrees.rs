@@ -508,6 +508,7 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
             title: task.title.clone(),
             cwd: workdir.clone(),
             command,
+            kind: task.kind,
         },
         env: WorkerEnv { delivery, repo_dir: dir, workdir, branch, base },
     })

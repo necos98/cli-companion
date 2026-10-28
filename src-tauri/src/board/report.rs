@@ -1,5 +1,6 @@
 //! Report di `complete_task`: campi strutturati opzionali e loro validazione.
 
+use super::Verdict;
 use crate::automation::{clip_chars, req_text};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -41,6 +42,12 @@ pub struct TaskReport {
     pub follow_ups: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diffstat: Option<String>,
+    /// Esito di una revisione (solo task `review` completati).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// Problemi trovati da una revisione (suggerimenti se il verdetto e' `passed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
 }
 
 /// Campi strutturati opzionali di `complete_task`.
@@ -51,6 +58,8 @@ pub struct ReportFields {
     pub files_changed: Vec<String>,
     pub tests: Vec<TestRun>,
     pub follow_ups: Vec<String>,
+    pub verdict: Option<Verdict>,
+    pub findings: Vec<String>,
 }
 
 fn str_list(v: &Value, label: &str, max_items: usize, max_len: usize) -> Result<Vec<String>, String> {
@@ -119,6 +128,12 @@ pub fn parse_report_fields(p: &Value) -> Result<ReportFields, String> {
     }
     let files_changed = nonnull("files_changed").map(|v| str_list(v, "files_changed", FILES_MAX, FILE_MAX)).transpose()?;
     let follow_ups = nonnull("follow_ups").map(|v| str_list(v, "follow_ups", LIST_MAX, LIST_ITEM_MAX)).transpose()?;
+    let verdict = match nonnull("verdict") {
+        None => None,
+        Some(Value::String(s)) => Some(Verdict::parse(s).ok_or("verdict must be passed or issues")?),
+        Some(_) => return Err("verdict must be passed or issues".to_string()),
+    };
+    let findings = nonnull("findings").map(|v| str_list(v, "findings", LIST_MAX, LIST_ITEM_MAX)).transpose()?;
     let tests = match nonnull("tests") {
         None => Vec::new(),
         Some(Value::Array(arr)) => parse_tests(arr)?,
@@ -130,6 +145,8 @@ pub fn parse_report_fields(p: &Value) -> Result<ReportFields, String> {
         files_changed: files_changed.unwrap_or_default(),
         tests,
         follow_ups: follow_ups.unwrap_or_default(),
+        verdict,
+        findings: findings.unwrap_or_default(),
     })
 }
 
@@ -143,5 +160,7 @@ pub fn build_report(status: &str, summary: &str, f: ReportFields, diffstat: Opti
         tests: f.tests,
         follow_ups: f.follow_ups,
         diffstat: diffstat.map(|d| clip_chars(&d, DIFFSTAT_MAX)),
+        verdict: f.verdict,
+        findings: f.findings,
     }
 }

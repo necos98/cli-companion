@@ -29,12 +29,6 @@ fn get_task_returns_task_instructions_environment_and_delivery() {
     assert!(call(&st, &h, &w, "get_task", json!({})).is_ok());
 }
 
-fn keys(v: &Value) -> Vec<String> {
-    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
-    k.sort();
-    k
-}
-
 #[test]
 fn roles_gate_the_tools() {
     let (st, h, w) = running(DeliveryMode::Commit, false);
@@ -364,7 +358,7 @@ fn closed_workers_are_pruned_beyond_the_cap() {
     let mut r = Registry::default();
     for i in 0..(MAX_TRACKED_WORKERS + 10) {
         let env = WorkerEnv { delivery: Delivery::default(), repo_dir: String::new(), workdir: String::new(), branch: None, base: None };
-        let new = NewWorker { workspace_id: "w".into(), agent_id: "a".into(), title: "t".into(), cwd: String::new(), command: String::new() };
+        let new = NewWorker { workspace_id: "w".into(), agent_id: "a".into(), title: "t".into(), cwd: String::new(), command: String::new(), kind: crate::board::TaskKind::Work };
         let id = r.spawn_worker("w", &format!("t{i}"), 1, new, env, i as i64).tab_id;
         r.tab_closed(&id, 1);
     }

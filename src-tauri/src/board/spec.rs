@@ -2,7 +2,7 @@
 //! update_task), id, branch, repository, grafo delle dipendenze, id generati
 //! dal titolo. Funzioni pure, nessun I/O.
 
-use super::Task;
+use super::{Task, TaskKind};
 use crate::automation::{clip_chars, req_text, valid_model, TASK_MAX, TITLE_MAX};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,9 +26,10 @@ pub struct TaskSpec {
     /// Repository (cartella relativa alla root); `None` = la root.
     pub repo: Option<String>,
     pub model: Option<String>,
+    pub kind: TaskKind,
 }
 
-const SPEC_KEYS: [&str; 6] = ["id", "title", "task", "depends_on", "repo", "model"];
+const SPEC_KEYS: [&str; 7] = ["id", "title", "task", "depends_on", "repo", "model", "kind"];
 
 impl TaskSpec {
     pub fn from_task(t: &Task) -> TaskSpec {
@@ -39,6 +40,7 @@ impl TaskSpec {
             depends_on: t.depends_on.clone(),
             repo: t.repo.clone(),
             model: t.model.clone(),
+            kind: t.kind,
         }
     }
 }
@@ -184,7 +186,14 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
         }
         Some(_) => return Err("model must be a string".to_string()),
     };
-    Ok(TaskSpec { id, title, task, depends_on, repo, model })
+    let kind = match obj.get("kind") {
+        None => base.map(|b| b.kind).unwrap_or_default(),
+        Some(Value::Null) => TaskKind::Work,
+        Some(Value::String(s)) => TaskKind::parse(s.trim())
+            .ok_or_else(|| format!("invalid kind '{}' (allowed: work, review)", clip_chars(s, 20)))?,
+        Some(_) => return Err("kind must be a string".to_string()),
+    };
+    Ok(TaskSpec { id, title, task, depends_on, repo, model, kind })
 }
 
 /// Parametri di `propose_tasks`: `{ tasks: [TaskSpec] }`, ogni task con id.

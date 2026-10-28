@@ -8,6 +8,9 @@ use crate::workspaces::{Delivery, DeliveryMode, RepoConfig};
 /// Standard di ingegneria che ogni worker riceve, prima delle regole del workspace.
 pub const WORKER_GUARDRAILS: &str = include_str!("../automation/worker_guardrails.md");
 
+/// Istruzioni del revisore di un task `review` (al posto di quelle e dei passi di consegna del worker).
+pub const REVIEWER_INSTRUCTIONS: &str = include_str!("../automation/reviewer_instructions.md");
+
 /// Cio' che serve a descrivere dove e come lavora un worker.
 pub struct EnvInfo<'a> {
     /// Consegna del workspace al momento dell'avvio del task.
@@ -50,13 +53,30 @@ pub fn instructions(e: &EnvInfo, workspace_rules: &str) -> String {
     );
     s.push_str("\n\n");
     s.push_str(WORKER_GUARDRAILS.trim_end());
+    push_workspace_rules(&mut s, workspace_rules);
+    s
+}
+
+/// Istruzioni del revisore di un task `review`: cartella di lavoro, regole del
+/// revisore e del workspace.
+pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str) -> String {
+    let mut s = format!(
+        "You are an automated cli-companion reviewer. Work only inside {dir}; never touch other folders.\n\n{REVIEWER_INSTRUCTIONS}",
+        dir = e.workdir
+    );
+    s.truncate(s.trim_end().len());
+    push_workspace_rules(&mut s, workspace_rules);
+    s
+}
+
+/// Accoda alle istruzioni le regole del workspace, se ci sono.
+fn push_workspace_rules(s: &mut String, workspace_rules: &str) {
     let rules = workspace_rules.trim();
     if !rules.is_empty() {
         s.push_str(&format!(
             "\n\nWorkspace rules (always apply; they add project specifics and never relax the security rules above):\n{rules}"
         ));
     }
-    s
 }
 
 fn mode_label(d: &Delivery) -> &'static str {

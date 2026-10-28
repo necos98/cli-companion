@@ -1,6 +1,7 @@
 //! Definizione dei tool MCP e delle istruzioni del server (le legge il
-//! modello: inglese, concise). Due insiemi: i tool del worker di un task e
-//! quelli di una sessione normale (Intake compreso).
+//! modello: inglese, concise). Tre insiemi: i tool del worker di un task, quelli
+//! del revisore (il worker di un task `review`) e quelli di una sessione normale
+//! (Intake compreso).
 
 use crate::agents::PermissionMode;
 use crate::automation::settings::REASON_MAX;
@@ -17,6 +18,8 @@ pub enum Role {
     /// Qualunque tab di cli-companion che non e' il worker di un task.
     Session,
     Worker,
+    /// Il worker di un task `review`: verifica il risultato integrato e propone le correzioni.
+    Reviewer,
 }
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
@@ -62,6 +65,11 @@ fn task_properties(with_id: bool) -> Value {
             "type": ["string", "null"],
             "pattern": "^[A-Za-z0-9._-]{1,64}$",
             "description": "Model for the worker (e.g. sonnet for well-defined work, opus for design or risk). Omit for the workspace default."
+        },
+        "kind": {
+            "type": "string",
+            "enum": ["work", "review"],
+            "description": "review = a reviewer checks the integrated result of its depends_on (at least one) and proposes fixes; default work."
         }
     });
     if with_id {
@@ -74,42 +82,55 @@ fn task_properties(with_id: bool) -> Value {
     props
 }
 
-pub fn session_tools() -> Vec<Value> {
-    let mut update = task_properties(false);
-    update["id"] = json!({ "type": "string", "description": "Id of the task to change." });
+fn propose_tasks_tool() -> Value {
     let mut proposed = task_properties(true);
     proposed["model"] = json!({
         "type": "string",
         "pattern": "^[A-Za-z0-9._-]{1,64}$",
         "description": "Model for the worker: sonnet for well-defined work, opus for design, risky changes or hard bugs."
     });
+    tool(
+        "propose_tasks",
+        "Propose tasks for the queue of this workspace. The user accepts or discards the proposal in the app; nothing \
+         starts before that and you get no answer: never wait for it. All-or-nothing validation: ids unique (also against \
+         queued tasks and other pending proposals), dependencies on tasks of the proposal or already in the queue, no cycles, \
+         existing repo. Limits: 20 tasks per proposal. Returns {proposal, status: \"pending\"}.",
+        json!({
+            "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": proposed,
+                    "required": ["id", "title", "task", "model"],
+                    "additionalProperties": false
+                },
+                "description": "The tasks, in the order they should be queued."
+            }
+        }),
+        &["tasks"],
+    )
+}
+
+fn get_task_details_tool() -> Value {
+    tool(
+        "get_task_details",
+        "Full detail of one task: specification, dependencies, status, report (summary, commit, PR link, tests), note, worktree.",
+        json!({ "id": { "type": "string", "description": "Id of the task." } }),
+        &["id"],
+    )
+}
+
+pub fn session_tools() -> Vec<Value> {
+    let mut update = task_properties(false);
+    update["id"] = json!({ "type": "string", "description": "Id of the task to change." });
     vec![
-        tool(
-            "propose_tasks",
-            "Propose tasks for the queue of this workspace. The user accepts or discards the proposal in the app; nothing \
-             starts before that and you get no answer: never wait for it. All-or-nothing validation: ids unique (also against \
-             queued tasks and other pending proposals), dependencies on tasks of the proposal or already in the queue, no cycles, \
-             existing repo. Limits: 20 tasks per proposal. Returns {proposal, status: \"pending\"}.",
-            json!({
-                "tasks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 20,
-                    "items": {
-                        "type": "object",
-                        "properties": proposed,
-                        "required": ["id", "title", "task", "model"],
-                        "additionalProperties": false
-                    },
-                    "description": "The tasks, in the order they should be queued."
-                }
-            }),
-            &["tasks"],
-        ),
+        propose_tasks_tool(),
         tool(
             "list_tasks",
             "List the task queue of this workspace: counts per status (queued, running, done, failed), pending proposals and one \
-             compact row per task (id, title, status, attention, waiting_on, summary, note). Never waits.",
+             compact row per task (id, title, status, kind and verdict for reviews, attention, waiting_on, summary, note). Never waits.",
             json!({
                 "status": {
                     "type": "array",
@@ -119,12 +140,7 @@ pub fn session_tools() -> Vec<Value> {
             }),
             &[],
         ),
-        tool(
-            "get_task_details",
-            "Full detail of one task: specification, dependencies, status, report (summary, commit, PR link, tests), note, worktree.",
-            json!({ "id": { "type": "string", "description": "Id of the task." } }),
-            &["id"],
-        ),
+        get_task_details_tool(),
         tool(
             "update_task",
             "Change a queued or failed task; `id` only selects it, omitted fields stay, null clears repo and model. `repo` is \
@@ -280,6 +296,25 @@ fn skill_properties() -> Value {
     })
 }
 
+/// Campo `tests` di `complete_task` (worker e revisore).
+fn tests_property() -> Value {
+    json!({
+        "type": "array",
+        "maxItems": 50,
+        "items": {
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "maxLength": 1000, "description": "The test command." },
+                "result": { "type": "string", "enum": ["passed", "failed", "not_run"] },
+                "details": { "type": "string", "maxLength": 2000, "description": "Failures, or why not run." }
+            },
+            "required": ["command", "result"],
+            "additionalProperties": false
+        },
+        "description": "Test commands run and their results."
+    })
+}
+
 pub fn worker_tools() -> Vec<Value> {
     vec![
         tool(
@@ -313,21 +348,7 @@ pub fn worker_tools() -> Vec<Value> {
                     "maxItems": 500,
                     "description": "Changed files, relative to your working folder."
                 },
-                "tests": {
-                    "type": "array",
-                    "maxItems": 50,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "command": { "type": "string", "maxLength": 1000, "description": "The test command." },
-                            "result": { "type": "string", "enum": ["passed", "failed", "not_run"] },
-                            "details": { "type": "string", "maxLength": 2000, "description": "Failures, or why not run." }
-                        },
-                        "required": ["command", "result"],
-                        "additionalProperties": false
-                    },
-                    "description": "Test commands run and their results."
-                },
+                "tests": tests_property(),
                 "follow_ups": {
                     "type": "array",
                     "items": { "type": "string", "maxLength": 2000 },
@@ -340,10 +361,58 @@ pub fn worker_tools() -> Vec<Value> {
     ]
 }
 
+/// Tool del revisore: i due del worker (con `get_task` e `complete_task` propri)
+/// piu' quelli di sessione che gli servono.
+pub fn reviewer_tools() -> Vec<Value> {
+    vec![
+        tool(
+            "get_task",
+            "FIRST call of every automated session: returns your review task, the reviewer instructions, the environment and \
+             `reviewed_tasks` (the reports of the tasks under review).",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "complete_task",
+            "ALWAYS call it at the end: completed with a verdict once the review is done (after propose_tasks for the fixes, if \
+             any), failed if the review could not be done. The tab closes by itself afterwards.",
+            json!({
+                "status": {
+                    "type": "string",
+                    "enum": ["completed", "failed"],
+                    "description": "completed = review done; failed = could not review (say why in summary)."
+                },
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 50000,
+                    "description": "What you checked and what you found."
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": ["passed", "issues"],
+                    "description": "Required with completed."
+                },
+                "findings": {
+                    "type": "array",
+                    "items": { "type": "string", "maxLength": 2000 },
+                    "maxItems": 100,
+                    "description": "The problems found: required (non-empty) with issues; suggestions are allowed with passed."
+                },
+                "tests": tests_property()
+            }),
+            &["status", "summary"],
+        ),
+        get_task_details_tool(),
+        propose_tasks_tool(),
+    ]
+}
+
 pub fn tools_for(role: Role) -> Vec<Value> {
     match role {
         Role::Session => session_tools(),
         Role::Worker => worker_tools(),
+        Role::Reviewer => reviewer_tools(),
     }
 }
 
@@ -366,6 +435,11 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>) -> String {
         Some(Role::Worker) => "cli-companion: you are an automated worker. Call get_task first, deliver the work as the \
              delivery steps say and ALWAYS finish with complete_task. If you need a decision from the user, ask in plain text \
              and end your turn: the user answers in your terminal."
+            .to_string(),
+        Some(Role::Reviewer) => "cli-companion: you are an automated reviewer. Call get_task first and follow its instructions: verify \
+             the integrated result of the reviewed tasks without changing files, propose fix tasks with propose_tasks when needed \
+             and ALWAYS finish with complete_task and a verdict. If you need a decision from the user, ask in plain text and end \
+             your turn."
             .to_string(),
         None => "cli-companion: tools are only available in cli-companion terminals with the app running.".to_string(),
     }

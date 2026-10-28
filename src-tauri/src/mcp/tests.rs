@@ -1,4 +1,4 @@
-use super::tools::{session_tools, worker_tools};
+use super::tools::{reviewer_tools, session_tools, worker_tools};
 use super::*;
 use crate::agents::PermissionMode;
 use crate::automation::settings::REASON_MAX;
@@ -15,9 +15,15 @@ use std::cell::RefCell;
 /// 5_600 = the previous ceiling plus the three skill tools (mostly their validation limits).
 /// 8_700 = 5_600 plus the two settings tools (propose_settings is a schema of eleven fields with
 /// their limits and enums, measured 8_604 after trimming every description that was not needed).
-const SESSION_TOOLS_CEILING: usize = 8_700;
+/// 9_000 = 8_700 plus the `kind` field of the tasks in propose_tasks and update_task (measured 8_998).
+const SESSION_TOOLS_CEILING: usize = 9_000;
 const WORKER_TOOLS_CEILING: usize = 2_600;
+/// The reviewer set (measured 3_892): its own get_task and complete_task (verdict, findings, tests) plus the shared
+/// get_task_details and propose_tasks definitions.
+const REVIEWER_TOOLS_CEILING: usize = 3_900;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
+/// The reviewer server instructions (measured 345).
+const REVIEWER_INSTRUCTIONS_CEILING: usize = 400;
 
 /// Backend finto: registra le chiamate e risponde con `reply`.
 struct Fake {
@@ -64,10 +70,17 @@ fn keys(v: &Value) -> Vec<String> {
 fn size_budget_of_the_model_facing_text() {
     let session = serde_json::to_string(&session_tools()).unwrap().chars().count();
     let worker = serde_json::to_string(&worker_tools()).unwrap().chars().count();
+    let reviewer = serde_json::to_string(&reviewer_tools()).unwrap().chars().count();
+    let reviewer_instr = instructions(Some(Role::Reviewer), None).chars().count();
     let instr = instructions(Some(Role::Session), Some("Proj (wsl, /home/u/app)")).chars().count();
     assert!(session <= SESSION_TOOLS_CEILING, "session tools are {session} chars, ceiling {SESSION_TOOLS_CEILING}");
     assert!(worker <= WORKER_TOOLS_CEILING, "worker tools are {worker} chars, ceiling {WORKER_TOOLS_CEILING}");
     assert!(instr <= SESSION_INSTRUCTIONS_CEILING, "session instructions are {instr} chars, ceiling {SESSION_INSTRUCTIONS_CEILING}");
+    assert!(reviewer <= REVIEWER_TOOLS_CEILING, "reviewer tools are {reviewer} chars, ceiling {REVIEWER_TOOLS_CEILING}");
+    assert!(
+        reviewer_instr <= REVIEWER_INSTRUCTIONS_CEILING,
+        "reviewer instructions are {reviewer_instr} chars, ceiling {REVIEWER_INSTRUCTIONS_CEILING}"
+    );
 }
 
 #[test]
@@ -102,6 +115,12 @@ fn initialize_negotiates_protocol_version() {
     let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
     let text = r["result"]["instructions"].as_str().unwrap();
     assert!(!text.contains("Proj") && text.contains("complete_task"));
+    let rv = Fake::new("reviewer");
+    let r = send(&mut Server::default(), &rv, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
+    let text = r["result"]["instructions"].as_str().unwrap();
+    assert!(text.contains("automated reviewer") && text.contains("complete_task") && text.contains("verdict"));
+    assert!(!text.contains('\n') && !text.contains("  "),"reviewer instructions must be one line with single spaces");
+    assert!(!text.contains("Proj") && !text.contains("deliver"));
     // Senza protocolVersion: default.
     let r = send(&mut Server::default(), &b, json!({"jsonrpc":"2.0","id":"a","method":"initialize"})).unwrap();
     assert_eq!(r["id"], "a");
@@ -122,6 +141,9 @@ fn tools_list_depends_on_role() {
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("worker"), json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
     assert_eq!(names(&r), ["get_task", "complete_task"]);
+    let mut s = Server::default();
+    let r = send(&mut s, &Fake::new("reviewer"), json!({"jsonrpc":"2.0","id":3,"method":"tools/list"})).unwrap();
+    assert_eq!(names(&r), ["get_task", "complete_task", "get_task_details", "propose_tasks"]);
     for t in r["result"]["tools"].as_array().unwrap() {
         assert!(!t["description"].as_str().unwrap().is_empty());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -130,7 +152,7 @@ fn tools_list_depends_on_role() {
 
 #[test]
 fn no_orchestrator_tool_survives() {
-    let all: Vec<Value> = session_tools().into_iter().chain(worker_tools()).collect();
+    let all: Vec<Value> = session_tools().into_iter().chain(worker_tools()).chain(reviewer_tools()).collect();
     for gone in [
         "spawn_session", "list_sessions", "send_message", "close_session", "get_events", "submit_plan", "get_board",
         "set_task_status", "set_board", "get_workflow", "save_workflow", "ask_user", "report_fact",
@@ -152,7 +174,8 @@ fn schemas_match_the_rust_validation() {
     let by = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
     let propose = by("propose_tasks");
     let item = &propose["inputSchema"]["properties"]["tasks"]["items"];
-    assert_eq!(keys(&item["properties"]), ["depends_on", "id", "model", "repo", "task", "title"]);
+    assert_eq!(keys(&item["properties"]), ["depends_on", "id", "kind", "model", "repo", "task", "title"]);
+    assert_eq!(item["properties"]["kind"]["enum"], json!(["work", "review"]));
     assert_eq!(item["required"], json!(["id", "title", "task", "model"]));
     assert_eq!(item["properties"]["model"]["type"], "string");
     assert_eq!(item["additionalProperties"], false);
@@ -160,7 +183,7 @@ fn schemas_match_the_rust_validation() {
     assert_eq!(propose["inputSchema"]["properties"]["tasks"]["maxItems"], 20);
     assert!(propose["description"].as_str().unwrap().contains("never wait"));
     let upd = by("update_task");
-    assert_eq!(keys(&upd["inputSchema"]["properties"]), ["depends_on", "id", "model", "repo", "task", "title"]);
+    assert_eq!(keys(&upd["inputSchema"]["properties"]), ["depends_on", "id", "kind", "model", "repo", "task", "title"]);
     assert_eq!(upd["inputSchema"]["required"], json!(["id"]));
     assert_eq!(upd["inputSchema"]["properties"]["model"]["type"], json!(["string", "null"]));
     assert_eq!(keys(&by("list_tasks")["inputSchema"]["properties"]), ["status"]);
@@ -347,4 +370,50 @@ fn ping_unknown_method_notifications_and_parse_error() {
     assert_eq!(handle_line(&mut s, "[1]", &b).unwrap()["error"]["code"], -32600);
     // Nulla di tutto cio' ha toccato l'app.
     assert!(b.calls.borrow().is_empty());
+}
+
+#[test]
+fn reviewer_complete_task_schema_has_verdict_and_findings() {
+    let tools = reviewer_tools();
+    let done = &tools[1];
+    assert_eq!(done["name"], "complete_task");
+    let props = &done["inputSchema"]["properties"];
+    assert_eq!(keys(props), ["findings", "status", "summary", "tests", "verdict"]);
+    assert_eq!(done["inputSchema"]["required"], json!(["status", "summary"]));
+    assert_eq!(props["status"]["enum"], json!(["completed", "failed"]));
+    assert_eq!(props["verdict"]["enum"], json!(["passed", "issues"]));
+    assert_eq!(props["findings"]["maxItems"], 100);
+    assert_eq!(props["findings"]["items"]["maxLength"], 2000);
+    // I `tests` sono gli stessi del worker.
+    assert_eq!(props["tests"], worker_tools()[1]["inputSchema"]["properties"]["tests"]);
+    // propose_tasks e get_task_details sono le definizioni della sessione.
+    let session = session_tools();
+    for name in ["propose_tasks", "get_task_details"] {
+        let of = |tools: &[Value]| tools.iter().find(|t| t["name"] == name).unwrap().clone();
+        assert_eq!(of(&tools), of(&session), "{name}");
+    }
+    // Il worker non ha ne' verdetto ne' findings.
+    let worker = &worker_tools()[1]["inputSchema"]["properties"];
+    assert!(worker.get("verdict").is_none() && worker.get("findings").is_none());
+}
+
+#[test]
+fn a_reviewer_cannot_call_the_queue_or_settings_tools() {
+    let b = Fake::new("reviewer");
+    let mut s = Server::default();
+    for name in ["list_tasks", "update_task", "delete_task", "save_skill", "get_workspace_settings", "propose_settings"] {
+        let r = send(
+            &mut s,
+            &b,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{name}");
+    }
+    assert!(b.calls.borrow().iter().all(|(m, _)| m == "whoami"));
+    // Quelli concessi arrivano all'app.
+    let r = send(&mut s, &b, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_task_details","arguments":{"id":"a"}}}))
+        .unwrap();
+    assert!(r["result"].get("isError").is_none());
+    assert_eq!(b.calls.borrow().last().unwrap().0, "get_task_details");
 }

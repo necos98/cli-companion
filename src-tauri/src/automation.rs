@@ -18,9 +18,7 @@
 //! hook: solo i processi figli di un terminale di cli-companion lo conoscono.
 
 use crate::agent_notify::{is_valid_tab_id, RpcRequest, RpcResponse};
-use crate::board::{
-    self, build_report, Board, BoardView, ReportFields, TaskStatus, WorktreeInfo,
-};
+use crate::board::{self, build_report, Board, BoardView, ReportFields, TaskKind, TaskStatus, WorktreeInfo};
 use crate::workspaces::{Delivery, Workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -35,6 +33,7 @@ pub mod auto;
 mod boards;
 mod hooks;
 mod host;
+mod review;
 mod rpc;
 pub(crate) mod settings;
 pub mod skills;
@@ -216,6 +215,8 @@ pub struct NewWorker {
     pub cwd: String,
     /// Comando da digitare nella shell del nuovo tab.
     pub command: String,
+    /// Tipo del task: decide ruolo e strumenti del worker.
+    pub kind: TaskKind,
 }
 
 /// Notifica di sistema per l'utente (evento `task-notify`): un task richiede
@@ -274,6 +275,8 @@ struct Worker {
     session: String,
     workspace_id: String,
     task_id: String,
+    /// Tipo del task del worker (un `review` e' un revisore).
+    kind: TaskKind,
     /// Tentativo (`attempts` del task) per cui il worker e' partito.
     attempt: u32,
     title: String,
@@ -337,8 +340,9 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn is_worker(&self, session: &str) -> bool {
-        self.workers.contains_key(session)
+    /// Tipo del task del worker `session` (`None` se non e' un worker).
+    pub fn worker_kind(&self, session: &str) -> Option<TaskKind> {
+        self.workers.get(session).map(|w| w.kind)
     }
 
     /// Effetti accumulati dall'ultima chiamata.
@@ -365,6 +369,7 @@ impl Registry {
                 session: id,
                 workspace_id: ws.to_string(),
                 task_id: tid.to_string(),
+                kind: new.kind,
                 attempt,
                 title: new.title,
                 env,
@@ -475,12 +480,12 @@ impl Registry {
     pub fn get_task(&mut self, session: &str, ws: &Workspace, now: i64) -> Result<Value, String> {
         let w = self.live_worker(session)?;
         let (ws_id, tid, env) = (w.workspace_id.clone(), w.task_id.clone(), w.env.clone());
-        let t = self
-            .boards
-            .get(&ws_id)
-            .and_then(|b| b.task(&tid))
+        let unassigned = || "this task is no longer assigned to this session".to_string();
+        let b = self.boards.get(&ws_id).ok_or_else(unassigned)?;
+        let t = b
+            .task(&tid)
             .filter(|t| t.status == TaskStatus::Running && t.session.as_deref() == Some(session))
-            .ok_or_else(|| "this task is no longer assigned to this session".to_string())?;
+            .ok_or_else(unassigned)?;
         let info = board::texts::EnvInfo {
             delivery: &env.delivery,
             root: &ws.path,
@@ -491,13 +496,16 @@ impl Registry {
             base: env.base.as_deref(),
             repo_cfg: ws.repos.get(&board::repo_key(t.repo.as_deref())),
         };
-        let mut out = serde_json::json!({
-            "task": t.task,
-            "title": t.title,
-            "instructions": board::texts::instructions(&info, &ws.worker_rules),
-            "environment": board::texts::environment(&info),
-            "delivery": board::texts::delivery_steps(&info),
-        });
+        let mut out = match t.kind {
+            TaskKind::Review => review::get_task_json(&info, &ws.worker_rules, b),
+            TaskKind::Work => serde_json::json!({
+                "task": t.task,
+                "title": t.title,
+                "instructions": board::texts::instructions(&info, &ws.worker_rules),
+                "environment": board::texts::environment(&info),
+                "delivery": board::texts::delivery_steps(&info),
+            }),
+        };
         if let Some(p) = &t.previous_attempt {
             out["previous_attempt"] = serde_json::to_value(p).unwrap_or(Value::Null);
         }
@@ -532,6 +540,9 @@ impl Registry {
             _ => return Err("invalid status (use completed or failed)".to_string()),
         };
         let summary = req_text("summary", summary, SUMMARY_MAX)?;
+        // Il verdetto si valida prima di ogni effetto: un errore lascia il task in corso.
+        let kind = self.worker_kind(session).ok_or_else(|| "reserved for automated sessions".to_string())?;
+        board::check_verdict(kind, completed, &fields)?;
         self.reopen_after_session_end(session, now);
         let w = self.live_worker(session)?;
         let (ws, tid) = (w.workspace_id.clone(), w.task_id.clone());
