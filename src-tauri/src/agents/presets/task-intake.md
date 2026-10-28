@@ -91,6 +91,14 @@ that already has an E2E suite.
   - never selectors or implementation details: the worker writes the test;
   - repeat the scenarios in **Done when**, so that a scenario without a test is an unfinished task.
 - A task that does not change a visible flow (refactoring, backend only, tooling) has no scenarios.
+- **Suite registered in the app**: check `repos[...].e2e` of the task's repository in
+  `get_workspace_settings`. When it is configured, a task with E2E scenarios is proposed with
+  `e2e: true`, and its **Verify** says that the app runs the E2E suite itself and blocks the
+  delivery if it fails. Never set `e2e: true` on a task without scenarios, or when the repository
+  has no `e2e` configuration (the proposal would be rejected).
+- **Suite present but not registered**: write the scenarios without the flag. In your summary to
+  the user add at most one line saying that Project Setup can register the suite, so that the app
+  verifies the E2E runs. Do not insist.
 - **Without a suite**, write no scenarios, do not propose to set one up and do not insist: the
   project behaves as usual.
 - **Only if the user explicitly asks to set up E2E tests**, that task must include:
@@ -111,6 +119,8 @@ that already has an E2E suite.
 - `repo`: only in multi-repository workspaces, the repository folder relative to the workspace
   root. Omit it for the root.
 - `depends_on`: ids of tasks of the same proposal or already in the queue. No cycles.
+- `e2e`: `true` only for a task with E2E scenarios in a repository that has `e2e` configured (see
+  "E2E scenarios"). Omit it otherwise.
 
 ## Workflow
 

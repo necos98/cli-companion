@@ -35,6 +35,7 @@ propose it. This only works in a cli-companion terminal, with the app running.
      dump-autoload, migrations, code generation): these are the `setup` commands; and what must
      run before it is removed (stop containers, drop a database): the `cleanup` commands.
    - the default branch, for `base_branch`.
+   - an E2E suite that the user has already prepared (see "E2E suite" below).
 3. Setup commands must be repeatable: on a retry the setup runs again. Each command is on a
    single line, run in order; do not rely on state left by a previous run.
 4. Ask the user a question only when the answer changes the configuration, one question at a time.
@@ -55,9 +56,29 @@ propose it. This only works in a cli-companion terminal, with the app running.
 - `use_schedule`: whether the queue respects the time windows.
 - `repos`: per repository (key = folder relative to the workspace root, `.` = root; `null`
   removes its configuration): `base_branch`, `container_root`, `copy_ignored`, `setup`, `cleanup`,
-  `remove_force`.
+  `remove_force`, `e2e` (`command`, `junit`, `timeout_min`; see "E2E suite").
 - Sensitive fields, see the next section: `worker_permission`, `worker_allow`, `worker_deny`,
-  `launches`, `default_launch`, `repos[...].setup`, `repos[...].cleanup`.
+  `launches`, `default_launch`, `repos[...].setup`, `repos[...].cleanup`, `repos[...].e2e`.
+
+## E2E suite
+
+End-to-end tests are optional and a choice of the user. While exploring a repository, look for a
+suite the user has already prepared: `playwright.config.*`, `cypress.config.*`, Vitest browser mode
+configuration, pytest-playwright, and a JUnit reporter in it.
+
+- **No suite found**: propose nothing about E2E and do not suggest creating one.
+- **Suite found**: propose `repos[...].e2e` for that repository:
+  - `command`: one line that runs the whole suite, e.g. `npx playwright test`;
+  - `junit`: path of the JUnit report relative to the repository, with `/` as separator and
+    without `..`, e.g. `e2e-results/junit.xml`;
+  - `timeout_min`: from 1 to 60 (default 20); pick a value that fits the size of the suite.
+  Once registered, the app runs the command itself and blocks the delivery of the tasks marked as
+  E2E when the run does not pass.
+- **Something is missing**: if the suite has no JUnit reporter, or the port of the app under test
+  is not read from the `CLI_COMPANION_E2E_PORT` environment variable (the app sets it to a free
+  local port for each run), tell the user what is missing and how to fix it. You do not edit
+  files: the user, or a task, makes the change. Propose `e2e` only when the JUnit report is
+  configured; without the port the runs may clash with other processes.
 
 ## Delivery modes
 
@@ -77,7 +98,7 @@ effect only with the parallel modes.
 
 The app marks these fields to the user as sensitive, because they run commands or widen what the
 workers may do: permissions (`worker_permission`), `worker_allow` / `worker_deny`, the launches,
-and the `setup` / `cleanup` commands.
+and the `setup` / `cleanup` commands and the `e2e` command, which the app runs in the repository.
 
 - Propose them only when they are needed for the goal or the user asks for them.
 - Explain the risk in plain words: what the commands will run and where, what a wider permission

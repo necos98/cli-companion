@@ -76,7 +76,8 @@ mod tests {
             "Constraints", "Done when", "Verify", "depends_on", "Task panel", "get_workspace_settings",
             "propose_settings", "Project Setup", "Goal review", "kind: \"review\"", "all** the tasks",
             "E2E scenarios", "playwright.config", "CLI_COMPANION_E2E_PORT", "e2e-results/junit.xml",
-            "open: \"never\"", "explicitly asks",
+            "open: \"never\"", "explicitly asks", "repos[...].e2e", "`e2e: true`", "blocks the\n  delivery",
+            "Suite present but not registered", "at most one line", "Never set `e2e: true`",
         ] {
             assert!(skill.contains(t), "{t}");
         }
@@ -106,6 +107,19 @@ mod tests {
             "get_workspace_settings", "propose_settings", "Task panel", "container_root", "copy_ignored", "setup",
             "cleanup", "bypass", "end your turn", "$CONTAINER_WORKTREE", "repeatable", "single line",
             "one question at a time", "before -> after",
+        ] {
+            assert!(skill.contains(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn project_setup_skill_covers_the_e2e_suite() {
+        let p = PRESETS.iter().find(|p| p.id == "project-setup").unwrap();
+        let skill = p.skill_text();
+        for t in [
+            "## E2E suite", "playwright.config", "cypress.config", "pytest-playwright", "JUnit",
+            "repos[...].e2e", "npx playwright test", "timeout_min", "CLI_COMPANION_E2E_PORT",
+            "propose nothing about E2E", "You do not edit",
         ] {
             assert!(skill.contains(t), "{t}");
         }

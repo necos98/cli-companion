@@ -214,6 +214,31 @@ attraversa la mezzanotte). Sono solo un gate: i workspace con **Rispetta le fasc
 avviano task fuori fascia (quelli in corso finiscono). Con "Impedisci lo standby" il PC resta
 sveglio finché c'è almeno un task in corso. Vedi [docs/BOARD.MD](docs/BOARD.MD).
 
+### Test E2E (facoltativi)
+
+Gli E2E non sono attivi di default e nessun preset li impone: se il progetto non ha una suite non
+cambia nulla. Per attivarli su un repository:
+
+1. **Prepara la suite nel progetto** (per esempio Playwright). Deve scrivere un report JUnit (per
+   Playwright il reporter `junit` su `e2e-results/junit.xml`) e avviare l'app sotto test sulla porta
+   letta dalla variabile d'ambiente `CLI_COMPANION_E2E_PORT`, che l'app imposta a una porta locale
+   libera a ogni esecuzione.
+2. **Project Setup** riconosce la suite e propone `e2e` per il repository (comando, per esempio
+   `npx playwright test`, percorso del JUnit e timeout). Se manca il JUnit o la porta non viene
+   letta dalla variabile, te lo dice: non modifica file. Approvi la proposta dal pannello Task, oppure
+   compili a mano **Impostazioni → Repository → Test E2E**.
+3. **Task Intake**, con il repository configurato, aggiunge alle specifiche dei task che toccano
+   flussi visibili gli scenari in linguaggio naturale e marca il task `e2e: true` (casella
+   "Richiede E2E" nei form). Se la suite c'è ma non è registrata, gli scenari restano senza flag.
+4. **L'app esegue gli E2E** (non la shell del worker) prima della consegna e **blocca solo i task
+   marcati**: un task `done` ha sempre un'esecuzione passata sul codice consegnato.
+5. **Risultati ed esecuzione manuale**: esito, test falliti e report sono nel dettaglio del task
+   (badge "E2E" sulle card); dalla pagina Repository "Esegui E2E" lancia la suite a mano.
+
+Passo manuale per WSL: i browser di Playwright vanno installati nella distro con
+`npx playwright install --with-deps`, che chiede `sudo` (e quindi la password) e non può essere
+automatizzato dall'app. Il contratto completo è in [docs/BOARD.MD](docs/BOARD.MD), sezione "Test E2E".
+
 ## Migrazione da muse-companion (v0.4.0)
 
 L'app si chiamava `muse-companion`. Con la rinomina in `cli-companion`:
