@@ -156,7 +156,7 @@ const RepoCard = memo(function RepoCard({ workspaceId, repo, saved, missing, onW
               <Input
                 value={draft.e2e_command}
                 onChange={(e) => patch({ e2e_command: e.target.value })}
-                placeholder="npx playwright test --reporter=junit"
+                placeholder="npx playwright test"
                 className="h-8 font-mono text-[12px]"
               />
             </Field>
@@ -165,7 +165,7 @@ const RepoCard = memo(function RepoCard({ workspaceId, repo, saved, missing, onW
                 <Input
                   value={draft.e2e_junit}
                   onChange={(e) => patch({ e2e_junit: e.target.value })}
-                  placeholder="test-results/junit.xml"
+                  placeholder="e2e-results/junit.xml"
                   className="h-8 font-mono text-[12px]"
                 />
               </Field>
