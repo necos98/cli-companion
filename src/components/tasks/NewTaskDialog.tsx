@@ -84,6 +84,7 @@ function NewTaskForm({ workspace, board, onBoard, onClose, onOpenIntake, repos, 
     depends_on: [],
     model: "",
     repo: repoChoices[0] ?? ROOT_REPO,
+    kind: "work",
   });
   const [errors, setErrors] = useState<TaskFormErrors>({});
   const { run, busy, error, clearError } = useCommand(onBoard);
@@ -110,6 +111,7 @@ function NewTaskForm({ workspace, board, onBoard, onClose, onOpenIntake, repos, 
         depends_on: values.depends_on,
         repo: multiRepo ? repoValue(repo) : null,
         model: sanitizeModel(values.model),
+        kind: values.kind,
       });
       created = findCreatedTask(next, values.title, previous);
       return next;

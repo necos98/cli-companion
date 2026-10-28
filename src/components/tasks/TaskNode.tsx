@@ -3,6 +3,8 @@ import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import { GitBranch, RotateCw, TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { isReview } from "../../lib/review";
 import {
   displayStatus,
   shortReport,
@@ -61,6 +63,8 @@ function TaskNode({ data }: NodeProps<TaskFlowNode>) {
             · {sub.text}
           </span>
         )}
+        {isReview(task) && <ReviewBadge className="ml-1 text-[10px]" />}
+        <VerdictBadge task={task} className="text-[10px]" />
         {task.attempts > 1 && (
           <span
             className="ml-auto flex items-center gap-0.5 font-mono text-[10px] text-muted-foreground"

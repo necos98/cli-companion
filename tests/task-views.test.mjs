@@ -215,10 +215,10 @@ describe("tastiera", () => {
 
 describe("form task", () => {
   it("validazione", () => {
-    assert.equal(hasErrors(validateTaskForm({ title: "x", task: "y", model: "" })), false);
-    const e = validateTaskForm({ title: "  ", task: "", model: "no good!" });
+    assert.equal(hasErrors(validateTaskForm({ title: "x", task: "y", model: "", depends_on: [], kind: "work" })), false);
+    const e = validateTaskForm({ title: "  ", task: "", model: "no good!", depends_on: [], kind: "work" });
     assert.ok(e.title && e.task && e.model);
-    assert.ok(validateTaskForm({ title: "x".repeat(81), task: "y", model: "" }).title);
+    assert.ok(validateTaskForm({ title: "x".repeat(81), task: "y", model: "", depends_on: [], kind: "work" }).title);
   });
   it("dipendenze: niente Fatti, niente se stesso, niente cicli", () => {
     const ts = [

@@ -368,7 +368,7 @@ Sessione (workspace = quello del tab):
 
 ## Task di review
 
-Contratto del backend. La UI è documentata da un task separato (`review-tasks-ui`).
+Contratto del backend. La UI è descritta in "UI delle review".
 
 Una **review** è un task `kind: "review"` che verifica il lavoro di altri task. È un normale
 task di coda con `depends_on` su tutti i task di un obiettivo: lo scheduler lo avvia quando sono
@@ -589,3 +589,14 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
 - Workspace → "Rispetta le fasce orarie" (toggle `use_schedule`); Generale → Fasce orarie
   invariata (senza riferimenti all'orchestratore).
 - Rimosse: pagina Orchestratore, pagina Workflow, campo "comando di setup del worktree".
+
+## UI delle review
+
+I task `review` si riconoscono dal badge **Review** in Kanban, Lista, coda e card in corso del
+pannello, nodo del grafo, dettaglio e righe di una proposta. Una review `done` mostra il verdetto:
+**Verificato** (`passed`) oppure **Problemi trovati** (`issues`, colore di avviso: il task non è
+fallito); con `issues` il dettaglio elenca i `findings` sopra il sommario. Una proposta con
+`source_task` si intitola "Proposta dal reviewer" e mostra il task di origine (titolo, o id se non
+è più nella board); senza, resta "Proposta da Task Intake". Il form "Nuovo task" e la modifica
+(solo dove il task è modificabile) hanno l'opzione "Task di revisione" (`kind: "review"`): senza
+almeno una dipendenza il form blocca il salvataggio, come il backend. Logica in `src/lib/review.ts`.

@@ -2,6 +2,8 @@ import { memo } from "react";
 import type { DragEvent } from "react";
 import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { isReview } from "../../lib/review";
 import { displayStatus, waitingOnLabel, workerSubStatus } from "../../lib/board";
 import type { Task } from "../../lib/board";
 import { isDraggable, kanbanMeta } from "../../lib/taskViews";
@@ -79,6 +81,8 @@ function KanbanCard({
             Richiede attenzione
           </span>
         )}
+        {isReview(task) && <ReviewBadge />}
+        <VerdictBadge task={task} />
         {waiting && (
           <span className="max-w-full truncate rounded border border-border-strong px-1.5 py-px">{waiting}</span>
         )}

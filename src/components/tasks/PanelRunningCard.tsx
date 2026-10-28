@@ -3,6 +3,8 @@ import { PREPARING_LABEL, displayStatus } from "../../lib/board";
 import type { Task } from "../../lib/board";
 import { runningMeta } from "../../lib/taskPanel";
 import { cn } from "@/lib/utils";
+import { ReviewBadge } from "./ReviewBadges";
+import { isReview } from "../../lib/review";
 
 interface PanelRunningCardProps {
   task: Task;
@@ -37,7 +39,10 @@ export default function PanelRunningCard({ task, now, onClick }: PanelRunningCar
         />
       )}
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <span className="line-clamp-2 break-words text-[13px] font-medium">{task.title}</span>
+        <span className="line-clamp-2 break-words text-[13px] font-medium">
+          {task.title}
+          {isReview(task) && <ReviewBadge className="ml-1.5 align-middle text-[10px]" />}
+        </span>
         {meta && (
           <span className={cn("truncate text-[11px]", attention ? "text-status-attention" : "text-muted-foreground")}>
             {meta}

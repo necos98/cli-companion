@@ -5,6 +5,7 @@ import DetailFacts from "./DetailFacts";
 import DetailResult from "./DetailResult";
 import DetailSection from "./DetailSection";
 import Markdown from "./Markdown";
+import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import TaskEditForm from "./TaskEditForm";
 import { useCommand } from "./useDetailCommand";
 import {
@@ -17,6 +18,7 @@ import {
   statusTextClass,
 } from "../../lib/board";
 import type { BoardView, Task, TaskAction } from "../../lib/board";
+import { isReview } from "../../lib/review";
 import { isMultiRepo, repoOptions } from "../../lib/taskForm";
 import { openExternal } from "../../lib/openExternal";
 import { api } from "../../lib/tauri";
@@ -99,6 +101,8 @@ export default function TaskDetail({
             <span className={cn("h-1.5 w-1.5 rounded-full", statusDotClass(status))} aria-hidden="true" />
             {statusLabel(status)}
           </span>
+          {isReview(task) && <ReviewBadge className="text-xs" />}
+          <VerdictBadge task={task} className="text-xs" />
           <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={task.id}>
             {task.id}
           </span>

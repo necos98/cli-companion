@@ -1,6 +1,8 @@
 import { memo } from "react";
 import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { isReview } from "../../lib/review";
 import {
   displayStatus,
   formatRelative,
@@ -48,7 +50,11 @@ function ListRow({ task, subtitle, now, selected, showRepo, onSelect }: Props) {
         <span className="truncate">{statusLabel(status)}</span>
       </span>
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate">{task.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate">{task.title}</span>
+          {isReview(task) && <ReviewBadge className="text-[11px]" />}
+          <VerdictBadge task={task} className="text-[11px]" />
+        </span>
         {sub && <span className="truncate text-[11px] text-muted-foreground">{sub}</span>}
       </span>
       <span className="truncate text-text-secondary">{task.model || "—"}</span>

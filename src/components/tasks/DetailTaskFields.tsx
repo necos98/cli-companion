@@ -6,6 +6,7 @@ import { dependencyOptions } from "../../lib/taskForm";
 import type { TaskFormErrors, TaskFormValues } from "../../lib/taskForm";
 import type { Task } from "../../lib/board";
 import { MODEL_MAX } from "../../lib/model";
+import { REVIEW_OPTION_HELP, REVIEW_OPTION_LABEL } from "../../lib/review";
 import { cn } from "../../lib/utils";
 
 interface Props {
@@ -107,6 +108,20 @@ export default function DetailTaskFields({
         />
       </FieldBox>
 
+      <div className="flex flex-col gap-1">
+        <label htmlFor={id("kind")} className="flex items-center gap-2 text-xs font-medium">
+          <input
+            id={id("kind")}
+            type="checkbox"
+            checked={values.kind === "review"}
+            disabled={disabled}
+            onChange={(e) => onChange({ kind: e.target.checked ? "review" : "work" })}
+          />
+          {REVIEW_OPTION_LABEL}
+        </label>
+        <p className="text-[11px] text-muted-foreground">{REVIEW_OPTION_HELP}</p>
+      </div>
+
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-medium" id={id("deps-label")}>
           Dipende da
@@ -118,6 +133,11 @@ export default function DetailTaskFields({
           onChange={(depends_on) => onChange({ depends_on })}
           disabled={disabled}
         />
+        {errors.depends_on && (
+          <p id={id("deps-error")} role="alert" className="text-[11px] text-destructive">
+            {errors.depends_on}
+          </p>
+        )}
       </div>
 
       <FieldBox

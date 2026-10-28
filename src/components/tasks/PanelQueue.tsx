@@ -5,6 +5,8 @@ import { waitingOnLabel } from "../../lib/board";
 import type { Task } from "../../lib/board";
 import { dropSlot, moveBeforeId, queueSubtitle } from "../../lib/taskPanel";
 import { cn } from "@/lib/utils";
+import { ReviewBadge } from "./ReviewBadges";
+import { isReview } from "../../lib/review";
 
 interface PanelQueueProps {
   /** Task Da fare nell'ordine della coda. */
@@ -105,7 +107,10 @@ function QueueRowButton({ task, allTasks, onOpen }: { task: Task; allTasks: Task
       title={sub ? `${task.title}\n${sub}` : task.title}
       className="flex min-w-0 flex-1 flex-col gap-0.5 rounded text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
-      <span className="truncate text-[13px] text-text-secondary">{task.title}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-[13px] text-text-secondary">{task.title}</span>
+        {isReview(task) && <ReviewBadge className="text-[10px]" />}
+      </span>
       {sub && <span className="truncate text-[11px] text-muted-foreground">{sub}</span>}
     </button>
   );

@@ -4,7 +4,8 @@
 // board.ts e model.ts), importabili sia dall'app sia dai test `node --test`.
 
 import { modelError, sanitizeModel } from "./model.ts";
-import type { BoardView, Task, TaskPatch } from "./board.ts";
+import { reviewDependencyError } from "./review.ts";
+import type { BoardView, Task, TaskKind, TaskPatch } from "./board.ts";
 
 export const TITLE_MAX = 80;
 export const SPEC_MAX = 100_000;
@@ -18,12 +19,14 @@ export interface TaskFormValues {
   model: string;
   /** Repository scelto; `ROOT_REPO` = la root (si invia come null). */
   repo: string;
+  /** Tipo di task; `review` richiede almeno una dipendenza. */
+  kind: TaskKind;
 }
 
-export type TaskFormErrors = Partial<Record<"title" | "task" | "model", string>>;
+export type TaskFormErrors = Partial<Record<"title" | "task" | "model" | "depends_on", string>>;
 
 /** Errori di campo del form (vuoto = valido). */
-export function validateTaskForm(v: Pick<TaskFormValues, "title" | "task" | "model">): TaskFormErrors {
+export function validateTaskForm(v: Pick<TaskFormValues, "title" | "task" | "model" | "depends_on" | "kind">): TaskFormErrors {
   const errors: TaskFormErrors = {};
   const title = v.title.trim();
   if (title === "") errors.title = "Il titolo è obbligatorio";
@@ -33,6 +36,8 @@ export function validateTaskForm(v: Pick<TaskFormValues, "title" | "task" | "mod
   else if ([...spec].length > SPEC_MAX) errors.task = `La specifica può avere al massimo ${SPEC_MAX} caratteri`;
   const model = modelError(v.model);
   if (model) errors.model = model;
+  const deps = reviewDependencyError(v.kind, v.depends_on);
+  if (deps) errors.depends_on = deps;
   return errors;
 }
 
@@ -93,6 +98,7 @@ export function formFromTask(task: Task): TaskFormValues {
     depends_on: [...(task.depends_on ?? [])],
     model: task.model ?? "",
     repo: task.repo || ROOT_REPO,
+    kind: task.kind ?? "work",
   };
 }
 
@@ -113,6 +119,7 @@ export function buildPatch(task: Task, v: TaskFormValues, includeRepo: boolean):
   if (!sameSet(v.depends_on, task.depends_on ?? [])) patch.depends_on = v.depends_on;
   const model = sanitizeModel(v.model);
   if (model !== (task.model ?? null)) patch.model = model;
+  if (v.kind !== (task.kind ?? "work")) patch.kind = v.kind;
   if (includeRepo) {
     const repo = repoValue(v.repo);
     if (repo !== (task.repo || null)) patch.repo = repo;
