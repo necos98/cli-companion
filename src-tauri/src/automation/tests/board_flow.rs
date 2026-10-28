@@ -451,6 +451,23 @@ fn mark_done_unblocks_dependents_and_the_worker_picks_them_up() {
 }
 
 #[test]
+fn delete_cascade_removes_dependents_and_cleans_the_worktree() {
+    let (st, h) = pr_parallel();
+    queue(&st, &h, vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["b"]), spec("d", &[])]);
+    let w = session_of(&st, &h, "a");
+    finish(&st, &h, &w, "failed");
+    h.dirs.lock().unwrap().push("C:\\p\\.worktrees\\a".to_string());
+    // d e' running ma non dipende da a: non e' coinvolto.
+    assert_eq!(status_of(&st, &h, "d"), "running");
+    let v = boards::task_action(&st, &h, "ws-1", "a", "delete_cascade").unwrap();
+    assert_eq!(v.tasks.iter().map(|t| t.task.id.as_str()).collect::<Vec<_>>(), ["d"]);
+    let git = h.git_log();
+    assert!(git.contains(&"C:\\p|worktree remove C:\\p\\.worktrees\\a".to_string()), "{git:?}");
+    assert!(git.contains(&"C:\\p|branch -D task/a".to_string()), "{git:?}");
+    assert!(boards::task_action(&st, &h, "ws-1", "d", "delete_cascade").unwrap_err().contains("only queued or failed"));
+}
+
+#[test]
 fn delete_removes_failed_tasks_and_cleans_their_worktree() {
     let (st, h) = pr_parallel();
     queue(&st, &h, vec![spec("a", &[]), spec("b", &["a"]), spec("c", &[])]);

@@ -21,7 +21,7 @@ export type ReviewVerdict = "passed" | "issues";
 export type DisplayStatus = TaskStatus | "attention";
 
 /** Azioni dell'utente sul task (`task_action`). */
-export type TaskAction = "retry" | "mark_done" | "stop" | "delete" | "to_top";
+export type TaskAction = "retry" | "mark_done" | "stop" | "delete" | "delete_cascade" | "to_top";
 
 export type DeliveryMode = "pr" | "local_merge" | "push" | "commit";
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -429,6 +429,7 @@ export const ACTION_LABELS: Record<TaskAction, string> = {
   mark_done: "Segna come fatto",
   stop: "Ferma",
   delete: "Elimina",
+  delete_cascade: "Elimina tutti",
   to_top: "In cima alla coda",
 };
 
@@ -454,25 +455,36 @@ export function canEditTask(task: Pick<Task, "status">): boolean {
   return task.status === "queued" || task.status === "failed";
 }
 
-/** Si elimina un Da fare / Fallito che nessun task non Fatto elenca in `depends_on`. */
-export function canDeleteTask(
-  task: Pick<Task, "id" | "status">,
-  board: { tasks: Pick<Task, "id" | "status" | "depends_on">[] },
-): boolean {
-  if (task.status !== "queued" && task.status !== "failed") return false;
-  return !board.tasks.some(
-    (t) => t.id !== task.id && t.status !== "done" && (t.depends_on ?? []).includes(task.id),
-  );
+/** Task che l'eliminazione a cascata toglie e task in corso che la bloccano. */
+export interface CascadeDelete {
+  /** Id dei dipendenti non Fatti, diretti e indiretti (il task di partenza escluso). */
+  dependents: string[];
+  /** Id dei task dell'insieme (partenza inclusa) in corso: vanno fermati prima. */
+  running: string[];
 }
 
-/** Id dei task non Fatti che dipendono da `taskId` (il motivo per cui non si elimina). */
-export function dependentsOf(
+/**
+ * Stessa regola del backend: il task più la chiusura dei task non Fatti che ne
+ * dipendono; un task Fatto resta com'è e non si attraversa.
+ */
+export function cascadeDelete(
   taskId: string,
   board: { tasks: Pick<Task, "id" | "status" | "depends_on">[] },
-): string[] {
-  return board.tasks
-    .filter((t) => t.id !== taskId && t.status !== "done" && (t.depends_on ?? []).includes(taskId))
-    .map((t) => t.id);
+): CascadeDelete {
+  const set = new Set([taskId]);
+  const frontier = [taskId];
+  for (let current = frontier.pop(); current !== undefined; current = frontier.pop()) {
+    for (const t of board.tasks) {
+      if (t.status === "done" || set.has(t.id) || !(t.depends_on ?? []).includes(current)) continue;
+      set.add(t.id);
+      frontier.push(t.id);
+    }
+  }
+  const inSet = board.tasks.filter((t) => set.has(t.id));
+  return {
+    dependents: inSet.filter((t) => t.id !== taskId).map((t) => t.id),
+    running: inSet.filter((t) => t.status === "running").map((t) => t.id),
+  };
 }
 
 /** "Apri terminale" ha senso solo se il task ha un tab worker. */

@@ -7,7 +7,7 @@
 use super::hooks::HOOK_TIMEOUT;
 use super::worktrees::{ensure_repos, CleanupTarget, StartJob};
 use super::*;
-use crate::board::{self, parse_proposal, parse_spec, SchedCtx, TaskSpec, TaskView};
+use crate::board::{self, parse_proposal, parse_spec, SchedCtx, Task, TaskSpec, TaskView};
 use serde_json::json;
 
 /// Tempo concesso a un avvio (thread git, poi `get_task` del worker).
@@ -125,10 +125,23 @@ impl Registry {
     /// Toglie un task; se aveva un worktree lo fa ripulire.
     pub fn delete_task(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.delete_task(id, now))?;
-        if let Some(wt) = removed.worktree {
-            self.effects.push(Effect::Cleanup(Box::new(CleanupTarget { ws_id: ws.to_string(), task_id: id.to_string(), repo: removed.repo, wt })));
-        }
+        self.queue_cleanups(ws, vec![removed]);
         Ok(())
+    }
+
+    /// Toglie un task e quelli che ne dipendono (tutto o niente); fa ripulire i worktree.
+    pub fn delete_task_cascade(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
+        let removed = self.edit(ws, |b| b.delete_with_dependents(id, now))?;
+        self.queue_cleanups(ws, removed);
+        Ok(())
+    }
+
+    fn queue_cleanups(&mut self, ws: &str, removed: Vec<Task>) {
+        for t in removed {
+            if let Some(wt) = t.worktree {
+                self.effects.push(Effect::Cleanup(Box::new(CleanupTarget { ws_id: ws.to_string(), task_id: t.id, repo: t.repo, wt })));
+            }
+        }
     }
 
     pub fn retry_task(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
@@ -495,8 +508,9 @@ pub(super) fn task_action<H: Host>(
         "mark_done" => r.mark_task_done(ws_id, task_id, now),
         "stop" => r.stop_task(ws_id, task_id, now),
         "delete" => r.delete_task(ws_id, task_id, now),
+        "delete_cascade" => r.delete_task_cascade(ws_id, task_id, now),
         "to_top" => r.task_to_top(ws_id, task_id, now),
-        _ => Err("azione non valida (usa retry, mark_done, stop, delete o to_top)".to_string()),
+        _ => Err("azione non valida (usa retry, mark_done, stop, delete, delete_cascade o to_top)".to_string()),
     })?;
     st.view(host, ws_id)
 }

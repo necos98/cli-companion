@@ -605,12 +605,58 @@ impl Board {
         }
         let pos = self.tasks.iter().position(|x| x.id == id).expect("task presente");
         let removed = self.tasks.remove(pos);
-        // I task gia' `done` non devono tenere un riferimento a un task sparito.
-        for x in &mut self.tasks {
-            x.depends_on.retain(|d| d != id);
-        }
+        self.drop_references(&[removed.id.as_str()]);
         self.updated_at = now;
         Ok(removed)
+    }
+
+    /// Toglie un task `queued` o `failed` insieme a tutti i task non `done` che
+    /// ne dipendono, direttamente o no. Tutto o niente: se uno dei task da
+    /// togliere e' `running` non cambia nulla. Ritorna i task rimossi (i loro
+    /// worktree vanno ripuliti da chi chiama).
+    pub fn delete_with_dependents(&mut self, id: &str, now: i64) -> Result<Vec<Task>, String> {
+        let t = self.known(id)?;
+        if !matches!(t.status, TaskStatus::Queued | TaskStatus::Failed) {
+            return Err(format!("task '{id}' is {}: only queued or failed tasks can be deleted", t.status.as_str()));
+        }
+        let doomed = self.dependents_closure(id);
+        let running: Vec<&str> = self
+            .tasks
+            .iter()
+            .filter(|x| doomed.contains(&x.id) && x.status == TaskStatus::Running)
+            .map(|x| x.id.as_str())
+            .collect();
+        if !running.is_empty() {
+            return Err(format!("cannot delete: {} are running, stop them first", running.join(", ")));
+        }
+        let (removed, kept): (Vec<Task>, Vec<Task>) = std::mem::take(&mut self.tasks).into_iter().partition(|x| doomed.contains(&x.id));
+        self.tasks = kept;
+        let removed_ids: Vec<&str> = removed.iter().map(|x| x.id.as_str()).collect();
+        self.drop_references(&removed_ids);
+        self.updated_at = now;
+        Ok(removed)
+    }
+
+    /// `id` piu' i task non `done` che dipendono, anche indirettamente, da uno
+    /// dei task dell'insieme. Non si attraversa un task `done`: resta com'e'.
+    fn dependents_closure(&self, id: &str) -> HashSet<String> {
+        let mut set: HashSet<String> = HashSet::from([id.to_string()]);
+        let mut frontier = vec![id];
+        while let Some(current) = frontier.pop() {
+            for x in self.tasks.iter().filter(|x| x.status != TaskStatus::Done && x.depends_on.iter().any(|d| d == current)) {
+                if set.insert(x.id.clone()) {
+                    frontier.push(x.id.as_str());
+                }
+            }
+        }
+        set
+    }
+
+    /// I task rimasti (anche `done`) non devono tenere un riferimento a un task sparito.
+    fn drop_references(&mut self, removed: &[&str]) {
+        for x in &mut self.tasks {
+            x.depends_on.retain(|d| !removed.contains(&d.as_str()));
+        }
     }
 
     /// "Riprova": `failed` -> `queued` in fondo alla coda. Worktree e branch

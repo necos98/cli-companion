@@ -281,6 +281,8 @@ queued --scheduler--> running --complete_task completed--> done (pulizia worktre
 failed (session-end, tab aperto) --complete_task dello stesso worker--> done | failed (note "reopened: ...")
 failed --utente: Riprova--> queued (in fondo alla coda; worktree e branch si riusano)
 queued|failed --utente/Intake: Elimina--> rimosso (solo senza dipendenti non done)
+queued|failed --utente: Elimina tutti--> rimosso insieme ai dipendenti non done, diretti e indiretti
+                                         (tutto o niente: se uno è running, errore e nulla cambia)
 ```
 
 Una review (`kind: "review"`) segue lo stesso ciclo: `complete_task completed` la porta sempre a
@@ -503,8 +505,12 @@ Argomenti camelCase lato JS.
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` ∈ `retry` (failed →
   queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i
-  dipendenti, non verifica né integra il lavoro) | `stop` (running → failed, chiude il tab) | `delete` | `to_top`
-  (queued → primo della coda).
+  dipendenti, non verifica né integra il lavoro) | `stop` (running → failed, chiude il tab) | `delete` | `delete_cascade` | `to_top`
+  (queued → primo della coda). `delete_cascade` toglie un queued/failed insieme ai task non
+  `done` che ne dipendono, anche indirettamente (i `done` restano e perdono il riferimento): se
+  uno dei task da togliere è `running` risponde `cannot delete: <ids> are running, stop them
+  first` senza toccare la board; ogni worktree dei task tolti viene ripulito. È solo un'azione
+  dell'utente: il tool MCP `delete_task` non la espone.
 - `task_move(workspace_id, task_id, before_id: Option<String>) -> BoardView`: riordina un
   `queued` (prima di `before_id`, o in fondo).
 - `proposal_decide(workspace_id, proposal_id, accept) -> BoardView`
@@ -576,7 +582,10 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
 - **Dettaglio** (pannello laterale destro agganciato, uguale per tutte le viste e aperto anche
   dal pannello Task): stato, id, titolo, azioni per stato (Da fare: Modifica, In cima alla
   coda, Elimina; In corso: Apri terminale, Ferma; Fatto: Apri PR se c'è `pr_url`; Fallito:
-  Riprova, Apri terminale se il tab esiste, Elimina), esito (summary, commit, link PR, test
+  Riprova, Apri terminale se il tab esiste, Elimina). Se il task ha dipendenti non fatti,
+  Elimina chiede una conferma in linea che li elenca e il pulsante «Elimina tutti» esegue
+  `delete_cascade`; se un dipendente è in esecuzione il pulsante è disattivato e il tooltip
+  chiede di fermarlo prima), esito (summary, commit, link PR, test
   con esito), nota, **specifica renderizzata in markdown** (senza dipendenze nuove: un
   renderer minimale per titoli, liste, codice inline/blocchi, grassetto, link), dipendenze,
   modello, repo, durata. Modifica (solo Da fare/Fallito): titolo, testo, dipendenze, modello.

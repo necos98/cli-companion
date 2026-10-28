@@ -405,6 +405,89 @@ fn delete_rules() {
     assert!(b.delete_task("b", 4).is_err());
 }
 
+fn removed_ids(removed: &[Task]) -> Vec<&str> {
+    removed.iter().map(|t| t.id.as_str()).collect()
+}
+
+#[test]
+fn cascade_delete_without_dependents_behaves_like_delete() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &[])]);
+    let removed = b.delete_with_dependents("a", 2).unwrap();
+    assert_eq!(removed_ids(&removed), ["a"]);
+    assert_eq!(ids(&b), ["b"]);
+    assert!(b.delete_with_dependents("a", 3).is_err());
+    set_status(&mut b, "b", TaskStatus::Done);
+    assert!(b.delete_with_dependents("b", 3).unwrap_err().contains("only queued or failed"));
+}
+
+#[test]
+fn cascade_delete_removes_a_linear_chain() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["b"]), spec("x", &[])]);
+    set_status(&mut b, "a", TaskStatus::Failed);
+    let removed = b.delete_with_dependents("a", 2).unwrap();
+    assert_eq!(removed_ids(&removed), ["a", "b", "c"]);
+    assert_eq!(ids(&b), ["x"]);
+    assert_eq!(b.updated_at, 2);
+}
+
+#[test]
+fn cascade_delete_follows_branches_and_indirect_dependencies() {
+    let mut b = board_with(vec![
+        spec("a", &[]),
+        spec("b", &["a"]),
+        spec("c", &["a"]),
+        spec("d", &["b", "c"]),
+        spec("e", &["d"]),
+        spec("other", &[]),
+        spec("later", &["other"]),
+    ]);
+    let removed = b.delete_with_dependents("b", 2).unwrap();
+    assert_eq!(removed_ids(&removed), ["b", "d", "e"]);
+    assert_eq!(ids(&b), ["a", "c", "other", "later"]);
+    // Un dipendente di un task rimasto non viene toccato.
+    assert_eq!(b.task("later").unwrap().depends_on, ["other"]);
+    assert_eq!(b.task("c").unwrap().depends_on, ["a"]);
+}
+
+#[test]
+fn cascade_delete_keeps_done_dependents_and_drops_their_references() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["b"]), spec("d", &["a", "c"])]);
+    set_status(&mut b, "b", TaskStatus::Done);
+    set_status(&mut b, "d", TaskStatus::Done);
+    let removed = b.delete_with_dependents("a", 2).unwrap();
+    // b e' done: resta, e non si attraversa (c dipende da b, non da un task tolto).
+    assert_eq!(removed_ids(&removed), ["a"]);
+    assert_eq!(ids(&b), ["b", "c", "d"]);
+    assert!(b.task("b").unwrap().depends_on.is_empty());
+    assert_eq!(b.task("d").unwrap().depends_on, ["c"]);
+}
+
+#[test]
+fn cascade_delete_is_refused_and_leaves_the_board_untouched_when_a_dependent_runs() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["b"]), spec("d", &["b"])]);
+    set_status(&mut b, "c", TaskStatus::Running);
+    set_status(&mut b, "d", TaskStatus::Running);
+    let before = serde_json::to_value(&b).unwrap();
+    let e = b.delete_with_dependents("a", 2).unwrap_err();
+    assert_eq!(e, "cannot delete: c, d are running, stop them first");
+    assert_eq!(serde_json::to_value(&b).unwrap(), before);
+    // Un task running non e' un punto di partenza valido.
+    assert!(b.delete_with_dependents("c", 2).unwrap_err().contains("only queued or failed"));
+}
+
+#[test]
+fn cascade_delete_returns_every_removed_worktree() {
+    let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"]), spec("c", &["a"])]);
+    for id in ["a", "b"] {
+        b.task_mut(id).unwrap().worktree = Some(WorktreeInfo { path: format!("p-{id}"), branch: format!("task/{id}"), base: "main".into(), setup_done: true });
+    }
+    set_status(&mut b, "a", TaskStatus::Failed);
+    set_status(&mut b, "b", TaskStatus::Failed);
+    let removed = b.delete_with_dependents("a", 2).unwrap();
+    let worktrees: Vec<Option<&str>> = removed.iter().map(|t| t.worktree.as_ref().map(|w| w.branch.as_str())).collect();
+    assert_eq!(worktrees, [Some("task/a"), Some("task/b"), None]);
+}
+
 #[test]
 fn update_rules() {
     let mut b = board_with(vec![spec("a", &[]), spec("b", &[])]);

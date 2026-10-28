@@ -10,14 +10,13 @@ import {
   activeCount,
   allowedActions,
   attentionCount,
-  canDeleteTask,
   canEditTask,
+  cascadeDelete,
   canOpenTerminal,
   clampMaxParallel,
   deliveryHelp,
   deliveryLabel,
   dependencyCandidates,
-  dependentsOf,
   displayStatus,
   doneTasks,
   effectiveDelivery,
@@ -191,6 +190,7 @@ describe("board: azioni", () => {
       mark_done: "Segna come fatto",
       stop: "Ferma",
       delete: "Elimina",
+      delete_cascade: "Elimina tutti",
       to_top: "In cima alla coda",
     });
   });
@@ -198,17 +198,44 @@ describe("board: azioni", () => {
     for (const s of ["queued", "failed"]) assert.equal(canEditTask({ status: s }), true, s);
     for (const s of ["running", "done"]) assert.equal(canEditTask({ status: s }), false, s);
   });
-  it("eliminazione: Da fare/Fallito senza dipendenti non fatti", () => {
-    const a = task({ id: "a" });
-    const dep = task({ id: "b", depends_on: ["a"] });
-    assert.equal(canDeleteTask(a, { tasks: [a] }), true);
-    assert.equal(canDeleteTask(a, { tasks: [a, dep] }), false);
-    assert.deepEqual(dependentsOf("a", { tasks: [a, dep] }), ["b"]);
-    // un dipendente gia' fatto non blocca
-    assert.equal(canDeleteTask(a, { tasks: [a, { ...dep, status: "done" }] }), true);
-    assert.equal(canDeleteTask(task({ status: "failed" }), { tasks: [] }), true);
-    assert.equal(canDeleteTask(task({ status: "running" }), { tasks: [] }), false);
-    assert.equal(canDeleteTask(task({ status: "done" }), { tasks: [] }), false);
+  it("eliminazione a cascata: task e dipendenti non fatti, diretti e indiretti", () => {
+    const tasks = [
+      task({ id: "a" }),
+      task({ id: "b", depends_on: ["a"] }),
+      task({ id: "c", depends_on: ["a"], status: "failed" }),
+      task({ id: "d", depends_on: ["b", "c"] }),
+      task({ id: "e", depends_on: ["d"] }),
+      task({ id: "x" }),
+      task({ id: "y", depends_on: ["x"] }),
+    ];
+    assert.deepEqual(cascadeDelete("a", { tasks }), { dependents: ["b", "c", "d", "e"], running: [] });
+    assert.deepEqual(cascadeDelete("b", { tasks }), { dependents: ["d", "e"], running: [] });
+    assert.deepEqual(cascadeDelete("e", { tasks }), { dependents: [], running: [] });
+    assert.deepEqual(cascadeDelete("x", { tasks }), { dependents: ["y"], running: [] });
+  });
+  it("eliminazione a cascata: un dipendente Fatto resta e non si attraversa", () => {
+    const tasks = [
+      task({ id: "a" }),
+      task({ id: "b", depends_on: ["a"], status: "done" }),
+      task({ id: "c", depends_on: ["b"] }),
+    ];
+    assert.deepEqual(cascadeDelete("a", { tasks }), { dependents: [], running: [] });
+  });
+  it("eliminazione a cascata: i task in corso dell'insieme bloccano", () => {
+    const tasks = [
+      task({ id: "a" }),
+      task({ id: "b", depends_on: ["a"] }),
+      task({ id: "c", depends_on: ["b"], status: "running" }),
+      task({ id: "d", depends_on: ["b"], status: "running" }),
+      task({ id: "z", status: "running" }),
+    ];
+    assert.deepEqual(cascadeDelete("a", { tasks }), { dependents: ["b", "c", "d"], running: ["c", "d"] });
+    assert.deepEqual(cascadeDelete("a", { tasks: [task({ id: "a" })] }).running, []);
+    // depends_on assente (vista parziale): nessun dipendente
+    assert.deepEqual(cascadeDelete("a", { tasks: [{ id: "a", status: "queued" }, { id: "b", status: "queued" }] }), {
+      dependents: [],
+      running: [],
+    });
   });
   it("apri terminale solo con una sessione", () => {
     assert.equal(canOpenTerminal({ session: "t1" }), true);

@@ -3,9 +3,8 @@ import { ArrowUpToLine, CheckCheck, ExternalLink, Pencil, RotateCw, SquareTermin
 import { Button } from "../ui/button";
 import {
   ACTION_LABELS,
-  canDeleteTask,
   canEditTask,
-  dependentsOf,
+  cascadeDelete,
   prUrl,
   queuedTasks,
 } from "../../lib/board";
@@ -23,13 +22,25 @@ interface Props {
   onOpenPr: (url: string) => void;
 }
 
-type Confirm = "delete" | "stop" | "mark_done";
+type Confirm = "delete" | "delete_cascade" | "stop" | "mark_done";
 
-const CONFIRM_TEXT: Record<Confirm, string> = {
-  delete: "Eliminare questo task? L'operazione non si può annullare.",
+const IRREVERSIBLE = "L'operazione non si può annullare.";
+
+const CONFIRM_TEXT: Record<Exclude<Confirm, "delete_cascade">, string> = {
+  delete: `Eliminare questo task? ${IRREVERSIBLE}`,
   stop: "Fermare il worker? Il task passa a Fallito e il terminale viene chiuso.",
   mark_done: "Segnare il task come fatto? Il lavoro non viene verificato né integrato dall'app.",
 };
+
+function cascadeConfirmText(titles: string[]): string {
+  const subject = titles.length === 1 ? "il task che ne dipende" : `i ${titles.length} task che ne dipendono`;
+  return `Eliminare questo task e ${subject}? ${titles.join(", ")} - ${IRREVERSIBLE}`;
+}
+
+function dependentTitles(ids: string[], board: BoardView): string[] {
+  const titles = new Map(board.tasks.map((t) => [t.id, t.title]));
+  return ids.map((id) => titles.get(id) ?? id);
+}
 
 const btn = "h-[30px] gap-1.5 px-3 text-[13px]";
 const ghost = `${btn} bg-transparent`;
@@ -46,15 +57,18 @@ export default function DetailActions({
   onOpenPr,
 }: Props) {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const cascade = cascadeDelete(task.id, board);
 
   if (confirm) {
+    const confirmText =
+      confirm === "delete_cascade" ? cascadeConfirmText(dependentTitles(cascade.dependents, board)) : CONFIRM_TEXT[confirm];
     return (
       <div
         role="alertdialog"
         aria-label="Conferma"
         className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5"
       >
-        <p className="text-xs">{CONFIRM_TEXT[confirm]}</p>
+        <p className="text-xs">{confirmText}</p>
         <div className="flex gap-2">
           <Button
             type="button"
@@ -78,8 +92,8 @@ export default function DetailActions({
   }
 
   const pr = prUrl(task);
-  const canDelete = canDeleteTask(task, board);
-  const blockers = dependentsOf(task.id, board);
+  const hasDependents = cascade.dependents.length > 0;
+  const deleteBlocked = cascade.running.length > 0;
   const isFirst = queuedTasks(board)[0]?.id === task.id;
 
   const terminal = canOpenTerminal && (
@@ -96,9 +110,9 @@ export default function DetailActions({
     <Button
       type="button"
       variant="outline"
-      disabled={busy || !canDelete}
-      title={canDelete ? undefined : `Prima elimina o completa i task che ne dipendono: ${blockers.join(", ")}`}
-      onClick={() => setConfirm("delete")}
+      disabled={busy || deleteBlocked}
+      title={deleteBlocked ? `Prima ferma i task in esecuzione che ne dipendono: ${cascade.running.join(", ")}` : undefined}
+      onClick={() => setConfirm(hasDependents ? "delete_cascade" : "delete")}
       className={`${ghost} text-destructive hover:text-destructive`}
     >
       <Trash2 /> {ACTION_LABELS.delete}
