@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -69,6 +69,8 @@ const FRONTEND_EVENT: &str = "agent-event";
 /// Tetto di una riga RPC in ingresso e di una risposta letta dal client.
 const RPC_MAX_BYTES: u64 = 1024 * 1024;
 const RPC_RESPONSE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Attesa massima della connessione al listener (client `--notify` e RPC).
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Timeout di lettura della riga di richiesta (non della risposta).
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// Tetti: stdin degli hook (il JSON di Claude Code puo' contenere l'ultimo
@@ -382,14 +384,22 @@ fn parse_wire(line: &str) -> Result<Wire, String> {
     parse_line(line).map(Wire::Notify)
 }
 
+/// Connessione TCP al listener locale su `port`: unico punto da cui notifiche
+/// e RPC raggiungono l'app.
+fn connect_local(port: u16) -> std::io::Result<TcpStream> {
+    // La suite gira anche dal terminale di un worker: un test che arrivasse
+    // all'app reale le parlerebbe a nome del worker (es. un `session-end` che
+    // gli fa fallire il task). I test usano porte effimere.
+    #[cfg(test)]
+    assert_ne!(port, NOTIFY_PORT, "tests must never connect to the real app (NOTIFY_PORT)");
+    TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), CONNECT_TIMEOUT)
+}
+
 /// Connette al listener e spedisce la riga del payload.
 fn connect_and_send(port: u16, payload: &NotifyPayload) -> Result<TcpStream, String> {
     let line = build_line(payload)?;
-    let mut stream = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().unwrap(),
-        Duration::from_millis(1500),
-    )
-    .map_err(|_| "app non in ascolto (avvia cli-companion)".to_string())?;
+    let mut stream =
+        connect_local(port).map_err(|_| "app non in ascolto (avvia cli-companion)".to_string())?;
     stream
         .write_all(format!("{line}\n").as_bytes())
         .map_err(|e| format!("invio fallito: {e}"))?;
@@ -457,30 +467,48 @@ fn read_stdin_capped() -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Destinatario di `--notify`: tab e token del processo, porta del listener.
+struct NotifyTarget<'a> {
+    tab_id: Option<&'a str>,
+    token: Option<&'a str>,
+    port: u16,
+}
+
 /// Esito di `--notify`: Ok se l'evento e' stato ignorato o inviato, Err solo
-/// se l'invio di un evento da inviare fallisce.
+/// se l'invio di un evento da inviare fallisce. Legge solo l'ambiente reale
+/// e fissa la porta vera; la logica sta in `notify_target`.
 pub fn run_notify(event: &str, agent: &str) -> Result<(), String> {
-    let tab_id = std::env::var(SESSION_ENV).ok();
-    if !should_send(event, tab_id.as_deref()) {
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let (tab_id, token) = (env(SESSION_ENV), env(TOKEN_ENV));
+    let target = NotifyTarget { tab_id: tab_id.as_deref(), token: token.as_deref(), port: NOTIFY_PORT };
+    notify_target(event, agent, &target, read_stdin_capped, &mut std::io::stdout())
+}
+
+/// Corpo di `--notify` con ambiente, stdin e stdout espliciti.
+fn notify_target(
+    event: &str,
+    agent: &str,
+    target: &NotifyTarget,
+    read_stdin: impl FnOnce() -> Option<String>,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    if !should_send(event, target.tab_id) {
         return Ok(());
     }
     // La stdin si legge solo dopo la decisione: un evento ignorato non deve
     // restare appeso su una pipe che nessuno chiude.
-    let raw = read_stdin_capped();
-    let mut payload = build_payload(event, agent, tab_id.as_deref(), raw.as_deref());
-    payload.token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
-    notify_via(NOTIFY_PORT, &payload, REPLY_TIMEOUT, &mut std::io::stdout())
+    let raw = read_stdin();
+    let mut payload = build_payload(event, agent, target.tab_id, raw.as_deref());
+    payload.token = target.token.map(str::to_string);
+    notify_via(target.port, &payload, REPLY_TIMEOUT, out)
 }
 
 /// Client RPC: spedisce `line` (una riga JSON, `\n` aggiunto qui) al listener
 /// su `port` e ritorna la riga di risposta. `timeout` e' l'attesa massima
 /// della risposta.
 pub fn rpc_call(port: u16, line: &str, timeout: Duration) -> Result<String, String> {
-    let mut stream = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().unwrap(),
-        Duration::from_millis(1500),
-    )
-    .map_err(|_| "the cli-companion app is not listening (start it)".to_string())?;
+    let mut stream =
+        connect_local(port).map_err(|_| "the cli-companion app is not listening (start it)".to_string())?;
     stream
         .set_read_timeout(Some(timeout))
         .and_then(|_| stream.set_write_timeout(Some(Duration::from_secs(10))))
@@ -772,9 +800,58 @@ mod tests {
             assert!(!should_send(ev, Some("")), "{ev}");
             assert!(!should_send(ev, Some("a b")), "{ev}");
         }
-        // Eventi ignorati: Ok senza nemmeno tentare la connessione.
-        assert!(run_notify("stop", "windows").is_ok());
-        assert!(run_notify("session-end", "Ubuntu").is_ok());
+    }
+
+    /// Listener sentinella su porta effimera: `accept` non bloccante, cosi'
+    /// una connessione mancata si verifica senza attese.
+    fn sentinel() -> (TcpListener, u16) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    #[test]
+    fn ignored_events_neither_read_stdin_nor_connect() {
+        let (listener, port) = sentinel();
+        let no_stdin = || -> Option<String> { panic!("stdin read for an ignored event") };
+        for (event, tab_id) in [("stop", Some("tab-1")), ("session-end", None), ("finished", Some("a b"))] {
+            let target = NotifyTarget { tab_id, token: Some("tok"), port };
+            let mut out = Vec::new();
+            assert!(notify_target(event, "claude-code", &target, no_stdin, &mut out).is_ok(), "{event}");
+            assert!(out.is_empty(), "{event}");
+        }
+        let err = listener.accept().map(|_| ()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "nessuna connessione tentata");
+    }
+
+    #[test]
+    fn a_sent_event_carries_the_given_tab_token_and_stdin() {
+        let (listener, port) = sentinel();
+        let target = NotifyTarget { tab_id: Some("tab-1"), token: Some("tok"), port };
+        let stdin = || Some(r#"{"session_id":"s1","reason":"other"}"#.to_string());
+        notify_target("session-end", "claude-code", &target, stdin, &mut Vec::new()).unwrap();
+        listener.set_nonblocking(false).unwrap();
+        let (mut s, _) = listener.accept().unwrap();
+        let Wire::Notify(p) = read_wire(&mut s).unwrap() else {
+            panic!("attesa una notifica");
+        };
+        assert_eq!((p.event.as_str(), p.tab_id.as_deref(), p.token.as_deref()), ("session-end", Some("tab-1"), Some("tok")));
+        assert_eq!((p.agent_session_id.as_deref(), p.reason.as_deref()), (Some("s1"), Some("other")));
+    }
+
+    /// Protezione: nessun test puo' raggiungere l'app reale, nemmeno per
+    /// sbaglio (l'asserzione scatta prima della connessione).
+    #[test]
+    #[should_panic(expected = "tests must never connect to the real app")]
+    fn tests_cannot_connect_to_the_real_app() {
+        let _ = send_to(NOTIFY_PORT, &sample("test"));
+    }
+
+    #[test]
+    #[should_panic(expected = "tests must never connect to the real app")]
+    fn tests_cannot_call_the_real_app() {
+        let _ = rpc_call(NOTIFY_PORT, "{}", Duration::from_millis(100));
     }
 
     #[test]

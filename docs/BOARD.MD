@@ -291,7 +291,8 @@ Una review (`kind: "review"`) segue lo stesso ciclo: `complete_task completed` l
 
 - Al riavvio dell'app i `running` diventano `failed` (`interrupted: the app was restarted`).
 - `session-end` conta solo se viene dalla sessione dell'agente legata al worker (eventi di
-  processi secondari ignorati, con una traccia nella nota). Se fallisce comunque il task mentre
+  processi secondari, o senza id dopo il legame, ignorati con una traccia nella nota; senza
+  legame un evento senza id vale come prima). Se fallisce comunque il task mentre
   il tab del worker e' aperto, il `complete_task` di quel worker lo riapre e lo conclude con il
   report, purche' nessun retry l'abbia ripreso (dettagli in DESIGN.MD, `automation.rs`).
 - Stop hook del worker: se chiude il turno senza `complete_task` e senza lavoro in

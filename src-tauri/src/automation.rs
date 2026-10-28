@@ -574,13 +574,13 @@ impl Registry {
     /// Evento di un hook con token valido. Per i worker aggiorna lo stato;
     /// ritorna `Some(motivo)` se lo Stop hook va bloccato: il worker ha chiuso
     /// il turno senza riferire e Claude Code deve proseguire. Gli eventi di
-    /// un'altra sessione dell'agente (processi secondari) sono ignorati.
+    /// un'altra sessione dell'agente (processi secondari) o senza id dopo il
+    /// legame sono ignorati.
     pub fn on_hook(&mut self, tab: &str, hook: &HookEvent, now: i64) -> Option<String> {
         let w = self.workers.get_mut(tab).filter(|w| w.tab_open)?;
         if !w.agent.admit(hook) {
             if hook.event == "session-end" {
-                let why = format!("it came from another agent session ({})", hook.agent_session_id.unwrap_or_default());
-                self.note_ignored_session_end(tab, &why, now);
+                self.note_ignored_session_end(tab, &agent_session::foreign_reason(hook), now);
             }
             return None;
         }

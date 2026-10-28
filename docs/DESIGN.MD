@@ -152,6 +152,14 @@ ed eventi Tauri (`emit`/`listen`) per lo stream di output dei terminali.
   perche' la sessione dell'agente gira fuori da cli-companion
   (`should_send(event, tab_id)`, pura). Solo l'invio fallito di un evento da
   inviare da' exit 1.
+- `run_notify` e' solo il wrapper che legge l'ambiente reale (`CLI_COMPANION_SESSION`,
+  `CLI_COMPANION_TOKEN`) e usa la porta `NOTIFY_PORT`; la logica sta in `notify_target`, che
+  riceve tab, token, porta, lettura di stdin e stdout espliciti. I test usano solo
+  `notify_target` con porte effimere: la suite gira anche dal terminale di un worker, dove
+  quelle variabili sono vere, e un evento partito da un test arriverebbe all'app a nome del
+  worker (un `session-end` gli faceva fallire il task). Protezione: notifiche e RPC si connettono
+  solo da `connect_local`, che nei build di test (`cfg(test)`) fallisce con un panic se la porta
+  e' `NOTIFY_PORT`, prima di connettersi; due test `should_panic` lo verificano.
 - Se stdin non e' un terminale (`IsTerminal`) viene letta (tetto 1 MB, solo dopo
   la decisione di inviare) e parsata come JSON, con tolleranza ai fallimenti:
   `session_id` -> `agent_session_id`, `notification_type`, `message`
@@ -326,9 +334,14 @@ rilega il worker solo se `source` e' `clear`, `resume` o `compact` (la stessa se
 continua); `startup` o `fork` di un altro id sono processi secondari. Un `session-end` della
 sessione legata con `reason` `clear` o `resume` non chiude il worker: l'agente prosegue nello
 stesso processo con una nuova sessione (che poi rilega col suo `session-start`). Eventi senza
-id (plugin vecchi) e worker non ancora legati si comportano come prima. Un `session-end`
-ignorato lascia una traccia nella nota del task (`ignored a session-end: ...`, con l'id
-estraneo o il `reason`).
+id: ammessi finche' il worker non e' legato (plugin vecchi, comportamento invariato), estranei
+dopo il legame, per tutti gli eventi. Ogni hook di Claude Code (`SessionStart`, `Stop`,
+`SessionEnd`, `Notification`, `PermissionRequest`) porta `session_id` nello stdin, quindi un
+evento senza id accanto a un id legato non viene dal worker (es. `--notify` lanciato a mano o da
+un test nel suo terminale); estendere la regola anche a `finished` e `needs-input` evita
+promemoria dello Stop e stati di attenzione falsi. Un `session-end` ignorato lascia una traccia
+nella nota del task (`ignored a session-end: ...`, con l'id estraneo, `it carried no agent
+session id` o il `reason`).
 
 Riapertura. Se un `session-end` ha comunque chiuso il worker (stato `closed`, task `failed` con
 la nota `the session ended without a complete_task report`) ma il suo tab e' ancora aperto,

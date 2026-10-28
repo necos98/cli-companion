@@ -2,7 +2,8 @@
 //! scattano anche nei processi secondari avviati dal worker (un `claude`
 //! figlio eredita `CLI_COMPANION_SESSION` e gli hook): i loro eventi portano
 //! il tab del worker ma un altro `session_id`. Il worker lega a se' il primo
-//! id che vede e ignora gli eventi degli altri. Se un `session-end` lo chiude
+//! id che vede e ignora gli eventi degli altri, e dopo il legame anche quelli
+//! senza id. Se un `session-end` lo chiude
 //! lo stesso mentre il tab e' aperto, il suo `complete_task` riapre il task.
 
 use super::boards::NOTE_MAX;
@@ -18,6 +19,8 @@ const CONTINUING_SOURCES: [&str; 3] = ["clear", "resume", "compact"];
 /// `reason` di un `session-end` dopo cui l'agente prosegue nello stesso
 /// processo con un'altra sessione (`/clear`, `/resume`).
 const SWITCHING_REASONS: [&str; 2] = ["clear", "resume"];
+/// Motivo di un evento senza id rifiutato da un worker gia' legato.
+const NO_SESSION_ID_REASON: &str = "it carried no agent session id";
 
 /// Id della sessione dell'agente legata al worker (`session_id` degli hook).
 #[derive(Debug, Default)]
@@ -28,11 +31,14 @@ pub(super) struct AgentSession {
 impl AgentSession {
     /// L'evento viene dalla sessione del worker? Il primo id visto si lega;
     /// un id diverso e' ammesso (e rilegato) solo da un `session-start` della
-    /// stessa sessione utente che continua. Eventi senza id: ammessi, come
-    /// prima del legame (vecchi plugin).
+    /// stessa sessione utente che continua. Eventi senza id: ammessi finche'
+    /// non c'e' un legame (vecchi plugin), estranei dopo. Ogni hook di Claude
+    /// Code porta `session_id` nello stdin, quindi un evento senza id accanto
+    /// a un id legato non viene dal worker (es. `--notify` lanciato a mano o
+    /// da un test nel suo terminale).
     pub(super) fn admit(&mut self, hook: &HookEvent) -> bool {
         let Some(id) = hook.agent_session_id else {
-            return true;
+            return self.id.is_none();
         };
         let own = match self.id.as_deref() {
             None => true,
@@ -47,6 +53,14 @@ impl AgentSession {
 
 fn continues_session(hook: &HookEvent) -> bool {
     hook.event == "session-start" && hook.source.is_some_and(|s| CONTINUING_SOURCES.contains(&s))
+}
+
+/// Motivo, per la nota del task, per cui `admit` ha rifiutato l'evento.
+pub(super) fn foreign_reason(hook: &HookEvent) -> String {
+    match hook.agent_session_id {
+        Some(id) => format!("it came from another agent session ({id})"),
+        None => NO_SESSION_ID_REASON.to_string(),
+    }
 }
 
 /// `session-end` dopo cui l'agente resta vivo con un'altra sessione.
@@ -120,13 +134,31 @@ mod tests {
         assert!(s.admit(&ev("finished", None)), "nessun id: ammesso, nessun legame");
         assert!(s.admit(&ev("finished", Some("a"))));
         assert!(s.admit(&ev("session-end", Some("a"))));
-        assert!(s.admit(&ev("needs-input", None)));
         for e in ["session-end", "finished", "needs-input"] {
             assert!(!s.admit(&ev(e, Some("b"))), "{e}");
         }
         assert!(!s.admit(&HookEvent { source: Some("startup"), ..ev("session-start", Some("b")) }));
         assert!(!s.admit(&HookEvent { source: Some("fork"), ..ev("session-start", Some("b")) }));
         assert!(s.admit(&ev("finished", Some("a"))), "il legame resta su a");
+    }
+
+    #[test]
+    fn events_without_an_id_are_foreign_only_once_bound() {
+        let mut s = AgentSession::default();
+        for e in ["session-start", "needs-input", "finished", "session-end"] {
+            assert!(s.admit(&ev(e, None)), "{e}: senza legame, ammesso");
+        }
+        assert!(s.admit(&ev("session-start", Some("a"))));
+        for e in ["session-start", "needs-input", "finished", "session-end"] {
+            assert!(!s.admit(&ev(e, None)), "{e}: legato ad a, estraneo");
+        }
+        assert!(s.admit(&ev("finished", Some("a"))), "il legame resta su a");
+    }
+
+    #[test]
+    fn foreign_reason_names_the_id_or_its_absence() {
+        assert_eq!(foreign_reason(&ev("session-end", Some("b"))), "it came from another agent session (b)");
+        assert_eq!(foreign_reason(&ev("session-end", None)), NO_SESSION_ID_REASON);
     }
 
     #[test]

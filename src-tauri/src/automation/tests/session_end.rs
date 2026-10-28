@@ -58,13 +58,32 @@ fn hooks_of_another_agent_session_are_ignored() {
 }
 
 #[test]
-fn hooks_without_a_session_id_keep_the_old_behaviour() {
+fn hooks_without_a_session_id_are_ignored_once_bound() {
     let (st, h, w) = bound(DeliveryMode::Commit, false);
-    // Legato a `own`, un evento senza id (plugin vecchio) vale ancora.
+    // Legato a `own`: un evento senza id (es. `--notify` lanciato da un test
+    // nel terminale del worker) non viene dalla sua sessione.
+    hook(&st, &h, &w, "needs-input");
+    assert_eq!(hook(&st, &h, &w, "finished"), None, "nessun promemoria");
+    hook(&st, &h, &w, "session-end");
+    let a = task(&st, &h, "a");
+    assert_eq!((a["status"].as_str(), a["worker_status"].as_str()), (Some("running"), Some("running")));
+    assert!(h.notices().is_empty());
+    assert_eq!(note(&st, &h), "ignored a session-end: it carried no agent session id");
+    // Il worker riferisce senza riapertura.
+    call(&st, &h, &w, "complete_task", json!({"status": "completed", "summary": "ok"})).unwrap();
+    assert_eq!(task(&st, &h, "a")["status"], "done");
+    assert!(!note(&st, &h).contains("reopened"));
+}
+
+#[test]
+fn hooks_without_a_session_id_keep_the_old_behaviour_when_unbound() {
+    let (st, h, w) = running(DeliveryMode::Commit, false);
+    // Nessun id legato (plugin vecchio): gli eventi senza id valgono.
     hook(&st, &h, &w, "needs-input");
     assert_eq!(task(&st, &h, "a")["worker_status"], "needs_input");
     hook(&st, &h, &w, "session-end");
-    assert_eq!(task(&st, &h, "a")["status"], "failed");
+    let a = task(&st, &h, "a");
+    assert_eq!((a["status"].as_str(), a["note"].as_str()), (Some("failed"), Some(SESSION_END_NOTE)));
 }
 
 #[test]
@@ -130,13 +149,13 @@ fn complete_task_stays_closed_after_the_tab_closes_or_a_retry() {
     };
     // Tab chiuso davvero.
     let (st, h, w) = bound(DeliveryMode::Commit, false);
-    hook(&st, &h, &w, "session-end");
+    on(&st, &h, &w, ended("own", "other"));
     tab_closed(&st, &h, &w);
     closed(&st, &h, &w);
     assert_eq!(task(&st, &h, "a")["note"], SESSION_END_NOTE);
     // Ripreso da un retry: il nuovo worker e' in corso.
     let (st, h, w) = bound(DeliveryMode::Commit, false);
-    hook(&st, &h, &w, "session-end");
+    on(&st, &h, &w, ended("own", "other"));
     boards::task_action(&st, &h, "ws-1", "a", "retry").unwrap();
     let w2 = session_of(&st, &h, "a");
     closed(&st, &h, &w);
