@@ -74,7 +74,7 @@ mod tests {
         for t in [
             "propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "Goal", "Context",
             "Constraints", "Done when", "Verify", "depends_on", "Task panel", "get_workspace_settings",
-            "propose_settings", "Project Setup",
+            "propose_settings", "Project Setup", "Goal review", "kind: \"review\"", "all** the tasks",
         ] {
             assert!(skill.contains(t), "{t}");
         }

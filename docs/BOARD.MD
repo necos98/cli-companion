@@ -445,7 +445,10 @@ della conversazione), come faceva l'orchestratore.
   mai il lavoro, non toccare file, non fare merge; può usare `list_tasks`,
   `get_task_details`, `update_task`, `delete_task` per lo stato della coda. Ogni task ha
   sempre `model` (sonnet per lavoro ben definito, opus per design/rischio). La specifica deve
-  bastare a un worker che non vede la conversazione.
+  bastare a un worker che non vede la conversazione. Quando la richiesta produce 2 o più task
+  (o un solo task rischioso o la correzione di un bug difficile) aggiunge in fondo alla proposta
+  una **review** del goal (`kind: "review"`, `model: "opus"`, `depends_on` su tutti i task del
+  goal); l'utente può scartarla.
 - Il pannello dei terminali mostra il badge **INTAKE** sull'intestazione dei tab avviati dal
   preset.
 - Task Intake sa dei tool di impostazioni: se la richiesta riguarda la configurazione del

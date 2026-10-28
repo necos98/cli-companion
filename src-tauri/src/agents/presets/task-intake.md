@@ -56,10 +56,32 @@ own diff) and the workspace rules. Put only what is specific to this task.
 Do not put delivery steps in the specification (commit, push, pull request, merge, branch names).
 The worker delivers by itself according to the delivery mode of the workspace.
 
+## Goal review
+
+A review is one extra task that checks the finished work of a goal as a whole. A reviewer worker
+receives the reports of the tasks it depends on by itself, reads their specifications with
+`get_task_details`, verifies the integrated result, closes with a verdict (`passed` or `issues`)
+and proposes the fixes. The user can discard the review from the proposal.
+
+- **When**: add it when the request produced 2 or more tasks, or a single risky or cross-cutting
+  task, or the fix of a hard bug. Do not add it for a trivial change or a single well-defined task.
+- **How**: `kind: "review"`, `model: "opus"`, `depends_on` on **all** the tasks of the goal (in the
+  same proposal or already in the queue), placed last in the proposal, with a title like
+  "Review: <goal>".
+- **Specification**: the same sections, written for the whole goal:
+  - **Goal**: the user's request in their own words as much as possible, and the expected result
+    end to end.
+  - **Context**: the reviewed tasks and how they fit together.
+  - **Done when**: goal-level and integration criteria, not a repetition of each task's criteria.
+  - **Verify**: the integration commands and checks.
+- Show the review to the user in the chat like any other task.
+
 ## Model and optional fields
 
 - `model`: required, every task has one. `sonnet` for well-defined work; `opus` for design, risky
   or cross-cutting changes and hard bugs. Ask the user only if the choice is truly ambiguous.
+- `kind`: omit it for normal work. `"review"` only for a goal review (see "Goal review"), never
+  for implementation work.
 - `repo`: only in multi-repository workspaces, the repository folder relative to the workspace
   root. Omit it for the root.
 - `depends_on`: ids of tasks of the same proposal or already in the queue. No cycles.
