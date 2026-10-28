@@ -41,6 +41,15 @@ Versione corrente: **0.12.0**.
 - [docs/DESIGN.MD](docs/DESIGN.MD) — note di design del progetto.
 - [docs/BOARD.MD](docs/BOARD.MD) — il Tasks Manager: coda di task, consegna, scheduler, fasce orarie, tool MCP.
 
+Notifiche dopo un aggiornamento: dalla v0.9.2 l'identifier è `cli-companion` e
+Windows recapita i toast solo se il collegamento nel menu Start ha lo stesso
+AppUserModelID. L'installer NSIS in modalità aggiornamento non ricrea i
+collegamenti, che restavano con il vecchio ID (`com.jmagarelli.cli-companion`) e
+facevano scartare i toast in silenzio. L'hook
+`src-tauri/windows/installer-hooks.nsh` (`bundle.windows.nsis.installerHooks`)
+riapplica l'ID ai collegamenti già esistenti a ogni installazione, senza
+ricreare quelli cancellati dall'utente.
+
 Stato: repo GitHub non ancora creata (`updater.config.json` ha
 `owner = "REPLACE_ME_OWNER"`); segui `docs/RELEASE.MD` §1–2 per attivare
 CI e updater.
