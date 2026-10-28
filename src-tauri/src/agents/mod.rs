@@ -359,6 +359,10 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
+    /// Tutti i livelli, dal piu' restrittivo.
+    pub const ALL: [PermissionMode; 4] =
+        [PermissionMode::Plan, PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Bypass];
+
     /// Valore ammesso dall'RPC `spawn_session`: "default" | "accept-edits" |
     /// "plan" | "bypass".
     pub fn parse(s: &str) -> Option<PermissionMode> {

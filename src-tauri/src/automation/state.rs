@@ -83,6 +83,9 @@ pub struct AutomationState {
     pub(super) starts: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Cache dei `git fetch` (60 s per repository e base): un fetch alla volta.
     pub(super) fetches: Arc<Mutex<worktrees::FetchCache>>,
+    /// Una decisione alla volta sulle proposte di impostazioni: applicarne una
+    /// due volte (doppio clic) duplicherebbe gli avvii senza `id`.
+    pub(super) settings_decisions: Arc<Mutex<()>>,
 }
 
 impl AutomationState {
@@ -191,7 +194,7 @@ impl AutomationState {
                         map.insert(ws_id.clone(), rev);
                         host.delete_board(&ws_id);
                     }
-                    let mut view = Board::new(&ws_id).view_with(Delivery::default(), false);
+                    let mut view = Board::new(&ws_id).view_with(None, false);
                     view.rev = rev;
                     host.emit_board(&view);
                 }

@@ -6,7 +6,7 @@ use super::*;
 use crate::agents::{self, AutomationRequest};
 use crate::schedule::{Schedule, ScheduleState};
 use crate::user_skills::targets;
-use crate::workspaces::WorkspaceStore;
+use crate::workspaces::{SettingsPatch, WorkspaceStore};
 use tauri::Emitter;
 
 /// Eventi Tauri verso il frontend.
@@ -78,6 +78,9 @@ pub trait Host: Clone + Send + 'static {
     /// Ambienti in cui le skill utente devono comparire: Windows e le distro WSL
     /// in uso (vedi `user_skills::targets`).
     fn skill_targets(&self) -> Vec<SkillTarget>;
+    /// Applica una patch alle impostazioni del workspace (rivalidata sulla
+    /// configurazione attuale, salvata su disco) e ritorna il workspace.
+    fn apply_settings(&self, ws_id: &str, patch: &SettingsPatch) -> Result<Workspace, String>;
 }
 
 /// Timer di `Host::defer`: un solo thread con coda a priorita' al posto di un
@@ -309,5 +312,9 @@ impl Host for TauriHost {
                 targets::windows_only()
             }
         }
+    }
+
+    fn apply_settings(&self, ws_id: &str, patch: &SettingsPatch) -> Result<Workspace, String> {
+        crate::workspaces::apply_settings_patch(&self.0, ws_id, patch)
     }
 }

@@ -36,6 +36,7 @@ mod boards;
 mod hooks;
 mod host;
 mod rpc;
+pub(crate) mod settings;
 pub mod skills;
 mod state;
 mod worktrees;
@@ -847,6 +848,26 @@ pub async fn proposal_decide(
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
         boards::proposal_decide(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &proposal_id, accept)
+    })
+    .await
+}
+
+/// Approva o scarta una proposta di impostazioni dell'agente.
+#[tauri::command]
+pub async fn settings_proposal_decide(
+    app: AppHandle,
+    workspace_id: String,
+    proposal_id: String,
+    accept: bool,
+) -> Result<settings::SettingsDecision, String> {
+    crate::blocking(move || {
+        settings::settings_proposal_decide(
+            &app.state::<AutomationState>(),
+            &TauriHost(app.clone()),
+            &workspace_id,
+            &proposal_id,
+            accept,
+        )
     })
     .await
 }

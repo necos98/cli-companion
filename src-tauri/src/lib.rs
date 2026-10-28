@@ -162,6 +162,7 @@ pub fn run() {
             automation::task_action,
             automation::task_move,
             automation::proposal_decide,
+            automation::settings_proposal_decide,
             automation::workspace_detect_repos,
             automation::auto::schedule_get,
             automation::auto::schedule_set,

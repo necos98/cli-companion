@@ -11,6 +11,12 @@ import type {
 } from "./board";
 import type { Schedule, ScheduleState } from "./schedule";
 
+/** Esito di `settings_proposal_decide`: `workspace` solo se la proposta è stata applicata. */
+export interface SettingsDecision {
+  board: BoardView;
+  workspace: Workspace | null;
+}
+
 /** Avvio personalizzato di un workspace (vedi `Launch` in workspaces.rs). */
 export interface Launch {
   id: string;
@@ -360,6 +366,10 @@ export const api = {
   /** Accetta o scarta una proposta di Task Intake. */
   proposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
     invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept }),
+
+  /** Applica o scarta una proposta di modifica alle impostazioni. */
+  settingsProposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
+    invoke<SettingsDecision>("settings_proposal_decide", { workspaceId, proposalId, accept }),
 
   // Fasce orarie globali (solo come gate dello scheduler, docs/BOARD.MD).
   scheduleGet: () => invoke<ScheduleState>("schedule_get"),

@@ -4,6 +4,7 @@
 // importabili sia dall'app sia dai test `node --test`.
 
 import { statusWord, truncateReport } from "./automation.ts";
+import type { WorkerPermission } from "./workerPermission.ts";
 
 // ---------------------------------------------------------------- tipi
 
@@ -112,6 +113,45 @@ export interface Proposal {
   tasks: TaskSpec[];
 }
 
+/** Patch di un repository: assente = invariato, `null` dove indicato = azzera. */
+export interface RepoPatch {
+  base_branch?: string | null;
+  container_root?: string | null;
+  copy_ignored?: string[];
+  setup?: string[];
+  cleanup?: string[];
+  remove_force?: boolean;
+}
+
+/** Modifiche alle impostazioni del workspace: ogni campo assente = invariato. */
+export interface SettingsPatch {
+  worker_rules?: string;
+  worker_model?: string | null;
+  worker_permission?: WorkerPermission;
+  worker_allow?: string[];
+  worker_deny?: string[];
+  delivery?: Partial<Delivery>;
+  use_schedule?: boolean;
+  default_launch?: string | null;
+  launches?: { id?: string; name: string; command: string }[];
+  /** Per repository (chiave = cartella); `null` = rimuove la configurazione. */
+  repos?: Record<string, RepoPatch | null>;
+}
+
+/** Proposta di modifica alle impostazioni in attesa di Applica / Scarta. */
+export interface SettingsProposalView {
+  id: string;
+  /** Tab che l'ha proposta. */
+  source_tab: string;
+  created_at: number;
+  reason: string;
+  patch: SettingsPatch;
+  /** Valori attuali dei soli campi toccati dal patch. */
+  current: SettingsPatch;
+  /** Campi toccati che eseguono comandi o allargano i permessi (`repos[<key>].setup`, ...). */
+  sensitive: string[];
+}
+
 export interface BoardView {
   workspace_id: string;
   /** Revisione monotona: cresce a ogni modifica della vista. */
@@ -123,6 +163,7 @@ export interface BoardView {
   /** L'ordine dell'array È l'ordine della coda. */
   tasks: Task[];
   proposals: Proposal[];
+  settings_proposals: SettingsProposalView[];
   /** Il workspace usa le fasce orarie e adesso la fascia è chiusa. */
   schedule_blocked: boolean;
   delivery: Delivery;
@@ -636,6 +677,7 @@ export function emptyBoard(workspaceId: string): BoardView {
     updated_at: 0,
     tasks: [],
     proposals: [],
+    settings_proposals: [],
     schedule_blocked: false,
     delivery: { ...DEFAULT_DELIVERY },
   };

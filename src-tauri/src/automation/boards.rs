@@ -54,8 +54,8 @@ impl Registry {
     pub fn board_view(&self, ws: &Workspace, minute: u16) -> BoardView {
         let blocked = self.schedule_blocked(ws, minute);
         match self.boards.get(&ws.id) {
-            Some(b) => b.view_with(ws.delivery, blocked),
-            None => Board::new(&ws.id).view_with(ws.delivery, blocked),
+            Some(b) => b.view_with(Some(ws), blocked),
+            None => Board::new(&ws.id).view_with(Some(ws), blocked),
         }
     }
 
@@ -74,7 +74,7 @@ impl Registry {
     }
 
     /// Esegue `f` sulla board e la segna da schedulare/pubblicare se riesce.
-    fn edit<T>(&mut self, ws: &str, f: impl FnOnce(&mut Board) -> Result<T, String>) -> Result<T, String> {
+    pub(super) fn edit<T>(&mut self, ws: &str, f: impl FnOnce(&mut Board) -> Result<T, String>) -> Result<T, String> {
         let out = f(self.board_or_new(ws))?;
         self.mark_dirty(ws);
         Ok(out)
@@ -219,14 +219,13 @@ impl Registry {
     /// Ogni pubblicazione e' una modifica della vista: nuova revisione.
     fn publish_board(&mut self, ws_id: &str, ws: Option<&Workspace>, now: i64, minute: u16) {
         let blocked = ws.is_some_and(|w| self.schedule_blocked(w, minute));
-        let delivery = ws.map(|w| w.delivery).unwrap_or_default();
         self.next_rev += 1;
         let Some(b) = self.boards.get_mut(ws_id) else {
             return;
         };
         b.rev = self.next_rev;
         b.updated_at = now;
-        let view = b.view_with(delivery, blocked);
+        let view = b.view_with(ws, blocked);
         self.effects.push(Effect::Publish(Box::new(b.clone()), Box::new(view)));
     }
 
@@ -400,12 +399,17 @@ impl AutomationState {
 // Logica dei comandi Tauri e dei tool di sessione
 // ---------------------------------------------------------------------------
 
-fn workspace_of<H: Host>(host: &H, ws_id: &str) -> Result<Workspace, String> {
+pub(super) fn workspace_of<H: Host>(host: &H, ws_id: &str) -> Result<Workspace, String> {
     let ws = host.workspace(ws_id).ok_or_else(|| "workspace non trovato".to_string())?;
     if ws.archived {
         return Err("workspace archiviato".to_string());
     }
     Ok(ws)
+}
+
+/// Workspace del tab che chiama un tool di sessione.
+pub(super) fn session_workspace<H: Host>(host: &H, session: &str) -> Result<Workspace, String> {
+    host.tab_workspace(session).ok_or_else(|| "the workspace of this tab was not found".to_string())
 }
 
 pub(super) fn board_set<H: Host>(
@@ -530,7 +534,7 @@ pub(super) fn rpc_session<H: Host>(
     method: &str,
     params: &Value,
 ) -> Result<Value, String> {
-    let ws = host.tab_workspace(session).ok_or_else(|| "the workspace of this tab was not found".to_string())?;
+    let ws = session_workspace(host, session)?;
     let empty = json!({});
     let params = if params.is_null() { &empty } else { params };
     let now = now_millis();

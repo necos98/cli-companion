@@ -5,6 +5,11 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
+mod settings_patch;
+pub use settings_patch::{
+    apply_settings_patch, validation_error_en, SettingsPatch, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
+};
+
 /// Lunghezza massima del nome di un avvio (in caratteri).
 pub const MAX_LAUNCH_NAME_LEN: usize = 80;
 /// Lunghezza massima del comando di un avvio (in caratteri).
@@ -213,6 +218,20 @@ pub enum DeliveryMode {
     Commit,
 }
 
+impl DeliveryMode {
+    pub const ALL: [DeliveryMode; 4] = [DeliveryMode::Pr, DeliveryMode::LocalMerge, DeliveryMode::Push, DeliveryMode::Commit];
+
+    /// Stesso valore della serializzazione.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeliveryMode::Pr => "pr",
+            DeliveryMode::LocalMerge => "local_merge",
+            DeliveryMode::Push => "push",
+            DeliveryMode::Commit => "commit",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeMethod {
@@ -223,6 +242,8 @@ pub enum MergeMethod {
 }
 
 impl MergeMethod {
+    pub const ALL: [MergeMethod; 3] = [MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase];
+
     pub fn as_str(self) -> &'static str {
         match self {
             MergeMethod::Squash => "squash",
@@ -255,7 +276,7 @@ impl Delivery {
     }
 
     /// `parallel` ha senso solo con i branch.
-    fn normalized(mut self) -> Delivery {
+    pub(crate) fn normalized(mut self) -> Delivery {
         self.parallel &= self.uses_branches();
         self
     }
@@ -508,10 +529,45 @@ fn persist<T>(
 }
 
 fn ws_mut<'a>(data: &'a mut StoreData, id: &str) -> Result<&'a mut Workspace, String> {
-    data.workspaces
+    find_ws_mut(&mut data.workspaces, id)
+}
+
+fn find_ws_mut<'a>(workspaces: &'a mut [Workspace], id: &str) -> Result<&'a mut Workspace, String> {
+    workspaces
         .iter_mut()
         .find(|w| w.id == id)
         .ok_or_else(|| "workspace non trovato".to_string())
+}
+
+/// Permesso dei worker da testo (trim): "plan", "default", "accept-edits", "bypass".
+fn parse_worker_permission(mode: &str) -> Result<PermissionMode, String> {
+    PermissionMode::parse(mode.trim())
+        .ok_or_else(|| "permesso non valido (usa plan, default, accept-edits o bypass)".to_string())
+}
+
+/// Modello dei worker: trim, vuoto = quello dell'agente.
+fn normalize_worker_model(model: Option<String>) -> Result<Option<String>, String> {
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    if model.as_deref().is_some_and(|m| !crate::automation::valid_model(m)) {
+        return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string());
+    }
+    Ok(model)
+}
+
+/// Etichette (nei messaggi) delle due liste di regole di permesso.
+const ALLOW_RULES_LABEL: &str = "Consentiti";
+const DENY_RULES_LABEL: &str = "Vietati";
+
+/// Valida una lista di regole di permesso; l'errore porta l'etichetta della lista.
+fn normalize_permission_rules(rules: &[String], label: &str) -> Result<Vec<String>, String> {
+    crate::worker_permissions::validate_rules(rules).map_err(|e| format!("{label}: {e}"))
+}
+
+/// Dopo il salvataggio di consegna / fasce orarie lo scheduler va riallineato.
+/// Da chiamare fuori dal lock dei workspace: lo scheduler li rilegge.
+pub(crate) fn reconcile_automation(app: &AppHandle) {
+    let automation = app.state::<crate::automation::AutomationState>();
+    automation.reconcile(&crate::automation::TauriHost(app.clone()));
 }
 
 #[tauri::command]
@@ -534,8 +590,7 @@ pub async fn rename_workspace(app: AppHandle, id: String, name: String) -> Resul
 #[tauri::command]
 pub async fn set_worker_permission(app: AppHandle, id: String, mode: String) -> Result<Workspace, String> {
     crate::blocking(move || {
-        let mode = PermissionMode::parse(mode.trim())
-            .ok_or_else(|| "permesso non valido (usa plan, default, accept-edits o bypass)".to_string())?;
+        let mode = parse_worker_permission(&mode)?;
         persist(&app, |data| {
             let ws = ws_mut(data, &id)?;
             ws.worker_permission = mode.as_str().to_string();
@@ -555,8 +610,8 @@ pub async fn set_worker_permission_rules(
     deny: Vec<String>,
 ) -> Result<Workspace, String> {
     crate::blocking(move || {
-        let allow = crate::worker_permissions::validate_rules(&allow).map_err(|e| format!("Consentiti: {e}"))?;
-        let deny = crate::worker_permissions::validate_rules(&deny).map_err(|e| format!("Vietati: {e}"))?;
+        let allow = normalize_permission_rules(&allow, ALLOW_RULES_LABEL)?;
+        let deny = normalize_permission_rules(&deny, DENY_RULES_LABEL)?;
         persist(&app, |data| {
             let ws = ws_mut(data, &id)?;
             ws.worker_allow = allow;
@@ -571,10 +626,7 @@ pub async fn set_worker_permission_rules(
 #[tauri::command]
 pub async fn set_worker_model(app: AppHandle, id: String, model: Option<String>) -> Result<Workspace, String> {
     crate::blocking(move || {
-        let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
-        if model.as_deref().is_some_and(|m| !crate::automation::valid_model(m)) {
-            return Err("modello non valido (solo lettere, cifre, '.', '_' e '-', max 64)".to_string());
-        }
+        let model = normalize_worker_model(model)?;
         persist(&app, |data| {
             let ws = ws_mut(data, &id)?;
             ws.worker_model = model;
@@ -593,9 +645,7 @@ pub async fn set_delivery(app: AppHandle, id: String, delivery: Delivery) -> Res
             ws.delivery = delivery.normalized();
             Ok(ws.clone())
         })?;
-        // Fuori dal lock dei workspace: lo scheduler li rilegge.
-        let automation = app.state::<crate::automation::AutomationState>();
-        automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        reconcile_automation(&app);
         Ok(out)
     })
     .await
@@ -610,8 +660,7 @@ pub async fn set_use_schedule(app: AppHandle, id: String, value: bool) -> Result
             ws.use_schedule = value;
             Ok(ws.clone())
         })?;
-        let automation = app.state::<crate::automation::AutomationState>();
-        automation.reconcile(&crate::automation::TauriHost(app.clone()));
+        reconcile_automation(&app);
         Ok(out)
     })
     .await
@@ -790,10 +839,36 @@ fn edit_launch(launches: &mut [Launch], launch_id: &str, name: &str, command: &s
     Ok(())
 }
 
-/// Id ammesso come predefinito del workspace: "shell", un suo avvio o uno
-/// integrato.
-fn valid_default_launch(ws: &Workspace, id: &str, builtin: &[crate::agents::BuiltinLaunch]) -> bool {
-    id == "shell" || ws.launches.iter().any(|l| l.id == id) || builtin.iter().any(|b| b.id == id)
+/// Id ammesso come predefinito del workspace: "shell", uno degli avvii dati o
+/// uno integrato.
+fn valid_default_launch(launches: &[Launch], id: &str, builtin: &[crate::agents::BuiltinLaunch]) -> bool {
+    id == "shell" || launches.iter().any(|l| l.id == id) || builtin.iter().any(|b| b.id == id)
+}
+
+/// Come `valid_default_launch`, con il messaggio dell'interfaccia.
+fn check_default_launch(
+    launches: &[Launch],
+    id: &str,
+    builtin: &[crate::agents::BuiltinLaunch],
+) -> Result<(), String> {
+    if valid_default_launch(launches, id, builtin) {
+        Ok(())
+    } else {
+        Err("avvio predefinito non valido".to_string())
+    }
+}
+
+/// Nuovo id di un avvio; il contatore garantisce l'unicita' nello stesso millisecondo.
+fn next_launch_id(counter: &mut u64) -> String {
+    *counter += 1;
+    format!("ln-{}-{}", now_millis(), counter)
+}
+
+/// L'avvio `removed` non c'e' piu': se era il predefinito, si torna a ereditare.
+fn clear_default_if_removed(ws: &mut Workspace, removed: &str) {
+    if ws.default_launch.as_deref() == Some(removed) {
+        ws.default_launch = None;
+    }
 }
 
 #[tauri::command]
@@ -806,8 +881,7 @@ pub async fn add_launch(
 ) -> Result<Workspace, String> {
     crate::blocking(move || {
         persist(&app, |data| {
-            data.counter += 1;
-            let id = format!("ln-{}-{}", now_millis(), data.counter);
+            let id = next_launch_id(&mut data.counter);
             let ws = ws_mut(data, &workspace_id)?;
             push_launch(&mut ws.launches, id.clone(), &name, &command)?;
             if is_default {
@@ -847,9 +921,7 @@ pub async fn remove_launch(app: AppHandle, workspace_id: String, launch_id: Stri
             if ws.launches.len() == before {
                 return Err("avvio non trovato".to_string());
             }
-            if ws.default_launch.as_deref() == Some(launch_id.as_str()) {
-                ws.default_launch = None;
-            }
+            clear_default_if_removed(ws, &launch_id);
             Ok(ws.clone())
         })
     })
@@ -868,9 +940,7 @@ pub async fn set_default_launch(
         persist(&app, |data| {
             let ws = ws_mut(data, &workspace_id)?;
             if let Some(id) = launch_id.as_deref() {
-                if !valid_default_launch(ws, id, &builtin) {
-                    return Err("avvio predefinito non valido".to_string());
-                }
+                check_default_launch(&ws.launches, id, &builtin)?;
             }
             ws.default_launch = launch_id;
             Ok(ws.clone())
@@ -1074,8 +1144,8 @@ mod tests {
         assert_eq!(list[0].default_launch.as_deref(), Some("builtin:preset:task-intake"));
         assert_eq!(list[1].default_launch.as_deref(), Some("builtin:claude-code"));
         let builtin = crate::agents::builtin_launch_list();
-        assert!(valid_default_launch(&list[0], "builtin:preset:task-intake", &builtin));
-        assert!(!valid_default_launch(&list[0], "builtin:orchestrator", &builtin));
+        assert!(valid_default_launch(&list[0].launches, "builtin:preset:task-intake", &builtin));
+        assert!(!valid_default_launch(&list[0].launches, "builtin:orchestrator", &builtin));
     }
 
     #[test]
@@ -1094,11 +1164,11 @@ mod tests {
     fn default_launch_validation() {
         let ws = ws_with(vec![launch("l1", false)]);
         let builtin = crate::agents::builtin_launch_list();
-        assert!(valid_default_launch(&ws, "shell", &builtin));
-        assert!(valid_default_launch(&ws, "l1", &builtin));
-        assert!(valid_default_launch(&ws, "builtin:claude-code", &builtin));
-        assert!(!valid_default_launch(&ws, "l2", &builtin));
-        assert!(!valid_default_launch(&ws, "builtin:nope", &builtin));
+        assert!(valid_default_launch(&ws.launches, "shell", &builtin));
+        assert!(valid_default_launch(&ws.launches, "l1", &builtin));
+        assert!(valid_default_launch(&ws.launches, "builtin:claude-code", &builtin));
+        assert!(!valid_default_launch(&ws.launches, "l2", &builtin));
+        assert!(!valid_default_launch(&ws.launches, "builtin:nope", &builtin));
     }
 
     #[test]

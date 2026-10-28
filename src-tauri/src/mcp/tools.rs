@@ -2,6 +2,13 @@
 //! modello: inglese, concise). Due insiemi: i tool del worker di un task e
 //! quelli di una sessione normale (Intake compreso).
 
+use crate::agents::PermissionMode;
+use crate::automation::settings::REASON_MAX;
+use crate::workspaces::{
+    DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
+    MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_RULES_LEN,
+};
+use crate::worker_permissions::{MAX_RULES, MAX_RULE_CHARS};
 use serde_json::{json, Value};
 
 /// Ruolo del chiamante, come riportato da `whoami`.
@@ -146,7 +153,103 @@ pub fn session_tools() -> Vec<Value> {
             json!({ "name": { "type": "string" } }),
             &["name"],
         ),
+        tool(
+            "get_workspace_settings",
+            "Read the workspace settings that propose_settings can change, the repositories with their configuration (null = \
+             none), the allowed values, the limits and the pending settings proposals.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "propose_settings",
+            "Propose changes to the workspace settings. Only the fields you pass change. The user approves or discards the \
+             proposal in the app; fields that run commands or widen permissions are shown to the user as sensitive. Nothing \
+             changes before the decision and you get NO feedback after it: never wait. All-or-nothing validation. Returns \
+             {proposal, status: \"pending\"}.",
+            settings_properties(),
+            &["reason"],
+        ),
     ]
+}
+
+/// Campi di `propose_settings`; i limiti rispecchiano la validazione di
+/// `crate::workspaces` e `crate::worker_permissions`.
+fn settings_properties() -> Value {
+    let rules = json!({
+        "type": "array",
+        "items": { "type": "string", "maxLength": MAX_RULE_CHARS },
+        "maxItems": MAX_RULES,
+        "description": "Replaces the list, e.g. Bash(npm test:*)."
+    });
+    let commands = json!({
+        "type": "array",
+        "items": { "type": "string", "maxLength": MAX_REPO_COMMAND_LEN },
+        "maxItems": MAX_REPO_COMMANDS,
+        "description": "Single-line commands in order; replaces the list."
+    });
+    json!({
+        "reason": { "type": "string", "minLength": 1, "maxLength": REASON_MAX, "description": "Why, shown to the user." },
+        "worker_rules": {
+            "type": "string",
+            "maxLength": MAX_RULES_LEN,
+            "description": "Full text for the workers; empty clears."
+        },
+        "worker_model": {
+            "type": ["string", "null"],
+            "pattern": "^[A-Za-z0-9._-]{1,64}$",
+            "description": "Null = agent default."
+        },
+        "worker_permission": { "type": "string", "enum": PermissionMode::ALL.map(PermissionMode::as_str) },
+        "worker_allow": rules,
+        "worker_deny": rules,
+        "delivery": {
+            "type": "object",
+            "properties": {
+                "mode": { "type": "string", "enum": DeliveryMode::ALL.map(DeliveryMode::as_str) },
+                "parallel": { "type": "boolean" },
+                "merge_method": { "type": "string", "enum": MergeMethod::ALL.map(MergeMethod::as_str) }
+            },
+            "additionalProperties": false,
+            "description": "Omitted fields stay."
+        },
+        "use_schedule": { "type": "boolean" },
+        "default_launch": {
+            "type": ["string", "null"],
+            "description": "\"shell\", a launch id or a builtin id; null = inherit."
+        },
+        "launches": {
+            "type": "array",
+            "maxItems": MAX_PATCH_LAUNCHES,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string", "maxLength": MAX_LAUNCH_NAME_LEN },
+                    "command": { "type": "string", "maxLength": MAX_COMMAND_LEN }
+                },
+                "required": ["name", "command"],
+                "additionalProperties": false
+            },
+            "description": "Full list replacing the current one; keep the id of existing launches."
+        },
+        "repos": {
+            "type": "object",
+            "maxProperties": MAX_PATCH_REPOS,
+            "additionalProperties": {
+                "type": ["object", "null"],
+                "properties": {
+                    "base_branch": { "type": ["string", "null"] },
+                    "container_root": { "type": ["string", "null"] },
+                    "copy_ignored": { "type": "array", "items": { "type": "string" }, "maxItems": MAX_REPO_COMMANDS },
+                    "setup": commands,
+                    "cleanup": commands,
+                    "remove_force": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            },
+            "description": "Key = repository folder ('.' = root); null removes its config."
+        }
+    })
 }
 
 /// Campi di `save_skill`; i limiti rispecchiano `user_skills::validate`.
@@ -252,7 +355,8 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>) -> String {
                 accepts or discards them in the app and automated workers deliver them on their own. Never wait for workers \
                 or for the decision (no sleep, polling or repeated calls): end your turn. list_tasks, get_task_details, \
                 update_task and delete_task inspect and fix the queue. Write task texts in the language of the conversation. \
-                save_skill, list_skills and delete_skill manage the user's global skills."
+                save_skill, list_skills and delete_skill manage the user's global skills. get_workspace_settings and \
+                propose_settings read and propose changes to the workspace settings; the user approves them in the app."
                 .to_string();
             if let Some(w) = workspace {
                 text.push_str(&format!(" Your workspace: {w}."));

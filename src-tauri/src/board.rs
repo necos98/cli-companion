@@ -6,6 +6,7 @@
 //! `automation::boards`. Il contratto condiviso col frontend e' `docs/BOARD.MD`.
 
 mod report;
+mod settings;
 mod spec;
 pub mod texts;
 
@@ -13,13 +14,14 @@ pub mod texts;
 mod tests;
 
 pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
+pub use settings::{SettingsProposal, SettingsProposalView};
 pub use spec::{
     id_from_title, normalize_repo, parse_max_parallel, parse_proposal, parse_spec, repo_key, valid_branch, valid_id,
     validate_graph, TaskSpec,
 };
 
 use crate::automation::{clip_chars, WorkerStatus, DEFAULT_AGENT};
-use crate::workspaces::Delivery;
+use crate::workspaces::{Delivery, Workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -151,6 +153,8 @@ pub struct Board {
     /// L'ordine dell'array e' l'ordine della coda.
     pub tasks: Vec<Task>,
     pub proposals: Vec<Proposal>,
+    /// Proposte pendenti di modifica delle impostazioni del workspace.
+    pub settings_proposals: Vec<SettingsProposal>,
     /// Revisione in memoria (ordina i salvataggi/eventi concorrenti).
     #[serde(skip)]
     pub rev: u64,
@@ -165,6 +169,7 @@ impl Default for Board {
             updated_at: 0,
             tasks: Vec::new(),
             proposals: Vec::new(),
+            settings_proposals: Vec::new(),
             rev: 0,
         }
     }
@@ -192,6 +197,7 @@ pub struct BoardView {
     pub updated_at: i64,
     pub tasks: Vec<TaskView>,
     pub proposals: Vec<Proposal>,
+    pub settings_proposals: Vec<SettingsProposalView>,
     /// Il workspace usa le fasce orarie e adesso e' fuori fascia.
     pub schedule_blocked: bool,
     /// Consegna del workspace (comodita' per la UI).
@@ -394,9 +400,10 @@ impl Board {
         self.task(id).map(|t| self.view_of(t))
     }
 
-    /// Vista per il frontend; `delivery` e `schedule_blocked` vengono dal
-    /// workspace (la board non li conosce).
-    pub fn view_with(&self, delivery: Delivery, schedule_blocked: bool) -> BoardView {
+    /// Vista per il frontend; consegna e valori attuali delle impostazioni
+    /// proposte vengono dal workspace `ws` (la board non lo conosce; `None` =
+    /// consegna di default e nessun valore attuale), `schedule_blocked` dal gate.
+    pub fn view_with(&self, ws: Option<&Workspace>, schedule_blocked: bool) -> BoardView {
         BoardView {
             workspace_id: self.workspace_id.clone(),
             rev: self.rev,
@@ -405,8 +412,9 @@ impl Board {
             updated_at: self.updated_at,
             tasks: self.tasks.iter().map(|t| self.view_of(t)).collect(),
             proposals: self.proposals.clone(),
+            settings_proposals: self.settings_proposals.iter().map(|p| p.view(ws)).collect(),
             schedule_blocked,
-            delivery,
+            delivery: ws.map(|w| w.delivery).unwrap_or_default(),
         }
     }
 

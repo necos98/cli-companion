@@ -32,6 +32,11 @@ fn delivery(mode: DeliveryMode, parallel: bool) -> Delivery {
     Delivery { mode, parallel, merge_method: MergeMethod::Squash }
 }
 
+fn workspace(delivery: Delivery) -> Workspace {
+    let raw = r#"{"id":"ws-1","name":"p","kind":"windows","path":"C:\\p","created_at":1}"#;
+    Workspace { delivery, ..serde_json::from_str(raw).unwrap() }
+}
+
 fn open(mode: DeliveryMode, parallel: bool) -> SchedCtx {
     SchedCtx { delivery: delivery(mode, parallel), gate_open: true }
 }
@@ -88,7 +93,7 @@ fn v011_board_is_normalized_on_load() {
     for gone in ["owner", "requests", "integrations", "base_branch", "touches", "orchestrator_note", "held", "priority", "isolation"] {
         assert!(!out.contains(&format!("\"{gone}\"")), "{gone} in {out}");
     }
-    assert!(b.proposals.is_empty());
+    assert!(b.proposals.is_empty() && b.settings_proposals.is_empty());
     assert!(Board::from_json("{\"tasks\":[]}", 1).is_err(), "workspace_id missing");
     assert!(Board::from_json("zzz", 1).is_err());
 }
@@ -479,18 +484,18 @@ fn scheduler_respects_dependencies_pause_and_the_gate() {
     assert!(schedule(&b, &SchedCtx { gate_open: false, ..ctx }).is_empty());
     // waiting_on nella vista, solo per i queued.
     let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"])]);
-    let v = b.view_with(Delivery::default(), false);
+    let v = b.view_with(None, false);
     assert_eq!(v.tasks[1].waiting_on, ["a"]);
     assert!(v.tasks[0].waiting_on.is_empty());
     set_status(&mut b, "a", TaskStatus::Done);
-    assert!(b.view_with(Delivery::default(), false).tasks[1].waiting_on.is_empty());
+    assert!(b.view_with(None, false).tasks[1].waiting_on.is_empty());
 }
 
 #[test]
 fn attention_follows_the_worker_status() {
     let mut b = board_with(vec![spec("a", &[])]);
     b.start_task("a", 1);
-    let attention = |b: &Board| b.view_with(Delivery::default(), false).tasks[0].attention;
+    let attention = |b: &Board| b.view_with(None, false).tasks[0].attention;
     assert!(!attention(&b));
     for (ws, expected) in [
         (WorkerStatus::NeedsInput, true),
@@ -512,9 +517,9 @@ fn view_json_shape_and_list_rows() {
     let mut b = board_with(vec![spec("a", &[]), spec("b", &["a"])]);
     b.start_task("a", 1);
     b.task_mut("a").unwrap().worker_status = Some(WorkerStatus::Idle);
-    let view = b.view_with(delivery(DeliveryMode::Pr, true), true);
+    let view = b.view_with(Some(&workspace(delivery(DeliveryMode::Pr, true))), true);
     let v = serde_json::to_value(&view).unwrap();
-    for k in ["workspace_id", "rev", "max_parallel", "paused", "updated_at", "tasks", "proposals", "schedule_blocked", "delivery"] {
+    for k in ["workspace_id", "rev", "max_parallel", "paused", "updated_at", "tasks", "proposals", "settings_proposals", "schedule_blocked", "delivery"] {
         assert!(v.get(k).is_some(), "{k}");
     }
     assert_eq!(v["schedule_blocked"], true);

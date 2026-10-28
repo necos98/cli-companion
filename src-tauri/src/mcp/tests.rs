@@ -1,12 +1,21 @@
 use super::tools::{session_tools, worker_tools};
 use super::*;
+use crate::agents::PermissionMode;
+use crate::automation::settings::REASON_MAX;
+use crate::worker_permissions::{MAX_RULES, MAX_RULE_CHARS};
+use crate::workspaces::{
+    DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS,
+    MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_RULES_LEN,
+};
 use std::cell::RefCell;
 
 /// Tool definitions and server instructions are sent to the model in every
 /// session: the ceilings are intentional. Do not raise one to fit new text,
 /// shorten the text.
 /// 5_600 = the previous ceiling plus the three skill tools (mostly their validation limits).
-const SESSION_TOOLS_CEILING: usize = 5_600;
+/// 8_700 = 5_600 plus the two settings tools (propose_settings is a schema of eleven fields with
+/// their limits and enums, measured 8_604 after trimming every description that was not needed).
+const SESSION_TOOLS_CEILING: usize = 8_700;
 const WORKER_TOOLS_CEILING: usize = 2_600;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
 
@@ -88,6 +97,7 @@ fn initialize_negotiates_protocol_version() {
     assert!(text.contains("Proj (wsl, /home/u/app)"));
     assert!(text.contains("propose_tasks") && text.contains("accepts or discards") && text.contains("Never wait"));
     assert!(text.contains("save_skill") && text.contains("global skills"));
+    assert!(text.contains("propose_settings") && text.contains("approves them in the app"));
     let w = Fake::new("worker");
     let r = send(&mut Server::default(), &w, json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap();
     let text = r["result"]["instructions"].as_str().unwrap();
@@ -104,7 +114,10 @@ fn tools_list_depends_on_role() {
     let r = send(&mut s, &Fake::new("session"), json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap();
     assert_eq!(
         names(&r),
-        ["propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "save_skill", "list_skills", "delete_skill"]
+        [
+            "propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "save_skill", "list_skills",
+            "delete_skill", "get_workspace_settings", "propose_settings"
+        ]
     );
     let mut s = Server::default();
     let r = send(&mut s, &Fake::new("worker"), json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
@@ -120,7 +133,7 @@ fn no_orchestrator_tool_survives() {
     let all: Vec<Value> = session_tools().into_iter().chain(worker_tools()).collect();
     for gone in [
         "spawn_session", "list_sessions", "send_message", "close_session", "get_events", "submit_plan", "get_board",
-        "set_task_status", "set_board", "get_workflow", "save_workflow", "ask_user", "propose_settings", "report_fact",
+        "set_task_status", "set_board", "get_workflow", "save_workflow", "ask_user", "report_fact",
         "request_help", "list_agents",
     ] {
         assert!(all.iter().all(|t| t["name"] != gone), "{gone}");
@@ -164,6 +177,56 @@ fn schemas_match_the_rust_validation() {
     assert_eq!(save["inputSchema"]["additionalProperties"], false);
     assert_eq!(keys(&by("list_skills")["inputSchema"]["properties"]), Vec::<String>::new());
     assert_eq!(by("delete_skill")["inputSchema"]["required"], json!(["name"]));
+
+    assert_eq!(keys(&by("get_workspace_settings")["inputSchema"]["properties"]), Vec::<String>::new());
+    assert_eq!(by("get_workspace_settings")["inputSchema"]["required"], json!([]));
+    let settings = by("propose_settings");
+    let schema = &settings["inputSchema"];
+    let props = &schema["properties"];
+    assert_eq!(
+        keys(props),
+        [
+            "default_launch", "delivery", "launches", "reason", "repos", "use_schedule", "worker_allow", "worker_deny",
+            "worker_model", "worker_permission", "worker_rules"
+        ]
+    );
+    assert_eq!(schema["required"], json!(["reason"]));
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(props["reason"]["maxLength"], REASON_MAX);
+    assert_eq!(props["worker_rules"]["maxLength"], MAX_RULES_LEN);
+    assert_eq!(props["worker_permission"]["enum"], json!(["plan", "default", "accept-edits", "bypass"]));
+    assert_eq!(props["worker_permission"]["enum"], json!(PermissionMode::ALL.map(PermissionMode::as_str)));
+    for list in ["worker_allow", "worker_deny"] {
+        assert_eq!(props[list]["maxItems"], MAX_RULES, "{list}");
+        assert_eq!(props[list]["items"]["maxLength"], MAX_RULE_CHARS, "{list}");
+    }
+    let delivery = &props["delivery"];
+    assert_eq!(keys(&delivery["properties"]), ["merge_method", "mode", "parallel"]);
+    assert_eq!(delivery["additionalProperties"], false);
+    assert_eq!(delivery["properties"]["mode"]["enum"], json!(DeliveryMode::ALL.map(DeliveryMode::as_str)));
+    assert_eq!(delivery["properties"]["merge_method"]["enum"], json!(MergeMethod::ALL.map(MergeMethod::as_str)));
+    assert_eq!(props["launches"]["maxItems"], MAX_PATCH_LAUNCHES);
+    let launch = &props["launches"]["items"];
+    assert_eq!(keys(&launch["properties"]), ["command", "id", "name"]);
+    assert_eq!(launch["required"], json!(["name", "command"]));
+    assert_eq!(launch["properties"]["name"]["maxLength"], MAX_LAUNCH_NAME_LEN);
+    assert_eq!(launch["properties"]["command"]["maxLength"], MAX_COMMAND_LEN);
+    assert_eq!(props["repos"]["maxProperties"], MAX_PATCH_REPOS);
+    let repo = &props["repos"]["additionalProperties"];
+    assert_eq!(repo["type"], json!(["object", "null"]));
+    assert_eq!(repo["additionalProperties"], false);
+    assert_eq!(
+        keys(&repo["properties"]),
+        ["base_branch", "cleanup", "container_root", "copy_ignored", "remove_force", "setup"]
+    );
+    for list in ["copy_ignored", "setup", "cleanup"] {
+        assert_eq!(repo["properties"][list]["maxItems"], MAX_REPO_COMMANDS, "{list}");
+    }
+    for list in ["setup", "cleanup"] {
+        assert_eq!(repo["properties"][list]["items"]["maxLength"], MAX_REPO_COMMAND_LEN, "{list}");
+    }
+    let description = settings["description"].as_str().unwrap();
+    assert!(description.contains("NO feedback") && description.contains("never wait") && description.contains("sensitive"));
 
     let done = &worker_tools()[1];
     assert_eq!(

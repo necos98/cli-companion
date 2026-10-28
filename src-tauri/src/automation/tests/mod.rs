@@ -5,12 +5,13 @@
 use super::*;
 use crate::agents::AutomationRequest;
 use crate::schedule::{Schedule, ScheduleState};
-use crate::workspaces::{DeliveryMode, MergeMethod, RepoConfig};
+use crate::workspaces::{DeliveryMode, MergeMethod, RepoConfig, SettingsPatch};
 use serde_json::json;
 
 mod board_flow;
 mod schedule;
 mod session_end;
+mod settings;
 mod skills;
 mod worker;
 
@@ -74,6 +75,14 @@ struct FakeHost {
     /// Branch corrente dei checkout (`rev-parse --abbrev-ref HEAD`).
     branch: Arc<Mutex<Option<String>>>,
     repos: Arc<Mutex<Vec<String>>>,
+    /// Errore forzato di `list_repos`.
+    repos_err: Arc<Mutex<Option<String>>>,
+    /// Le impostazioni di "ws-1" che sopra non hanno un campo proprio
+    /// (avvii, permessi, regole): `None` = quelle di `ws`.
+    ws1_base: Arc<Mutex<Option<Workspace>>>,
+    /// Chiamate a `apply_settings` e relativo errore forzato.
+    applies: Arc<Mutex<u32>>,
+    apply_err: Arc<Mutex<Option<String>>>,
     /// "<dir>|<comando>|<ENV=V,...>" di ogni hook eseguito, e copie "src->dst".
     hook_log: Arc<Mutex<Vec<String>>>,
     /// Esiti forzati degli hook: il primo il cui testo e' contenuto in "<dir>|<comando>".
@@ -115,7 +124,7 @@ impl FakeHost {
     fn ws_for(&self, id: &str) -> Option<Workspace> {
         match id {
             "ws-1" => {
-                let mut w = ws("ws-1", "Proj", "windows");
+                let mut w = self.ws1_base.lock().unwrap().clone().unwrap_or_else(|| ws("ws-1", "Proj", "windows"));
                 w.delivery = *self.delivery.lock().unwrap();
                 w.use_schedule = *self.use_schedule.lock().unwrap();
                 w.worker_model = self.worker_model.lock().unwrap().clone();
@@ -127,6 +136,18 @@ impl FakeHost {
             "ws-2" => Some(ws("ws-2", "Linux", "wsl")),
             _ => None,
         }
+    }
+    /// Salva `w` come nuovo "ws-1": i campi con un loro stato e il resto.
+    fn store_ws1(&self, w: Workspace) {
+        *self.delivery.lock().unwrap() = w.delivery;
+        *self.use_schedule.lock().unwrap() = w.use_schedule;
+        *self.worker_model.lock().unwrap() = w.worker_model.clone();
+        *self.worker_rules.lock().unwrap() = w.worker_rules.clone();
+        *self.repo_cfg.lock().unwrap() = w.repos.clone();
+        *self.ws1_base.lock().unwrap() = Some(w);
+    }
+    fn applies(&self) -> u32 {
+        *self.applies.lock().unwrap()
     }
 }
 
@@ -193,6 +214,9 @@ impl Host for FakeHost {
         Ok(())
     }
     fn list_repos(&self, _ws: &Workspace) -> Result<Vec<String>, String> {
+        if let Some(e) = self.repos_err.lock().unwrap().clone() {
+            return Err(e);
+        }
         Ok(self.repos.lock().unwrap().clone())
     }
     fn path_exists(&self, _ws: &Workspace, path: &str) -> bool {
@@ -249,6 +273,27 @@ impl Host for FakeHost {
     fn skill_targets(&self) -> Vec<SkillTarget> {
         let dirs = self.skill_dirs.lock().unwrap();
         dirs.iter().map(|(env, dir)| SkillTarget { env: env.clone(), dir: dir.clone() }).collect()
+    }
+    fn apply_settings(&self, ws_id: &str, patch: &SettingsPatch) -> Result<Workspace, String> {
+        let call = {
+            let mut applies = self.applies.lock().unwrap();
+            *applies += 1;
+            *applies
+        };
+        if let Some(e) = self.apply_err.lock().unwrap().clone() {
+            return Err(e);
+        }
+        if ws_id != "ws-1" {
+            return Err("workspace non trovato".to_string());
+        }
+        let mut w = self.ws_for(ws_id).expect("ws-1");
+        let mut seq = 0;
+        patch.apply(&mut w, &mut || {
+            seq += 1;
+            format!("launch-{call}-{seq}")
+        })?;
+        self.store_ws1(w.clone());
+        Ok(w)
     }
 }
 
