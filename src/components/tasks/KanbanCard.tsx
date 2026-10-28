@@ -3,6 +3,7 @@ import type { DragEvent } from "react";
 import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import { displayStatus, waitingOnLabel, workerSubStatus } from "../../lib/board";
 import type { Task } from "../../lib/board";
@@ -83,6 +84,7 @@ function KanbanCard({
         )}
         {isReview(task) && <ReviewBadge />}
         <VerdictBadge task={task} />
+        <TaskE2eBadge task={task} />
         {waiting && (
           <span className="max-w-full truncate rounded border border-border-strong px-1.5 py-px">{waiting}</span>
         )}

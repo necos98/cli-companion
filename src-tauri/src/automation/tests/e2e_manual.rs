@@ -78,3 +78,17 @@ fn concurrent_runs_in_different_folders_get_different_ports() {
     h.run_held();
     assert!(st.e2e.reserved_ports().is_empty());
 }
+
+#[test]
+fn the_report_of_a_manual_run_is_resolved_by_the_backend() {
+    use crate::automation::e2e::report::report_file;
+    let (st, h) = manual_setup();
+    assert_eq!(report_file(&st, &h, "ws-1", None, None).unwrap_err(), "nessuna esecuzione E2E di cui aprire il report");
+    manual::run_repo(&st, &h, "ws-1", None).unwrap();
+    assert!(report_file(&st, &h, "nope", None, None).is_err());
+    assert_eq!(report_file(&st, &h, "ws-1", Some("missing"), None).unwrap_err(), "task non trovato");
+    let junit = format!(r"{CHECKOUT}\out\junit.xml");
+    assert_eq!(report_file(&st, &h, "ws-1", None, None).unwrap_err(), "il report E2E non esiste piu' (la cartella del task e' stata ripulita?)");
+    h.files.lock().unwrap().push(junit.clone());
+    assert_eq!(report_file(&st, &h, "ws-1", None, Some(".")).unwrap(), std::path::PathBuf::from(junit));
+}

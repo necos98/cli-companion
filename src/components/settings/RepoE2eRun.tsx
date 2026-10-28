@@ -5,6 +5,7 @@ import { api, onE2eUpdate } from "../../lib/tauri";
 import type { E2eRun } from "../../lib/board";
 import { afterRunResponse } from "../../lib/e2e";
 import E2eResult from "../tasks/E2eResult";
+import OpenE2eReportButton from "../tasks/OpenE2eReportButton";
 
 interface Props {
   workspaceId: string;
@@ -52,6 +53,7 @@ export default function RepoE2eRun({ workspaceId, repo }: Props) {
       </div>
       {error && <p className="text-[11px] text-destructive">{error}</p>}
       {last && <E2eResult run={last} />}
+      {last && <OpenE2eReportButton workspaceId={workspaceId} repo={repo} disabled={running} />}
     </div>
   );
 }

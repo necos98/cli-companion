@@ -2,6 +2,7 @@ import { memo } from "react";
 import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import {
   displayStatus,
@@ -54,6 +55,7 @@ function ListRow({ task, subtitle, now, selected, showRepo, onSelect }: Props) {
           <span className="truncate">{task.title}</span>
           {isReview(task) && <ReviewBadge className="text-[11px]" />}
           <VerdictBadge task={task} className="text-[11px]" />
+          <TaskE2eBadge task={task} className="text-[11px]" />
         </span>
         {sub && <span className="truncate text-[11px] text-muted-foreground">{sub}</span>}
       </span>

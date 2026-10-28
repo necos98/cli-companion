@@ -984,6 +984,23 @@ fn explorer_target(ws: &Workspace) -> Result<String, String> {
     }
 }
 
+/// Apre una cartella o un file con explorer.exe (un file si apre con
+/// l'applicazione predefinita).
+pub(crate) fn open_in_explorer(target: &std::ffi::OsStr) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("explorer.exe");
+    cmd.arg(target);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    // explorer.exe esce spesso con codice 1 anche se la cartella si apre:
+    // conta solo il fallimento dello spawn, l'exit code non si guarda.
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("impossibile aprire Esplora risorse: {e}"))
+}
+
 /// Async per coerenza con gli altri comandi che lanciano processi.
 #[tauri::command]
 pub async fn open_workspace_folder(app: AppHandle, id: String) -> Result<(), String> {
@@ -992,19 +1009,7 @@ pub async fn open_workspace_folder(app: AppHandle, id: String) -> Result<(), Str
             .state::<WorkspaceStore>()
             .find(&id)
             .ok_or_else(|| "workspace non trovato".to_string())?;
-        let target = explorer_target(&ws)?;
-        let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg(&target);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-        // explorer.exe esce spesso con codice 1 anche se la cartella si apre:
-        // conta solo il fallimento dello spawn, l'exit code non si guarda.
-        cmd.spawn()
-            .map(|_| ())
-            .map_err(|e| format!("impossibile aprire Esplora risorse: {e}"))
+        open_in_explorer(explorer_target(&ws)?.as_ref())
     })
     .await
 }

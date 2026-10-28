@@ -21,6 +21,8 @@ export interface TaskFormValues {
   repo: string;
   /** Tipo di task; `review` richiede almeno una dipendenza. */
   kind: TaskKind;
+  /** Il task deve superare gli E2E del repository. */
+  e2e: boolean;
 }
 
 export type TaskFormErrors = Partial<Record<"title" | "task" | "model" | "depends_on", string>>;
@@ -99,6 +101,7 @@ export function formFromTask(task: Task): TaskFormValues {
     model: task.model ?? "",
     repo: task.repo || ROOT_REPO,
     kind: task.kind ?? "work",
+    e2e: task.e2e ?? false,
   };
 }
 
@@ -120,6 +123,7 @@ export function buildPatch(task: Task, v: TaskFormValues, includeRepo: boolean):
   const model = sanitizeModel(v.model);
   if (model !== (task.model ?? null)) patch.model = model;
   if (v.kind !== (task.kind ?? "work")) patch.kind = v.kind;
+  if (v.e2e !== (task.e2e ?? false)) patch.e2e = v.e2e;
   if (includeRepo) {
     const repo = repoValue(v.repo);
     if (repo !== (task.repo || null)) patch.repo = repo;

@@ -706,6 +706,11 @@ Argomenti camelCase lato JS.
   repository", "nessuna porta locale libera per gli E2E: riprova fra un attimo".
 - `e2e_last_result(workspace_id, repo?: String) -> E2eRun | null`: ultimo esito manuale del
   repository, solo in memoria.
+- `e2e_open_report(workspace_id, task_id?: String, repo?: String)`: apre con l'applicazione predefinita il
+  file JUnit dell'ultima esecuzione del task (`task_id`) o, senza, di quella manuale del repository.
+  Il percorso lo ricava il backend (worktree del task o cartella del repository + `junit`, per i
+  workspace WSL convertito in un percorso UNC `wsl.localhost` della distro), mai il frontend. Errori (italiano): nessuna
+  esecuzione, report non piu' presente (cartella ripulita).
 - `proposal_decide(workspace_id, proposal_id, accept) -> BoardView`
 - `settings_proposal_decide(workspace_id, proposal_id, accept) -> { board, workspace? }`
   (vedi "Proposte di impostazioni").
@@ -813,3 +818,22 @@ fallito); con `issues` il dettaglio elenca i `findings` sopra il sommario. Una p
 è più nella board); senza, resta "Proposta da Task Intake". Il form "Nuovo task" e la modifica
 (solo dove il task è modificabile) hanno l'opzione "Task di revisione" (`kind: "review"`): senza
 almeno una dipendenza il form blocca il salvataggio, come il backend. Logica in `src/lib/review.ts`.
+
+## UI degli E2E
+
+Logica pura in `src/lib/e2e.ts`: nel frontend non c'è nessuna logica di esito, le etichette
+traducono solo lo stato che arriva dal backend (`E2eRun.status`, `totals`).
+
+- **Flag nei form.** "Nuovo task" e modifica hanno la casella "Richiede E2E" (`e2e`). È attiva solo
+  se il repository scelto ha `e2e` configurato (`Workspace.repos`); altrimenti è disattivata e
+  spiega di configurarli in Impostazioni → Repository. Cambiare repository verso uno senza E2E
+  spegne il flag; un flag già acceso resta visibile e si può togliere anche se la configurazione è sparita.
+- **Badge** (stile dei badge delle review): "E2E richiesto" (task marcato, mai eseguito), poi l'esito
+  dell'ultima esecuzione (`Task.e2e_run`, altrimenti `report.e2e`): "E2E 12/12" verde, "E2E 2 falliti"
+  rosso, "E2E in corso", "E2E errore" rosso. Su card del Kanban, righe della Lista, card in corso del
+  pannello e dettaglio; le specifiche di una proposta mostrano solo "E2E richiesto".
+- **Dettaglio del task.** Sezione "Test E2E (verificati dall'app)": esito, totali, durata, commit,
+  test falliti con il messaggio, errore e coda dell'output; "Apri report" (`e2e_open_report`)
+  apre il JUnit dell'esecuzione, disattivato finché è in corso.
+- **Pagina Repository.** Per i repository con `e2e` configurato "Esegui E2E" (`e2e_run_repo`) con
+  stato in corso, ultimo risultato, test falliti e "Apri report"; si aggiorna con l'evento `e2e-update`.

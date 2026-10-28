@@ -166,6 +166,7 @@ pub fn run() {
             automation::workspace_detect_repos,
             automation::e2e_run_repo,
             automation::e2e_last_result,
+            automation::e2e_open_report,
             automation::auto::schedule_get,
             automation::auto::schedule_set,
             toast::show_agent_notification,

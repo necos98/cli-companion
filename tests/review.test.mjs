@@ -93,7 +93,7 @@ describe("proposalHeading", () => {
 });
 
 describe("form di review", () => {
-  const base = { title: "t", task: "s", model: "", depends_on: [], kind: "work" };
+  const base = { title: "t", task: "s", model: "", depends_on: [], kind: "work", e2e: false };
   it("reviewDependencyError solo per review senza dipendenze", () => {
     assert.equal(reviewDependencyError("review", []), REVIEW_NEEDS_DEPENDENCY);
     assert.equal(reviewDependencyError("review", ["a"]), undefined);
@@ -114,5 +114,20 @@ describe("form di review", () => {
     const r = { ...t, kind: "review" };
     assert.equal(formFromTask(r).kind, "review");
     assert.deepEqual(buildPatch(r, { ...formFromTask(r), kind: "work" }, false), { kind: "work" });
+  });
+});
+
+describe("flag E2E nel form", () => {
+  const task = (over = {}) => ({ id: "a", title: "t", task: "s", depends_on: [], status: "queued", ...over });
+
+  it("formFromTask legge il flag e buildPatch lo invia solo se cambia", () => {
+    const t = task();
+    const form = formFromTask(t);
+    assert.equal(form.e2e, false);
+    assert.deepEqual(buildPatch(t, form, false), {});
+    assert.deepEqual(buildPatch(t, { ...form, e2e: true }, false), { e2e: true });
+    const marked = task({ e2e: true });
+    assert.equal(formFromTask(marked).e2e, true);
+    assert.deepEqual(buildPatch(marked, { ...formFromTask(marked), e2e: false }, false), { e2e: false });
   });
 });

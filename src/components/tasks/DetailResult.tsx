@@ -6,7 +6,6 @@ import { openExternal } from "../../lib/openExternal";
 import { reviewFindings } from "../../lib/review";
 import type { FindingsList } from "../../lib/review";
 import Collapsible from "./Collapsible";
-import E2eResult from "./E2eResult";
 
 const FINDINGS_TONE: Record<FindingsList["tone"], { box: string; title: string }> = {
   attention: { box: "border-status-attention/50", title: "text-status-attention" },
@@ -42,7 +41,6 @@ function prLabel(url: string): string {
 }
 
 function Body({ report, task }: { report: TaskReport; task: Task }) {
-  const e2e = report.e2e ?? task.e2e_run;
   const pr = prUrl(task);
   const tests = report.tests ?? [];
   const files = report.files_changed ?? [];
@@ -90,7 +88,6 @@ function Body({ report, task }: { report: TaskReport; task: Task }) {
           ))}
         </ul>
       )}
-      {e2e && <E2eResult run={e2e} />}
       {files.length > 0 && (
         <Collapsible summary={`File modificati (${files.length})`}>
           <ul className="flex flex-col gap-0.5 font-mono text-[11px] text-text-secondary">
@@ -128,13 +125,13 @@ function Body({ report, task }: { report: TaskReport; task: Task }) {
   );
 }
 
-/** Esito di un task concluso: riepilogo, commit, PR, test, E2E, file, follow-up, diffstat. Senza report, solo gli E2E in corso. */
+/** Esito di un task concluso: riepilogo, commit, PR, test, file, follow-up, diffstat. */
 export default function DetailResult({ task }: { task: Task }) {
-  if (!task.report && !task.e2e_run) return null;
+  if (!task.report) return null;
   return (
     <section className="flex min-w-0 flex-col gap-2 rounded-lg border bg-surface p-3">
       <h3 className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Esito</h3>
-      {task.report ? <Body report={task.report} task={task} /> : task.e2e_run && <E2eResult run={task.e2e_run} />}
+      <Body report={task.report} task={task} />
     </section>
   );
 }

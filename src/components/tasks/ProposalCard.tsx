@@ -3,6 +3,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { api } from "../../lib/tauri";
 import type { BoardView, Proposal, TaskSpec } from "../../lib/board";
 import { ReviewBadge } from "./ReviewBadges";
+import { SpecE2eBadge } from "./E2eBadges";
 import { isReview, proposalHeading } from "../../lib/review";
 import { dependencyLabels, dependsOnText, specExcerpt } from "../../lib/taskPanel";
 
@@ -72,6 +73,7 @@ export default function ProposalCard({ workspaceId, proposal, board, onBoard }: 
           <div className="break-words text-sm font-semibold">
             {single.title}
             {isReview(single) && <ReviewBadge className="ml-2 align-middle text-[10px]" />}
+            <SpecE2eBadge spec={single} className="ml-2 align-middle text-[10px]" />
           </div>
           {excerpt && (
             <p className="line-clamp-3 break-words text-xs leading-normal text-text-secondary">{excerpt}</p>
@@ -87,6 +89,7 @@ export default function ProposalCard({ workspaceId, proposal, board, onBoard }: 
                 <span className="break-words text-xs font-medium">
                   {s.title}
                   {isReview(s) && <ReviewBadge className="ml-1.5 align-middle text-[10px]" />}
+                  <SpecE2eBadge spec={s} className="ml-1.5 align-middle text-[10px]" />
                 </span>
                 <SpecMeta spec={s} board={board} siblings={specs} />
               </li>

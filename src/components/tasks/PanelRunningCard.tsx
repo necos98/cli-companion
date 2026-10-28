@@ -4,6 +4,7 @@ import type { Task } from "../../lib/board";
 import { runningMeta } from "../../lib/taskPanel";
 import { cn } from "@/lib/utils";
 import { ReviewBadge } from "./ReviewBadges";
+import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 
 interface PanelRunningCardProps {
@@ -42,6 +43,7 @@ export default function PanelRunningCard({ task, now, onClick }: PanelRunningCar
         <span className="line-clamp-2 break-words text-[13px] font-medium">
           {task.title}
           {isReview(task) && <ReviewBadge className="ml-1.5 align-middle text-[10px]" />}
+          <TaskE2eBadge task={task} className="ml-1.5 align-middle text-[10px]" />
         </span>
         {meta && (
           <span className={cn("truncate text-[11px]", attention ? "text-status-attention" : "text-muted-foreground")}>

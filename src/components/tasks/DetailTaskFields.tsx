@@ -6,6 +6,7 @@ import { dependencyOptions } from "../../lib/taskForm";
 import type { TaskFormErrors, TaskFormValues } from "../../lib/taskForm";
 import type { Task } from "../../lib/board";
 import { MODEL_MAX } from "../../lib/model";
+import { E2E_OPTION_LABEL, e2eOption } from "../../lib/e2e";
 import { REVIEW_OPTION_HELP, REVIEW_OPTION_LABEL } from "../../lib/review";
 import { cn } from "../../lib/utils";
 
@@ -23,6 +24,8 @@ interface Props {
   repoChoices: string[];
   /** Il repo non si cambia (il task ha già un worktree). */
   repoLocked?: boolean;
+  /** Il repository scelto ha gli E2E configurati: senza, la casella "Richiede E2E" e' disattivata. */
+  e2eConfigured: boolean;
   modelPlaceholder: string;
   disabled: boolean;
   specRows?: number;
@@ -68,12 +71,14 @@ export default function DetailTaskFields({
   selfId,
   repoChoices,
   repoLocked = false,
+  e2eConfigured,
   modelPlaceholder,
   disabled,
   specRows = 8,
 }: Props) {
   const options = dependencyOptions(tasks, selfId, values.depends_on);
   const id = (name: string) => `${idPrefix}-${name}`;
+  const e2e = e2eOption(values.e2e, e2eConfigured);
   return (
     <>
       <FieldBox id={id("title")} label="Titolo" error={errors.title}>
@@ -120,6 +125,23 @@ export default function DetailTaskFields({
           {REVIEW_OPTION_LABEL}
         </label>
         <p className="text-[11px] text-muted-foreground">{REVIEW_OPTION_HELP}</p>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <label htmlFor={id("e2e")} className="flex items-center gap-2 text-xs font-medium">
+          <input
+            id={id("e2e")}
+            type="checkbox"
+            checked={e2e.checked}
+            disabled={disabled || e2e.disabled}
+            aria-describedby={id("e2e-help")}
+            onChange={(e) => onChange({ e2e: e.target.checked })}
+          />
+          {E2E_OPTION_LABEL}
+        </label>
+        <p id={id("e2e-help")} className="text-[11px] text-muted-foreground">
+          {e2e.help}
+        </p>
       </div>
 
       <div className="flex flex-col gap-1.5">

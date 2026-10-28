@@ -3,10 +3,12 @@ import type { FormEvent } from "react";
 import DetailTaskFields from "./DetailTaskFields";
 import { useCommand } from "./useDetailCommand";
 import { Button } from "../ui/button";
+import { repoHasE2e, withRepoE2e } from "../../lib/e2e";
 import { api } from "../../lib/tauri";
 import { buildPatch, formFromTask, hasErrors, validateTaskForm } from "../../lib/taskForm";
 import type { TaskFormErrors, TaskFormValues } from "../../lib/taskForm";
 import type { BoardView, Task } from "../../lib/board";
+import type { Workspace } from "../../lib/tauri";
 
 interface Props {
   workspaceId: string;
@@ -15,6 +17,8 @@ interface Props {
   onBoard: (board: BoardView) => void;
   /** Repository del workspace (più di uno = campo repo visibile). */
   repoChoices: string[];
+  /** Configurazione per repository del workspace: dice dove gli E2E sono disponibili. */
+  repoConfigs: Workspace["repos"];
   modelPlaceholder: string;
   /** Esce dalla modifica (salvato o annullato). */
   onDone: () => void;
@@ -27,6 +31,7 @@ export default function TaskEditForm({
   board,
   onBoard,
   repoChoices,
+  repoConfigs,
   modelPlaceholder,
   onDone,
 }: Props) {
@@ -37,7 +42,7 @@ export default function TaskEditForm({
   const repoLocked = Boolean(task.worktree);
 
   const change = (patch: Partial<TaskFormValues>) => {
-    setValues((v) => ({ ...v, ...patch }));
+    setValues((v) => ({ ...v, ...withRepoE2e(patch, repoConfigs) }));
     setErrors({});
     clearError();
   };
@@ -66,6 +71,7 @@ export default function TaskEditForm({
         selfId={task.id}
         repoChoices={repoChoices}
         repoLocked={repoLocked}
+        e2eConfigured={repoHasE2e(repoConfigs, values.repo)}
         modelPlaceholder={modelPlaceholder}
         disabled={busy}
         specRows={12}

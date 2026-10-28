@@ -355,6 +355,10 @@ export const api = {
   e2eLastResult: (workspaceId: string, repo: string) =>
     invoke<E2eRun | null>("e2e_last_result", { workspaceId, repo }),
 
+  /** Apre il report JUnit dell'ultima esecuzione E2E del task, o senza `taskId` di quella manuale del repository. */
+  e2eOpenReport: (workspaceId: string, taskId?: string, repo?: string) =>
+    invoke<void>("e2e_open_report", { workspaceId, taskId, repo }),
+
   /** Repository del workspace: "." se la root è un repo, più le sottocartelle con un .git. */
   workspaceDetectRepos: (workspaceId: string) =>
     invoke<string[]>("workspace_detect_repos", { workspaceId }),

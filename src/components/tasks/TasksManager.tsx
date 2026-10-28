@@ -226,6 +226,7 @@ export default function TasksManager({
             onOpenTerminal={onOpenTerminal}
             onSelectTask={setSelectedId}
             repos={detected}
+            repoConfigs={workspace.repos}
             defaultModel={workspace.worker_model}
             isTabOpen={isTabOpen}
             now={now}

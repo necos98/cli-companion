@@ -126,7 +126,7 @@ pub(super) fn run_hook_real(
 
 /// Percorso del filesystem Windows per un percorso nel formato del workspace
 /// (WSL: `\\wsl.localhost\<distro>\...`).
-fn fs_path(ws: &Workspace, path: &str) -> Result<std::path::PathBuf, String> {
+pub(super) fn fs_path(ws: &Workspace, path: &str) -> Result<std::path::PathBuf, String> {
     if ws.kind == "wsl" {
         let converted = crate::wsl::wsl_to_windows_path(distro_of(ws)?, path);
         return converted.map(std::path::PathBuf::from).ok_or_else(|| format!("invalid WSL path: {path}"));

@@ -4,6 +4,7 @@ import DetailTaskFields from "./DetailTaskFields";
 import { useCommand } from "./useDetailCommand";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
+import { repoHasE2e, withRepoE2e } from "../../lib/e2e";
 import { sanitizeModel } from "../../lib/model";
 import { api } from "../../lib/tauri";
 import {
@@ -85,14 +86,18 @@ function NewTaskForm({ workspace, board, onBoard, onClose, onOpenIntake, repos, 
     model: "",
     repo: repoChoices[0] ?? ROOT_REPO,
     kind: "work",
+    e2e: false,
   });
   const [errors, setErrors] = useState<TaskFormErrors>({});
   const { run, busy, error, clearError } = useCommand(onBoard);
   // I repository possono arrivare dopo l'apertura: la scelta vale solo se è fra quelli noti.
   const repo = repoChoices.includes(values.repo) ? values.repo : (repoChoices[0] ?? ROOT_REPO);
 
+  const taskRepo = multiRepo ? repoValue(repo) : null;
+  const e2eConfigured = repoHasE2e(workspace.repos, taskRepo);
+
   const change = (patch: Partial<TaskFormValues>) => {
-    setValues((v) => ({ ...v, ...patch }));
+    setValues((v) => ({ ...v, ...withRepoE2e(patch, workspace.repos) }));
     setErrors({});
     clearError();
   };
@@ -109,9 +114,10 @@ function NewTaskForm({ workspace, board, onBoard, onClose, onOpenIntake, repos, 
         title: values.title.trim(),
         task: values.task.trim(),
         depends_on: values.depends_on,
-        repo: multiRepo ? repoValue(repo) : null,
+        repo: taskRepo,
         model: sanitizeModel(values.model),
         kind: values.kind,
+        e2e: values.e2e && e2eConfigured,
       });
       created = findCreatedTask(next, values.title, previous);
       return next;
@@ -152,6 +158,7 @@ function NewTaskForm({ workspace, board, onBoard, onClose, onOpenIntake, repos, 
         tasks={tasks}
         selfId={null}
         repoChoices={repoChoices}
+        e2eConfigured={e2eConfigured}
         modelPlaceholder={workspace.worker_model || "predefinito dei worker"}
         disabled={busy}
       />

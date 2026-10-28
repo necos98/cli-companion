@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import DetailActions from "./DetailActions";
+import DetailE2e from "./DetailE2e";
 import DetailFacts from "./DetailFacts";
 import DetailResult from "./DetailResult";
 import DetailSection from "./DetailSection";
 import Markdown from "./Markdown";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { TaskE2eBadge } from "./E2eBadges";
 import TaskEditForm from "./TaskEditForm";
 import { useCommand } from "./useDetailCommand";
 import {
@@ -22,6 +24,7 @@ import { isReview } from "../../lib/review";
 import { isMultiRepo, repoOptions } from "../../lib/taskForm";
 import { openExternal } from "../../lib/openExternal";
 import { api } from "../../lib/tauri";
+import type { Workspace } from "../../lib/tauri";
 import { cn } from "../../lib/utils";
 
 const NO_REPOS: string[] = [];
@@ -45,6 +48,8 @@ export interface TaskDetailProps {
   onSelectTask: (taskId: string) => void;
   /** Repository rilevati del workspace (più quelli dei task); assente = solo quelli dei task. */
   repos?: string[];
+  /** Configurazione per repository del workspace (`Workspace.repos`): dice dove gli E2E sono configurati. */
+  repoConfigs?: Workspace["repos"];
   /** Modello predefinito dei worker, come segnaposto del campo modello. */
   defaultModel?: string | null;
   /** Il tab del worker esiste ancora? Assente = si assume di sì. */
@@ -63,6 +68,7 @@ export default function TaskDetail({
   onOpenTerminal,
   onSelectTask,
   repos = NO_REPOS,
+  repoConfigs,
   defaultModel = null,
   isTabOpen,
   now,
@@ -103,6 +109,7 @@ export default function TaskDetail({
           </span>
           {isReview(task) && <ReviewBadge className="text-xs" />}
           <VerdictBadge task={task} className="text-xs" />
+          <TaskE2eBadge task={task} className="text-xs" />
           <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={task.id}>
             {task.id}
           </span>
@@ -146,12 +153,14 @@ export default function TaskDetail({
             board={board}
             onBoard={onBoard}
             repoChoices={repoChoices}
+            repoConfigs={repoConfigs}
             modelPlaceholder={defaultModel || "predefinito dei worker"}
             onDone={() => setEditing(false)}
           />
         ) : (
           <>
             <DetailResult task={task} />
+            <DetailE2e workspaceId={workspaceId} task={task} />
             {task.note && (
               <DetailSection title="Nota">
                 <p

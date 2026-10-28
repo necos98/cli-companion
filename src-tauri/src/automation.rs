@@ -939,5 +939,27 @@ pub async fn e2e_last_result(
     .await
 }
 
+/// Apre il report JUnit dell'ultima esecuzione E2E del task `task_id` o, senza,
+/// del repository `repo`, con l'applicazione predefinita di Windows.
+#[tauri::command]
+pub async fn e2e_open_report(
+    app: AppHandle,
+    workspace_id: String,
+    task_id: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    crate::blocking(move || {
+        let file = e2e::report::report_file(
+            &app.state::<AutomationState>(),
+            &TauriHost(app.clone()),
+            &workspace_id,
+            task_id.as_deref(),
+            repo.as_deref(),
+        )?;
+        crate::workspaces::open_in_explorer(file.as_os_str())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests;

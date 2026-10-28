@@ -8,7 +8,8 @@
 //! - `runs`: esecuzioni in corso, porte riservate, ultimi esiti manuali;
 //! - `job`: l'esecuzione in background;
 //! - `tools`: i tool MCP `run_e2e` e `get_e2e_result`;
-//! - `manual`: l'esecuzione a mano di un repository, dalla UI.
+//! - `manual`: l'esecuzione a mano di un repository, dalla UI;
+//! - `report`: il file del report da aprire dalla UI.
 //!
 //! Qui: il `Registry` (esito sul task, blocco della consegna, annullamento) e
 //! il calcolo dell'impronta.
@@ -20,6 +21,7 @@ use crate::board::{check_gate, CodeFingerprint, E2eRun, GateOutcome};
 mod job;
 mod junit;
 pub(super) mod manual;
+pub(super) mod report;
 pub(super) mod runs;
 pub(super) mod tools;
 mod verdict;
