@@ -1,0 +1,365 @@
+{
+  "configs": [
+    {
+      "config": "q4_k_m",
+      "not_runnable": null,
+      "resources": {
+        "vram": {
+          "baseline_mib": 913,
+          "peak_mib": 5971,
+          "samples": 1594,
+          "error": null
+        },
+        "peak_ram_mib": 7852.7578125
+      },
+      "overall": {
+        "runs_total": 20,
+        "runs_passed": 0,
+        "steps_total": 35,
+        "steps_passed": 0,
+        "steps_skipped": 15,
+        "actions_per_step": {
+          "n": 20,
+          "mean": 15.0,
+          "median": 15.0,
+          "p95": 15.0,
+          "max": 15.0
+        },
+        "total_actions": 300,
+        "invalid_actions": 0,
+        "invalid_rate": 0.0,
+        "invalid_by_kind": {},
+        "multiple_call_turns": 0,
+        "false_successes": 1,
+        "false_failures": 0,
+        "step_ms": {
+          "n": 20,
+          "mean": 23795.7,
+          "median": 23313.5,
+          "p95": 31928.0,
+          "max": 32652.0
+        },
+        "prompt_tokens": {
+          "n": 300,
+          "mean": 1560.8166666666666,
+          "median": 1576.5,
+          "p95": 1867.0,
+          "max": 2030.0
+        },
+        "generated_tokens": {
+          "n": 300,
+          "mean": 16.64666666666667,
+          "median": 11.0,
+          "p95": 36.0,
+          "max": 193.0
+        },
+        "prefill_tokens_per_s": {
+          "n": 300,
+          "mean": 8052.39269772255,
+          "median": 8527.708740258302,
+          "p95": 9022.630764556678,
+          "max": 9264.894840062216
+        },
+        "generation_tokens_per_s": {
+          "n": 300,
+          "mean": 135.31978280441243,
+          "median": 144.19035956810927,
+          "p95": 156.57048020166278,
+          "max": 162.21803030232806
+        },
+        "snapshot_tokens": {
+          "n": 300,
+          "mean": 665.1933333333334,
+          "median": 671.5,
+          "p95": 740.0,
+          "max": 745.0
+        },
+        "end_reasons": {
+          "budget_exhausted": 19,
+          "done": 1,
+          "skipped": 15
+        }
+      },
+      "scenarios": [
+        {
+          "scenario": "S1",
+          "aggregate": {
+            "runs_total": 5,
+            "runs_passed": 0,
+            "steps_total": 5,
+            "steps_passed": 0,
+            "steps_skipped": 0,
+            "actions_per_step": {
+              "n": 5,
+              "mean": 15.0,
+              "median": 15.0,
+              "p95": 15.0,
+              "max": 15.0
+            },
+            "total_actions": 75,
+            "invalid_actions": 0,
+            "invalid_rate": 0.0,
+            "invalid_by_kind": {},
+            "multiple_call_turns": 0,
+            "false_successes": 0,
+            "false_failures": 0,
+            "step_ms": {
+              "n": 5,
+              "mean": 22960.6,
+              "median": 22979.0,
+              "p95": 23011.0,
+              "max": 23011.0
+            },
+            "prompt_tokens": {
+              "n": 75,
+              "mean": 1559.96,
+              "median": 1577.0,
+              "p95": 1811.0,
+              "max": 1825.0
+            },
+            "generated_tokens": {
+              "n": 75,
+              "mean": 13.92,
+              "median": 11.0,
+              "p95": 35.0,
+              "max": 36.0
+            },
+            "prefill_tokens_per_s": {
+              "n": 75,
+              "mean": 8586.558648248187,
+              "median": 8621.732410456287,
+              "p95": 9105.549117288503,
+              "max": 9184.410813293083
+            },
+            "generation_tokens_per_s": {
+              "n": 75,
+              "mean": 143.6453159344358,
+              "median": 147.77597162701343,
+              "p95": 154.66468695867357,
+              "max": 155.52099533437016
+            },
+            "snapshot_tokens": {
+              "n": 75,
+              "mean": 679.1066666666667,
+              "median": 688.0,
+              "p95": 694.0,
+              "max": 694.0
+            },
+            "end_reasons": {
+              "budget_exhausted": 5
+            }
+          }
+        },
+        {
+          "scenario": "S1-it",
+          "aggregate": {
+            "runs_total": 5,
+            "runs_passed": 0,
+            "steps_total": 5,
+            "steps_passed": 0,
+            "steps_skipped": 0,
+            "actions_per_step": {
+              "n": 5,
+              "mean": 15.0,
+              "median": 15.0,
+              "p95": 15.0,
+              "max": 15.0
+            },
+            "total_actions": 75,
+            "invalid_actions": 0,
+            "invalid_rate": 0.0,
+            "invalid_by_kind": {},
+            "multiple_call_turns": 0,
+            "false_successes": 1,
+            "false_failures": 0,
+            "step_ms": {
+              "n": 5,
+              "mean": 20204.2,
+              "median": 22586.0,
+              "p95": 22678.0,
+              "max": 22678.0
+            },
+            "prompt_tokens": {
+              "n": 75,
+              "mean": 1651.4533333333334,
+              "median": 1681.0,
+              "p95": 1970.0,
+              "max": 2030.0
+            },
+            "generated_tokens": {
+              "n": 75,
+              "mean": 25.906666666666666,
+              "median": 18.0,
+              "p95": 46.0,
+              "max": 193.0
+            },
+            "prefill_tokens_per_s": {
+              "n": 75,
+              "mean": 8640.607242781967,
+              "median": 8674.336364471386,
+              "p95": 9168.72872160249,
+              "max": 9264.894840062216
+            },
+            "generation_tokens_per_s": {
+              "n": 75,
+              "mean": 143.17798315573097,
+              "median": 145.91523183355363,
+              "p95": 158.06160683569962,
+              "max": 158.7247599288006
+            },
+            "snapshot_tokens": {
+              "n": 75,
+              "mean": 701.3466666666667,
+              "median": 710.0,
+              "p95": 745.0,
+              "max": 745.0
+            },
+            "end_reasons": {
+              "budget_exhausted": 4,
+              "done": 1
+            }
+          }
+        },
+        {
+          "scenario": "S2",
+          "aggregate": {
+            "runs_total": 5,
+            "runs_passed": 0,
+            "steps_total": 5,
+            "steps_passed": 0,
+            "steps_skipped": 0,
+            "actions_per_step": {
+              "n": 5,
+              "mean": 15.0,
+              "median": 15.0,
+              "p95": 15.0,
+              "max": 15.0
+            },
+            "total_actions": 75,
+            "invalid_actions": 0,
+            "invalid_rate": 0.0,
+            "invalid_by_kind": {},
+            "multiple_call_turns": 0,
+            "false_successes": 0,
+            "false_failures": 0,
+            "step_ms": {
+              "n": 5,
+              "mean": 26468.8,
+              "median": 24576.0,
+              "p95": 32652.0,
+              "max": 32652.0
+            },
+            "prompt_tokens": {
+              "n": 75,
+              "mean": 1564.1733333333334,
+              "median": 1592.0,
+              "p95": 1823.0,
+              "max": 1826.0
+            },
+            "generated_tokens": {
+              "n": 75,
+              "mean": 13.346666666666666,
+              "median": 11.0,
+              "p95": 36.0,
+              "max": 37.0
+            },
+            "prefill_tokens_per_s": {
+              "n": 75,
+              "mean": 7431.891951043728,
+              "median": 8390.213092751688,
+              "p95": 8947.713196760362,
+              "max": 9018.859672274548
+            },
+            "generation_tokens_per_s": {
+              "n": 75,
+              "mean": 126.55477142809629,
+              "median": 142.3305199333893,
+              "p95": 154.81793410948725,
+              "max": 157.31432976229803
+            },
+            "snapshot_tokens": {
+              "n": 75,
+              "mean": 671.28,
+              "median": 671.0,
+              "p95": 689.0,
+              "max": 689.0
+            },
+            "end_reasons": {
+              "budget_exhausted": 5
+            }
+          }
+        },
+        {
+          "scenario": "S3",
+          "aggregate": {
+            "runs_total": 5,
+            "runs_passed": 0,
+            "steps_total": 20,
+            "steps_passed": 0,
+            "steps_skipped": 15,
+            "actions_per_step": {
+              "n": 5,
+              "mean": 15.0,
+              "median": 15.0,
+              "p95": 15.0,
+              "max": 15.0
+            },
+            "total_actions": 75,
+            "invalid_actions": 0,
+            "invalid_rate": 0.0,
+            "invalid_by_kind": {},
+            "multiple_call_turns": 0,
+            "false_successes": 0,
+            "false_failures": 0,
+            "step_ms": {
+              "n": 5,
+              "mean": 25549.2,
+              "median": 24101.0,
+              "p95": 31928.0,
+              "max": 31928.0
+            },
+            "prompt_tokens": {
+              "n": 75,
+              "mean": 1467.68,
+              "median": 1483.0,
+              "p95": 1709.0,
+              "max": 1747.0
+            },
+            "generated_tokens": {
+              "n": 75,
+              "mean": 13.413333333333334,
+              "median": 11.0,
+              "p95": 35.0,
+              "max": 37.0
+            },
+            "prefill_tokens_per_s": {
+              "n": 75,
+              "mean": 7550.51294881631,
+              "median": 8391.646998744012,
+              "p95": 8964.128680770427,
+              "max": 9021.279088499334
+            },
+            "generation_tokens_per_s": {
+              "n": 75,
+              "mean": 127.90106069938616,
+              "median": 140.54616238703605,
+              "p95": 157.80337699226766,
+              "max": 162.21803030232806
+            },
+            "snapshot_tokens": {
+              "n": 75,
+              "mean": 609.04,
+              "median": 625.0,
+              "p95": 644.0,
+              "max": 644.0
+            },
+            "end_reasons": {
+              "budget_exhausted": 5,
+              "skipped": 15
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

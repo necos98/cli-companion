@@ -23,3 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 /src-tauri/target
+
+# Esperimento E2E: cache, build e risultati grezzi
+/experiments/e2e-spike/.cache
+/experiments/e2e-spike/target
+/experiments/e2e-spike/results/**/*.jsonl
+/experiments/e2e-spike/results/**/*.log
