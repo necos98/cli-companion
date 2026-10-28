@@ -2,7 +2,7 @@
 //! consegna della modalita' del workspace (vedi docs/BOARD.MD, "Istruzioni di
 //! consegna"). Funzioni pure: `get_task` le assembla.
 
-use super::Task;
+use super::{Task, TaskKind};
 use crate::workspaces::{Delivery, DeliveryMode, RepoConfig};
 
 /// Standard di ingegneria che ogni worker riceve, prima delle regole del workspace.
@@ -101,18 +101,30 @@ pub fn environment(e: &EnvInfo) -> String {
     s.push_str(&format!("- Repository checkout: {}\n", e.repo_dir));
     s.push_str(&format!("- Your working folder: {}\n", e.workdir));
     s.push_str(&format!("- Delivery mode: {}\n", mode_label(e.delivery)));
+    let reviewing = t.kind == TaskKind::Review;
     match (e.worktree(), &t.worktree) {
+        (true, Some(w)) if reviewing => s.push_str(&format!(
+            "- Git worktree: branch {} (created from {}), already containing the integrated work. Do not commit on it.\n",
+            w.branch, w.base
+        )),
         (true, Some(w)) => s.push_str(&format!(
             "- Git worktree: branch {} (created from {}). Work and commit here, on this branch; the repository checkout belongs to the user and other tasks.\n",
             w.branch, w.base
         )),
+        _ if reviewing => s.push_str(
+            "- No dedicated worktree: you review directly in the repository checkout, on the branch that is currently checked out. Do not create branches.\n",
+        ),
         _ if e.delivery.uses_branches() => s.push_str(
             "- No dedicated worktree: you work directly in the repository checkout and create the branch yourself (see the delivery steps).\n",
         ),
         _ => s.push_str("- No dedicated worktree: you work directly in the repository checkout, on the branch that is currently checked out.\n"),
     }
     if let (Some(b), Some(base)) = (e.branch, e.base) {
-        s.push_str(&format!("- Task branch: {b}; base branch: {base}\n"));
+        if reviewing {
+            s.push_str(&format!("- Base branch: {base}\n"));
+        } else {
+            s.push_str(&format!("- Task branch: {b}; base branch: {base}\n"));
+        }
     }
     let prepared = e.worktree() && t.worktree.as_ref().is_some_and(|w| w.setup_done);
     if let Some(cfg) = e.repo_cfg.filter(|c| c.has_setup() && prepared) {

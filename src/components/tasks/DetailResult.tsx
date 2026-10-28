@@ -4,7 +4,13 @@ import { cn } from "../../lib/utils";
 import { prUrl } from "../../lib/board";
 import type { Task, TaskReport, TaskTestResult } from "../../lib/board";
 import { openExternal } from "../../lib/openExternal";
-import { FINDINGS_TITLE, reviewFindings } from "../../lib/review";
+import { reviewFindings } from "../../lib/review";
+import type { FindingsList } from "../../lib/review";
+
+const FINDINGS_TONE: Record<FindingsList["tone"], { box: string; title: string }> = {
+  attention: { box: "border-status-attention/50", title: "text-status-attention" },
+  neutral: { box: "", title: "text-muted-foreground" },
+};
 
 const TEST_MARK: Record<string, { mark: string; sr: string; className: string }> = {
   passed: { mark: "✓", sr: "superato", className: "text-status-finished" },
@@ -53,11 +59,11 @@ function Body({ report, task }: { report: TaskReport; task: Task }) {
   const findings = reviewFindings(task);
   return (
     <>
-      {findings.length > 0 && (
-        <div className="flex flex-col gap-1 rounded-md border border-status-attention/50 px-2.5 py-2 text-xs">
-          <span className="font-medium text-status-attention">{FINDINGS_TITLE}</span>
+      {findings && (
+        <div className={cn("flex flex-col gap-1 rounded-md border px-2.5 py-2 text-xs", FINDINGS_TONE[findings.tone].box)}>
+          <span className={cn("font-medium", FINDINGS_TONE[findings.tone].title)}>{findings.title}</span>
           <ul className="list-disc pl-4 text-text-secondary">
-            {findings.map((f, i) => (
+            {findings.items.map((f, i) => (
               <li key={i} className="break-words">
                 {f}
               </li>

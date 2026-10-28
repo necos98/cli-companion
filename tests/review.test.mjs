@@ -50,13 +50,30 @@ describe("verdictBadge", () => {
 });
 
 describe("reviewFindings", () => {
-  it("elenca i findings non vuoti solo con issues", () => {
-    assert.deepEqual(reviewFindings(review()), ["bug 1", "bug 2"]);
+  const withReport = (verdict, findings) =>
+    review({ report: { status: "completed", summary: "", verdict, findings } });
+  it("issues: Problemi trovati con tono di avviso e findings non vuoti", () => {
+    assert.deepEqual(reviewFindings(review()), {
+      title: "Problemi trovati",
+      tone: "attention",
+      items: ["bug 1", "bug 2"],
+    });
   });
-  it("vuoto con passed (suggerimenti) o per i work", () => {
-    const passed = review({ report: { status: "completed", summary: "", verdict: "passed", findings: ["x"] } });
-    assert.deepEqual(reviewFindings(passed), []);
-    assert.deepEqual(reviewFindings(review({ kind: "work" })), []);
+  it("passed: Suggerimenti con tono neutro", () => {
+    assert.deepEqual(reviewFindings(withReport("passed", ["x", " "])), {
+      title: "Suggerimenti",
+      tone: "neutral",
+      items: ["x"],
+    });
+  });
+  it("niente senza findings, per i work o per una review non done", () => {
+    assert.equal(reviewFindings(withReport("passed", [])), null);
+    assert.equal(reviewFindings(withReport("passed", [" "])), null);
+    assert.equal(reviewFindings(withReport("passed")), null);
+    assert.equal(reviewFindings(withReport("issues", [])), null);
+    assert.equal(reviewFindings(review({ kind: "work" })), null);
+    assert.equal(reviewFindings(review({ status: "running" })), null);
+    assert.equal(reviewFindings(review({ report: null })), null);
   });
 });
 

@@ -2,7 +2,7 @@
 // dipendenze (solo tipi di board.ts), importabili sia dall'app sia dai test
 // `node --test`.
 
-import type { ReviewVerdict, Task, TaskKind, TaskSpec } from "./board.ts";
+import type { ReviewVerdict, Task, TaskKind } from "./board.ts";
 
 export const REVIEW_LABEL = "Review";
 export const REVIEW_OPTION_LABEL = "Task di revisione";
@@ -10,6 +10,7 @@ export const REVIEW_OPTION_HELP =
   "Verifica i task da cui dipende e ne riporta l'esito (Verificato / Problemi trovati).";
 export const REVIEW_NEEDS_DEPENDENCY = "Una review deve dipendere da almeno un task (quelli che verifica)";
 export const FINDINGS_TITLE = "Problemi trovati";
+export const SUGGESTIONS_TITLE = "Suggerimenti";
 
 type Kinded = { kind?: TaskKind | null };
 
@@ -37,10 +38,21 @@ export function verdictBadge(task: Pick<Task, "kind" | "status" | "report">): Ve
   return verdict ? (VERDICT_BADGES[verdict] ?? null) : null;
 }
 
-/** Findings da mostrare nel dettaglio: solo per una review con verdetto `issues`. */
-export function reviewFindings(task: Pick<Task, "kind" | "status" | "report">): string[] {
-  if (verdictBadge(task)?.verdict !== "issues") return [];
-  return (task.report?.findings ?? []).filter((f) => f.trim() !== "");
+export interface FindingsList {
+  title: string;
+  /** `attention` per i problemi, `neutral` per i suggerimenti di una review superata. */
+  tone: "attention" | "neutral";
+  items: string[];
+}
+
+/** Elenco da mostrare nel dettaglio di una review `done` con findings: problemi (`issues`) o suggerimenti (`passed`). */
+export function reviewFindings(task: Pick<Task, "kind" | "status" | "report">): FindingsList | null {
+  const verdict = verdictBadge(task)?.verdict;
+  const items = (task.report?.findings ?? []).filter((f) => f.trim() !== "");
+  if (!verdict || items.length === 0) return null;
+  return verdict === "issues"
+    ? { title: FINDINGS_TITLE, tone: "attention", items }
+    : { title: SUGGESTIONS_TITLE, tone: "neutral", items };
 }
 
 /** Una review richiede almeno una dipendenza (come il backend). */
@@ -56,9 +68,4 @@ export function proposalHeading(
   const source = proposal.source_task;
   if (!source) return { title: "Proposta da Task Intake", origin: null };
   return { title: "Proposta dal reviewer", origin: tasks.find((t) => t.id === source)?.title ?? source };
-}
-
-/** Specifiche di review in una proposta (per il badge sulle righe). */
-export function reviewSpecIds(specs: Pick<TaskSpec, "id" | "kind">[]): Set<string> {
-  return new Set(specs.filter(isReview).map((s) => s.id));
 }

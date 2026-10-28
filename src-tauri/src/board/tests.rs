@@ -642,6 +642,47 @@ fn environment_describes_where_and_how_the_worker_runs() {
 }
 
 #[test]
+fn work_environment_is_unchanged_by_the_review_variant() {
+    let wt = "- Git worktree: branch task/a (created from origin/main). Work and commit here, on this branch; the repository checkout belongs to the user and other tasks.\n- Task branch: task/a; base branch: main\n";
+    let in_place_branch = "- No dedicated worktree: you work directly in the repository checkout and create the branch yourself (see the delivery steps).\n- Task branch: task/a; base branch: main\n";
+    let in_place = "- No dedicated worktree: you work directly in the repository checkout, on the branch that is currently checked out.\n";
+    let cases = [
+        (DeliveryMode::Pr, true, wt),
+        (DeliveryMode::LocalMerge, true, wt),
+        (DeliveryMode::Pr, false, in_place_branch),
+        (DeliveryMode::LocalMerge, false, in_place_branch),
+        (DeliveryMode::Commit, false, in_place),
+        (DeliveryMode::Push, true, in_place),
+    ];
+    for (mode, parallel, expected) in cases {
+        let d = delivery(mode, parallel);
+        let text = texts::environment(&env(&d, &worktree_task(&d), None));
+        assert!(text.contains(expected) && text.ends_with(expected), "{mode:?}/{parallel}:\n{text}");
+    }
+}
+
+fn review_environment(mode: DeliveryMode, parallel: bool) -> String {
+    let d = delivery(mode, parallel);
+    let mut t = worktree_task(&d);
+    t.kind = TaskKind::Review;
+    texts::environment(&env(&d, &t, None))
+}
+
+#[test]
+fn reviewer_environment_does_not_ask_to_commit_or_branch() {
+    let text = review_environment(DeliveryMode::Pr, true);
+    assert!(text.contains("branch task/a (created from origin/main), already containing the integrated work. Do not commit on it."), "{text}");
+    assert!(text.contains("- Base branch: main\n") && !text.contains("Work and commit here") && !text.contains("Task branch"), "{text}");
+    for mode in [DeliveryMode::Pr, DeliveryMode::LocalMerge] {
+        let text = review_environment(mode, false);
+        assert!(text.contains("you review directly in the repository checkout") && text.contains("Do not create branches."), "{text}");
+        assert!(!text.contains("create the branch yourself") && !text.contains("delivery steps") && !text.contains("Task branch"), "{text}");
+    }
+    let text = review_environment(DeliveryMode::Commit, false);
+    assert!(text.contains("you review directly in the repository checkout") && !text.contains("Base branch"), "{text}");
+}
+
+#[test]
 fn instructions_carry_rules_guardrails_and_the_working_folder() {
     let d = delivery(DeliveryMode::Commit, false);
     let t = worktree_task(&d);
