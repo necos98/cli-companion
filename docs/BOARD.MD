@@ -138,7 +138,7 @@ Proposal:
 }
 ```
 
-Limiti: 200 task per board, 20 task per proposta, 20 proposte pendenti per board.
+Limiti: 200 task per board, 20 task per proposta, 20 proposte pendenti per board. Il limite di 200 conta solo i task in coda o in esecuzione (`queued` e `running`): i task `done` e `failed` restano come storico e non contano.
 
 ### Stati e UI
 

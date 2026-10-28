@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
+/// Tetto ai task non conclusi (`queued` e `running`) di una board: `done` e
+/// `failed` restano come storico e non contano.
 pub const MAX_TASKS_PER_BOARD: usize = 200;
 pub const MAX_PENDING_PROPOSALS: usize = 20;
 pub const MAX_PARALLEL_LIMIT: u8 = 16;
@@ -485,6 +487,11 @@ impl Board {
 
     // --- task nuovi e proposte ---
 
+    /// Task ancora da concludere (`queued` o `running`): quelli che contano nel limite.
+    fn unfinished_count(&self) -> usize {
+        self.tasks.iter().filter(|t| matches!(t.status, TaskStatus::Queued | TaskStatus::Running)).count()
+    }
+
     /// Verifica i task nuovi contro la board: id validi e unici (anche rispetto
     /// a `reserved`, gli id delle altre proposte pendenti), dipendenze verso la
     /// proposta o task esistenti, niente cicli, limiti.
@@ -492,8 +499,8 @@ impl Board {
         if specs.is_empty() {
             return Err("tasks is empty".to_string());
         }
-        if self.tasks.len() + specs.len() > MAX_TASKS_PER_BOARD {
-            return Err(format!("too many tasks on the board (max {MAX_TASKS_PER_BOARD})"));
+        if self.unfinished_count() + specs.len() > MAX_TASKS_PER_BOARD {
+            return Err(format!("too many unfinished tasks on the board (max {MAX_TASKS_PER_BOARD} queued or running)"));
         }
         let mut seen: HashSet<&str> = self.tasks.iter().map(|t| t.id.as_str()).collect();
         for s in specs {

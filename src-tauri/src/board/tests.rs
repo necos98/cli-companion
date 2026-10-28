@@ -231,7 +231,35 @@ fn check_specs_validates_ids_graph_and_limits() {
     for i in 0..MAX_TASKS_PER_BOARD {
         full.tasks.push(Task::from_spec(spec(&format!("t{i}"), &[]), 0));
     }
-    assert!(full.check_specs(&[spec("extra", &[])], &none).unwrap_err().contains("too many tasks"));
+    assert!(full.check_specs(&[spec("extra", &[])], &none).unwrap_err().contains("too many unfinished tasks"));
+}
+
+#[test]
+fn board_limit_counts_only_queued_and_running_tasks() {
+    let none = HashSet::new();
+    let board_of = |statuses: &dyn Fn(usize) -> TaskStatus| {
+        let mut b = Board::new("w");
+        for i in 0..MAX_TASKS_PER_BOARD {
+            let mut t = Task::from_spec(spec(&format!("t{i}"), &[]), 0);
+            t.status = statuses(i);
+            b.tasks.push(t);
+        }
+        b
+    };
+    // Storico: done e failed non contano, anche se riempiono la board.
+    let history = board_of(&|i| if i % 2 == 0 { TaskStatus::Done } else { TaskStatus::Failed });
+    assert!(history.check_specs(&[spec("extra", &[])], &none).is_ok());
+    // Running conta come queued.
+    let active = board_of(&|i| if i % 2 == 0 { TaskStatus::Running } else { TaskStatus::Queued });
+    assert!(active.check_specs(&[spec("extra", &[])], &none).unwrap_err().contains("too many unfinished tasks"));
+    // Board mista: 199 attivi + proposta da 2 sfora solo contando gli attivi.
+    let mut mixed = board_of(&|i| if i < MAX_TASKS_PER_BOARD - 1 { TaskStatus::Queued } else { TaskStatus::Done });
+    assert!(mixed.check_specs(&[spec("x1", &[])], &none).is_ok());
+    assert!(mixed.check_specs(&[spec("x1", &[]), spec("x2", &[])], &none).unwrap_err().contains("too many"));
+    // Il limite vale anche per la creazione a mano e per le proposte.
+    assert!(mixed.add_proposal("p-1".into(), "tab-1", None, vec![spec("x1", &[]), spec("x2", &[])], 1).is_err());
+    mixed.create_task(spec("x1", &[]), 1).unwrap();
+    assert!(mixed.create_task(spec("x2", &[]), 2).unwrap_err().contains("too many"));
 }
 
 #[test]
