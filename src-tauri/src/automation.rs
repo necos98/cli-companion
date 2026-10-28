@@ -757,9 +757,17 @@ pub fn user_input(app: &AppHandle, tab: &str) {
     st.run(&TauriHost(app.clone()), |r| r.user_input(tab, now_millis()));
 }
 
-/// Chiusura dell'app: salva le board con un salvataggio ancora in coda.
+/// Attesa massima, in tutto, della fine delle esecuzioni E2E annullate
+/// all'uscita: copre `process::KILL_WAIT` (10 s).
+const E2E_EXIT_WAIT: Duration = Duration::from_secs(12);
+
+/// Chiusura dell'app: annulla le esecuzioni E2E in corso (uccidendone l'albero
+/// di processi), poi salva le board con un salvataggio ancora in coda. Prima
+/// le E2E, cosi' l'esito "cancelled" finisce sul task salvato.
 pub fn flush_on_exit(app: &AppHandle) {
-    app.state::<AutomationState>().flush_pending_saves(&TauriHost(app.clone()));
+    let st = app.state::<AutomationState>();
+    st.e2e.cancel_all_and_wait(E2E_EXIT_WAIT);
+    st.flush_pending_saves(&TauriHost(app.clone()));
 }
 
 /// Carica le board salvate (all'avvio dell'app), normalizzando quelle della

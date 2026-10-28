@@ -13,7 +13,7 @@ use crate::board::E2eRun;
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Tentativi di trovare una porta libera non gia' riservata da un'altra esecuzione.
 const PORT_ATTEMPTS: usize = 20;
@@ -125,15 +125,32 @@ impl E2eRuns {
         }
     }
 
+    /// Chiusura dell'app: annulla tutte le esecuzioni in corso e aspetta, al
+    /// massimo `timeout` in tutto, che i loro guard vengano rilasciati (cioe'
+    /// che l'albero di processi sia stato ucciso). Senza esecuzioni ritorna
+    /// subito. L'attesa avviene fuori dal mutex della mappa.
+    pub(crate) fn cancel_all_and_wait(&self, timeout: Duration) {
+        let pending: Vec<Done> = self
+            .lock()
+            .active
+            .values()
+            .map(|run| {
+                run.cancel.cancel();
+                Arc::clone(&run.done)
+            })
+            .collect();
+        let deadline = Instant::now() + timeout;
+        for done in &pending {
+            wait_done(done, deadline.saturating_duration_since(Instant::now()));
+        }
+    }
+
     /// Aspetta fino a `timeout` che l'esecuzione `run_id` finisca (subito se
     /// non e' in corso). Il mutex della mappa non e' in mano durante l'attesa.
     pub(super) fn wait(&self, run_id: &str, timeout: Duration) {
         let done = self.lock().active.values().find(|r| r.run_id == run_id).map(|r| Arc::clone(&r.done));
         if let Some(done) = done {
-            let (finished, signal) = &*done;
-            let guard = finished.lock().unwrap_or_else(PoisonError::into_inner);
-            // Scaduto o finito: in entrambi i casi chi chiama rilegge lo stato.
-            drop(signal.wait_timeout_while(guard, timeout, |finished| !*finished));
+            wait_done(&done, timeout);
         }
     }
 
@@ -149,6 +166,14 @@ impl E2eRuns {
     pub(crate) fn reserved_ports(&self) -> Vec<u16> {
         self.lock().ports.iter().copied().collect()
     }
+}
+
+/// Aspetta fino a `timeout` il segnale di fine. Scaduto o finito: in entrambi
+/// i casi chi chiama rilegge lo stato.
+fn wait_done(done: &Done, timeout: Duration) {
+    let (finished, signal) = &**done;
+    let guard = finished.lock().unwrap_or_else(PoisonError::into_inner);
+    drop(signal.wait_timeout_while(guard, timeout, |finished| !*finished));
 }
 
 /// Possesso di una cartella: al drop (anche per un panic) la cartella e la
@@ -246,6 +271,55 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         drop(guard);
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn cancel_all_cancels_every_run_and_returns_once_the_guards_drop() {
+        let runs = Arc::new(E2eRuns::default());
+        let guards = vec![
+            claim(&runs, "f", task("a")),
+            claim(&runs, "g", Owner::Repo { ws: "ws-1".into(), repo: ".".into() }),
+            claim(&runs, "h", Owner::Task { ws: "ws-2".into(), task: "a".into() }),
+        ];
+        let flags: Vec<CancelFlag> = guards.iter().map(|g| g.cancel.clone()).collect();
+        // Come il job: vede il flag, "uccide l'albero" e rilascia il guard.
+        let jobs: Vec<_> = guards
+            .into_iter()
+            .map(|guard| {
+                std::thread::spawn(move || {
+                    while !guard.cancel.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    drop(guard);
+                })
+            })
+            .collect();
+        let started = Instant::now();
+        runs.cancel_all_and_wait(Duration::from_secs(20));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(flags.iter().all(CancelFlag::is_cancelled));
+        assert!(runs.reserved_ports().is_empty());
+        jobs.into_iter().for_each(|job| job.join().unwrap());
+    }
+
+    #[test]
+    fn cancel_all_without_runs_returns_immediately() {
+        let started = Instant::now();
+        E2eRuns::default().cancel_all_and_wait(Duration::from_secs(20));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cancel_all_gives_up_at_the_total_deadline_when_a_guard_never_drops() {
+        let runs = Arc::new(E2eRuns::default());
+        let stuck = [claim(&runs, "f", task("a")), claim(&runs, "g", task("b"))];
+        let started = Instant::now();
+        runs.cancel_all_and_wait(Duration::from_millis(100));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(100));
+        // Scadenza totale, non per esecuzione.
+        assert!(elapsed < Duration::from_millis(190), "{elapsed:?}");
+        assert!(stuck.iter().all(|g| g.cancel.is_cancelled()));
     }
 
     #[test]

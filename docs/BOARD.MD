@@ -506,7 +506,9 @@ e messaggio sono troncati (300, 300, 500 caratteri).
 
 **Annullamento.** Le esecuzioni di un task si annullano quando il task lascia `running`
 (completato, fallito, "Ferma", tab chiuso o agente uscito) e quelle del workspace quando lo si
-archivia o rimuove. L'esecuzione annullata finisce `error` ("cancelled") senza leggere il JUnit.
+archivia o rimuove. All'uscita dell'app si annullano tutte le esecuzioni in corso (di task e
+manuali) e si aspetta, al massimo 12 s in tutto, che il loro albero di processi sia terminato,
+prima di salvare le board; senza esecuzioni in corso l'uscita non aspetta. L'esecuzione annullata finisce `error` ("cancelled") senza leggere il JUnit.
 Il processo e tutti i suoi discendenti (cmd, npx, node, browser) si uccidono: su Windows con
 `taskkill /PID <pid> /T /F`; in WSL prima i processi Linux il cui ambiente contiene il marcatore
 `CLI_COMPANION_RUN=<marcatore univoco>` (ereditato dai discendenti; lo script gira nella distro
