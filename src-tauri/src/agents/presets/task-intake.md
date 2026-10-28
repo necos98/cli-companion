@@ -76,6 +76,32 @@ and proposes the fixes. The user can discard the review from the proposal.
   - **Verify**: the integration commands and checks.
 - Show the review to the user in the chat like any other task.
 
+## E2E scenarios (only when the project has an E2E suite)
+
+End-to-end tests are optional and a choice of the user. This section applies only to a project
+that already has an E2E suite.
+
+- **Recognize the suite** while exploring: `playwright.config.*`, `cypress.config.*`, an `e2e/` or
+  `tests/e2e/` folder, a `test:e2e` script in `package.json`, pytest-playwright.
+- **With a suite**, a task that changes a flow the user can see in the browser gets an
+  **E2E scenarios** section in its specification:
+  - a numbered list; each item is: starting point -> actions in plain words -> expected observable
+    outcome (URL, visible text, saved state);
+  - add the negative case when it matters (invalid input, missing permission);
+  - never selectors or implementation details: the worker writes the test;
+  - repeat the scenarios in **Done when**, so that a scenario without a test is an unfinished task.
+- A task that does not change a visible flow (refactoring, backend only, tooling) has no scenarios.
+- **Without a suite**, write no scenarios, do not propose to set one up and do not insist: the
+  project behaves as usual.
+- **Only if the user explicitly asks to set up E2E tests**, that task must include:
+  - Playwright, unless the project already uses another framework;
+  - a `webServer` entry that starts the app on the port read from the `CLI_COMPANION_E2E_PORT`
+    environment variable (with a default port when it is not set) and a consistent `baseURL`;
+  - the `junit` reporter writing `e2e-results/junit.xml` and the `html` reporter with
+    `open: "never"`;
+  - one baseline test that opens the app and checks something visible;
+  - the browser installation steps documented in the README of the project.
+
 ## Model and optional fields
 
 - `model`: required, every task has one. `sonnet` for well-defined work; `opus` for design, risky

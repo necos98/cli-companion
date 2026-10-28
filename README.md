@@ -127,7 +127,10 @@ completo in [docs/BOARD.MD](docs/BOARD.MD)):
 
 - **Task Intake**: un tab di Claude Code a cui descrivi il lavoro. Esplora il repository,
   scrive una specifica completa e la **propone** (`propose_tasks`); tu la accetti o la scarti
-  dal pannello Task. Non riceve eventi e non viene mai svegliato.
+  dal pannello Task. Non riceve eventi e non viene mai svegliato. Se il progetto ha gia una
+  suite E2E, aggiunge alle specifiche dei task con flussi visibili degli scenari in linguaggio
+  naturale: i worker li trasformano in test e il reviewer esegue la suite. Gli E2E restano
+  opzionali: senza suite non cambia nulla.
 - **App**: lo scheduler deterministico avvia i task "Da fare" in ordine, rispettando
   dipendenze, slot, fasce orarie e modalità di consegna; prepara e pulisce i worktree e
   raccoglie l'esito.

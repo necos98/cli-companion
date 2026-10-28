@@ -75,6 +75,8 @@ mod tests {
             "propose_tasks", "list_tasks", "get_task_details", "update_task", "delete_task", "Goal", "Context",
             "Constraints", "Done when", "Verify", "depends_on", "Task panel", "get_workspace_settings",
             "propose_settings", "Project Setup", "Goal review", "kind: \"review\"", "all** the tasks",
+            "E2E scenarios", "playwright.config", "CLI_COMPANION_E2E_PORT", "e2e-results/junit.xml",
+            "open: \"never\"", "explicitly asks",
         ] {
             assert!(skill.contains(t), "{t}");
         }

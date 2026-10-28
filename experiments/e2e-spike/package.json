@@ -1,8 +1,0 @@
-{
-  "name": "e2e-spike",
-  "private": true,
-  "description": "Dipendenze Node dell'esperimento E2E",
-  "dependencies": {
-    "agent-browser": "0.40.0"
-  }
-}

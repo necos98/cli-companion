@@ -251,7 +251,7 @@ nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 del workspace, lo standard di `src-tauri/src/automation/worker_guardrails.md` (incluso con
 `include_str!`, in inglese): rispetto del progetto e dei pattern del framework, SOLID e codice
 pulito, niente file "god", sicurezza come bloccante (non un follow-up), prestazioni per
-progettazione, errori e casi limite, test come parte della modifica, rigore sul perimetro e
+progettazione, errori e casi limite, test come parte della modifica, **scenari E2E** (se la specifica ha una sezione E2E scenarios ogni scenario diventa un test della suite E2E del progetto, con locator rivolti all'utente, esiti osservabili, niente attese fisse e test indipendenti; la suite si esegue prima della consegna), rigore sul perimetro e
 **autorevisione severa** del proprio diff prima di consegnare. Le regole del workspace aggiungono
 specifiche del progetto e non allentano mai le regole di sicurezza.
 
@@ -380,7 +380,7 @@ tutti `done` (nessuna modifica allo scheduler).
   (`reviewer_instructions.md`) e i tool descritti in "Tool MCP". Non modifica file tracciati, non
   fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
   integrato con `git fetch origin` e `origin/<base>`. Legge le specifiche con `get_task_details`,
-  i diff dei task rivisti, esegue build e test richiesti, controlla ogni "Done when" e
+  i diff dei task rivisti, esegue build e test richiesti, se una specifica rivista ha scenari E2E esegue la suite E2E sullo stato integrato e controlla che ogni scenario abbia un test (scenario senza test o test che fallisce = difetto reale), controlla ogni "Done when" e
   l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali;
   i miglioramenti opzionali vanno in `findings` come suggerimenti.
 - **Esito**: `complete_task` con `verdict` `passed` o `issues` (+ `findings`), salvati nel
@@ -454,6 +454,7 @@ della conversazione), come faceva l'orchestratore.
 - Task Intake sa dei tool di impostazioni: se la richiesta riguarda la configurazione del
   workspace e non il lavoro sul codice, non crea un task ma usa `get_workspace_settings` /
   `propose_settings`, oppure suggerisce Project Setup.
+- **Scenari E2E (opzionali)**: se il progetto ha gia una suite E2E (`playwright.config.*`, `cypress.config.*`, cartelle `e2e/` o `tests/e2e/`, script `test:e2e`, pytest-playwright), per i task che cambiano un flusso visibile la specifica contiene una sezione **E2E scenarios**: elenco numerato punto di partenza -> azioni in parole semplici -> esito osservabile (con il caso negativo se conta), mai selettori, ripetuti in "Done when". I task senza flussi visibili non hanno scenari. Senza suite l'Intake non scrive scenari e non propone di configurarla. Solo su richiesta esplicita dell'utente il task di configurazione prevede Playwright (salvo un framework gia in uso), `webServer` sulla porta di `CLI_COMPANION_E2E_PORT` con `baseURL` coerente, reporter `junit` su `e2e-results/junit.xml` e `html` (`open: "never"`), un test di base e i browser documentati nel README.
 - **`project-setup`**, nome "Project Setup" (voce rapida `builtin:preset:project-setup`, skill
   `/cli-companion-notify:project-setup`). L'agente con cui l'utente configura il workspace e il
   modo in cui ci lavorano i worker. Skill (inglese): solo proposte, nessuna modifica diretta di
