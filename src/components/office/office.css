@@ -33,7 +33,6 @@
   position: absolute;
   top: 100%;
   left: 50%;
-  max-width: calc(var(--office-u) * 3.2);
   transform: translateX(-50%);
   overflow: hidden;
   font-size: max(8px, calc(var(--office-u) * 0.5));
@@ -73,7 +72,7 @@
   position: absolute;
   bottom: calc(100% + var(--office-u) * 0.1);
   left: 50%;
-  max-width: calc(var(--office-u) * 9);
+  max-width: calc(var(--office-u) * 4.8);
   padding: 0 calc(var(--office-u) * 0.3);
   transform: translateX(-50%);
   border: 1px solid var(--border-strong);

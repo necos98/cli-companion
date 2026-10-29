@@ -1,6 +1,6 @@
 import { memo } from "react";
 import type { CSSProperties } from "react";
-import { ACTIVITY_LABELS, BOT_HEIGHT, BOT_WIDTH, ROOM_WIDTH } from "../../lib/office";
+import { ACTIVITY_LABELS, BOT_HEIGHT, BOT_NAME_MAX_WIDTH, BOT_WIDTH, ROOM_WIDTH } from "../../lib/office";
 import type { BotActivity, BotPose, BotSpeed, Facing } from "../../lib/office";
 import BotSprite from "./BotSprite";
 import { botBubble } from "./botBubble";
@@ -69,7 +69,7 @@ function OfficeBot(p: Props) {
       onClick={() => p.onOpen(p.botKey)}
       onTransitionEnd={trip.onTransitionEnd}
     >
-      {bubble && !trip.walking && (
+      {bubble && (!trip.walking || bubble.tone === "alert") && (
         <span className={`office-bubble font-mono office-bubble--${bubble.tone}`} aria-hidden="true">
           <span className="office-bubble-text">{bubble.text}</span>
         </span>
@@ -81,7 +81,11 @@ function OfficeBot(p: Props) {
         intake={p.intake}
         running={p.speed === "run"}
       />
-      <span className="office-bot-name font-mono" aria-hidden="true">
+      <span
+        className="office-bot-name font-mono"
+        style={{ maxWidth: roomUnits(BOT_NAME_MAX_WIDTH) }}
+        aria-hidden="true"
+      >
         {p.name}
       </span>
     </button>

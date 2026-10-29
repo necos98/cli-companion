@@ -100,6 +100,7 @@ import { assignRestoredNames, pickBotName } from "./lib/bots";
 import { officeSession } from "./lib/office";
 import OfficeButton from "./components/office/OfficeButton";
 import OfficeView from "./components/office/OfficeView";
+import { useStableDesks } from "./components/office/useStableDesks";
 import { useOfficeShortcut } from "./components/office/useOfficeShortcut";
 
 interface Tab {
@@ -1085,6 +1086,7 @@ export default function App() {
         : [],
     [officeShown, tabs, busyByKey, builtinLaunches],
   );
+  const officeDesks = useStableDesks(tabs);
   const workspaceOrder = useMemo(() => visibleWorkspaces.map((w) => w.id), [visibleWorkspaces]);
 
   const attentionCount = countNeedingInput(statuses);
@@ -1340,6 +1342,7 @@ export default function App() {
               <OfficeView
                 sessions={officeSessions}
                 workspaceOrder={workspaceOrder}
+                desks={officeDesks}
                 onOpenBot={focusTerminal}
                 onClose={closeOffice}
               />

@@ -485,7 +485,9 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `tests/office.test.mjs`; `components/office/`): una stanza per workspace (nell'ordine della
   Sidebar), un bot per ogni tab aperto. La logica pura copre la mappatura dell'attivita'
   (working / idle / attention / background / completed / failed), le scrivanie stabili
-  (`assignDesks`), le stanze, la geometria (`roomLayout`: mobili, scrivanie, spot, aree
+  (`assignDesks`; la mappa la tiene `App` con `useStableDesks(tabs)`, su tutti i tab anche ad
+  Ufficio chiuso, quindi le scrivanie restano le stesse tra le aperture e si azzerano solo al
+  riavvio dell'app), le stanze, la geometria (`roomLayout`: mobili, scrivanie, spot, aree
   di chiacchiera, server), la pianificazione dell'idle con `random` e orologio iniettati
   (`planIdle`: mete di 4-10 s, chiacchiere di 2-3 bot della stessa stanza, mai due bot sullo
   stesso posto), i posti fissi per il movimento ridotto (`restingGoals`) e posizione/posa di

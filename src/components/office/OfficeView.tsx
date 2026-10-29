@@ -1,13 +1,12 @@
 import { useMemo } from "react";
 import { officeRooms } from "../../lib/office";
-import type { OfficeSession } from "../../lib/office";
+import type { DeskMap, OfficeSession } from "../../lib/office";
 import Logo from "../Logo";
 import OfficeHeader from "./OfficeHeader";
 import OfficeRoom from "./OfficeRoom";
 import { NO_GOALS, useIdleGoals } from "./useIdleGoals";
 import { useReducedMotion } from "./useReducedMotion";
 import { useRoomLayouts } from "./useRoomLayouts";
-import { useStableDesks } from "./useStableDesks";
 import "./office.css";
 
 /** Larghezza massima di una stanza sola e minima di ognuna quando sono piu' d'una. */
@@ -18,6 +17,8 @@ interface Props {
   sessions: readonly OfficeSession[];
   /** Ordine dei workspace nella Sidebar: le stanze lo seguono. */
   workspaceOrder: readonly string[];
+  /** Scrivanie dei bot, tenute da App per tutta la vita dei tab. */
+  desks: DeskMap;
   /** Click su un bot: porta al suo terminale (deve essere stabile). */
   onOpenBot: (key: string) => void;
   onClose: () => void;
@@ -25,12 +26,11 @@ interface Props {
 
 /**
  * L'Ufficio: una stanza per workspace con un bot per ogni tab aperto. Copre
- * l'area dei terminali (App lo monta solo mentre e' aperto, quindi desk, mete e
- * timer nascono a ogni apertura e muoiono alla chiusura).
+ * l'area dei terminali (App lo monta solo mentre e' aperto: mete e timer nascono a ogni
+ * apertura e muoiono alla chiusura; le scrivanie le tiene App, quindi restano).
  */
-export default function OfficeView({ sessions, workspaceOrder, onOpenBot, onClose }: Props) {
+export default function OfficeView({ sessions, workspaceOrder, desks, onOpenBot, onClose }: Props) {
   const reduced = useReducedMotion();
-  const desks = useStableDesks(sessions);
   const rooms = useMemo(() => officeRooms(sessions, workspaceOrder, desks), [sessions, workspaceOrder, desks]);
   const layoutFor = useRoomLayouts();
   const goals = useIdleGoals(rooms, layoutFor, reduced);

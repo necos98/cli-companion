@@ -8,6 +8,8 @@
 
 /** Larghezza della stanza (u). */
 export const ROOM_WIDTH = 24;
+/** Larghezza massima del nome sotto un bot (u): oltre, il nome si tronca. */
+export const BOT_NAME_MAX_WIDTH = 2.4;
 /** Dimensioni dello sprite di un bot (u). */
 export const BOT_WIDTH = 2;
 export const BOT_HEIGHT = 3;
@@ -107,7 +109,7 @@ function fixedFurniture(): Furniture[] {
     { kind: "server", x: 20.5, y: 1.5, w: 2.5, h: 4.5 },
     { kind: "coffee", x: 0.5, y: 4.2, w: 3, h: 2.8 },
     { kind: "plant", x: 8.6, y: 4.5, w: 1.4, h: 2.5 },
-    { kind: "sofa", x: 11, y: 5.6, w: 5, h: 2 },
+    { kind: "sofa", x: 10, y: 5.6, w: 7, h: 2 },
   ];
 }
 
@@ -116,9 +118,9 @@ function loungeSpots(): Spot[] {
     spot("coffee-0", "coffee", 4, 7.6, -1),
     spot("coffee-1", "coffee", 5.4, 8.2, -1),
     spot("plant-0", "plant", 7.4, 7.8, 1),
-    spot("sofa-0", "sofa", 12, 7.3, 1),
-    spot("sofa-1", "sofa", 13.5, 7.3, 1),
-    spot("sofa-2", "sofa", 15, 7.3, -1),
+    spot("sofa-0", "sofa", 11.2, 7.3, 1),
+    spot("sofa-1", "sofa", 13.6, 7.3, 1),
+    spot("sofa-2", "sofa", 16, 7.3, -1),
     spot("window-0", "window", 17.4, 6.6, -1),
     spot("window-1", "window", 18.8, 7.8, -1),
   ];

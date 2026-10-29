@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   ACTIVITY_LABELS,
+  BOT_NAME_MAX_WIDTH,
   DESKS_PER_ROW,
   IDLE_MAX_MS,
   IDLE_MIN_MS,
@@ -291,6 +292,17 @@ describe("roomLayout", () => {
       }
     });
   }
+
+  it("gli spot del divano sono distanti quanto un nome (i nomi non si sovrappongono)", () => {
+    const sofa = roomLayout(4).spots.filter((s) => s.kind === "sofa").sort((a, b) => a.x - b.x);
+    assert.equal(sofa.length, 3);
+    for (let i = 1; i < sofa.length; i++) {
+      assert.equal(sofa[i].y, sofa[i - 1].y);
+      assert.ok(sofa[i].x - sofa[i - 1].x >= BOT_NAME_MAX_WIDTH, `${sofa[i - 1].id}-${sofa[i].id}`);
+    }
+    const couch = roomLayout(4).furniture.find((f) => f.kind === "sofa");
+    for (const s of sofa) assert.ok(s.x >= couch.x && s.x <= couch.x + couch.w, s.id);
+  });
 
   it("e' deterministica e gli id restano stabili al crescere della stanza", () => {
     assert.deepEqual(roomLayout(8), roomLayout(8));

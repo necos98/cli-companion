@@ -114,7 +114,12 @@ pub async fn set_bot_settings(app: AppHandle, enabled: bool, names: Vec<String>)
 
 #[tauri::command]
 pub async fn reset_bot_names(app: AppHandle) -> Result<BotSettings, String> {
-    crate::blocking(move || update(&app, |s| s.names = default_names())).await
+    crate::blocking(move || update(&app, restore_default_names)).await
+}
+
+/// Rimette il pool di nomi predefinito; `enabled` resta com'e'.
+fn restore_default_names(s: &mut BotSettings) {
+    s.names = default_names();
 }
 
 /// Applica `f`, salva e solo poi aggiorna la memoria (se il salvataggio fallisce
@@ -145,6 +150,15 @@ mod tests {
         assert_eq!(s.names[0], "Bolt");
         assert_eq!(s.names.last().map(String::as_str), Some("Zed"));
         assert_eq!(BotSettingsStore::default().inner.lock().unwrap().clone(), s);
+    }
+
+    #[test]
+    fn restoring_names_keeps_enabled() {
+        for enabled in [true, false] {
+            let mut s = BotSettings { enabled, names: names(&["Ada"]) };
+            restore_default_names(&mut s);
+            assert_eq!(s, BotSettings { enabled, names: default_names() });
+        }
     }
 
     #[test]
