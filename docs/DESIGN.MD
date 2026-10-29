@@ -481,6 +481,26 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `PanelRunningCard` (`botOf(tab)` da `App`). Pagina Impostazioni › Generale › Bot
   (`settings/BotsPage.tsx`): interruttore, elenco con rimozione, aggiunta, ripristino
   con conferma; ogni modifica è salvata subito e risale ad `App` (`onBotSettingsChange`).
+- **Vista Ufficio** (`lib/office.ts` + `officeLayout.ts` + `officePlacement.ts`, zero-dep,
+  `tests/office.test.mjs`; `components/office/`): una stanza per workspace (nell'ordine della
+  Sidebar), un bot per ogni tab aperto. La logica pura copre la mappatura dell'attivita'
+  (working / idle / attention / background / completed / failed), le scrivanie stabili
+  (`assignDesks`), le stanze, la geometria (`roomLayout`: mobili, scrivanie, spot, aree
+  di chiacchiera, server), la pianificazione dell'idle con `random` e orologio iniettati
+  (`planIdle`: mete di 4-10 s, chiacchiere di 2-3 bot della stessa stanza, mai due bot sullo
+  stesso posto), i posti fissi per il movimento ridotto (`restingGoals`) e posizione/posa di
+  ogni bot (`botPlacement`). `OfficeView` e' un overlay z-30 sopra pannello Task, griglia e
+  Tasks Manager (z-20), montato solo mentre e' aperto (i `TerminalView` non si toccano; pannello
+  e griglia sono `inert` come col manager e l'`.xterm` col focus viene sfocato). L'unico timer
+  e' un `setInterval` da 1 s in `useIdleGoals`, attivo solo ad Ufficio aperto, senza movimento
+  ridotto e con almeno un bot in idle; le mete vivono li' (mai in `App`). Niente
+  `requestAnimationFrame`: i bot si spostano con una transizione CSS su left/top (durata =
+  distanza / velocita') e posa e camminata sono animazioni CSS (`office.css`, spente con
+  `prefers-reduced-motion`). Ctrl+Maiusc+O (`useOfficeShortcut`, fase di cattura come
+  Ctrl+Maiusc+B) e il pulsante "Ufficio" nel footer della Sidebar lo aprono/chiudono; non fa
+  nulla con un dialogo aperto o con i bot spenti (che lo chiudono). Il click su un bot chiama
+  `focusTerminal`; anche il click su un terminale della Sidebar, una notifica o l'apertura del
+  Tasks Manager lo chiudono.
 - `App.tsx`: layout barra del titolo + sidebar + area pannelli + barra di stato; stato globale
   (`workspaces`, `tabs`, `layout`, dialog). `tabs` è nell'ordine di creazione
   (ordine di render); gruppi, pannello attivo, ordine nella griglia e maximize
@@ -549,7 +569,7 @@ dello store in `setup` e tutti i comandi. Capability minime in
   caret sul menu degli avvii. Menu "⋯": avvii, "Gestisci avvii…", Rinomina, Elimina
   (`DropdownMenu modal={false}`; le Impostazioni si aprono con un `setTimeout` a menu
   chiuso). Rinomina inline, elimina con doppia conferma. Footer: Impostazioni (pallino
-  accent se c'e' un update) e versione (`getVersion()`).
+  accent se c'e' un update), pulsante "Ufficio" (solo con i bot attivi) e versione (`getVersion()`).
 - `components/PaneHeader.tsx` (30px): stato, etichetta mono (prefisso "workspace /" nella vista
   globale), parola di stato dell'agente, pin / massimizza / chiudi. Area dei pannelli su
   `--pane-area` con 6px di margine; pannello attivo col bordo accent; bersaglio di
@@ -597,7 +617,8 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `BoardView` restituita a `storeBoard`. `TaskPanel` / `GlobalTaskPanel` stanno a sinistra della griglia
   dei terminali (compresso/espanso per workspace in localStorage, `lib/taskPanelPrefs.ts`); `TasksManager`
   (Ctrl+Maiusc+B o pulsante "Tasks" della sidebar) copre pannello e griglia: i `TerminalView` restano
-  montati (regola del DOM sopra). `DependencyGraph` = React Flow (`@xyflow/react`) + auto-layout con
+  montati (regola del DOM sopra); la Vista Ufficio (z-30) sta sopra di lui, e aprire il manager con
+  l'Ufficio aperto chiude l'Ufficio. `DependencyGraph` = React Flow (`@xyflow/react`) + auto-layout con
   `@dagrejs/dagre` (`boardLayout.ts`). "Task Intake" (`openIntake` in `App.tsx`) apre un nuovo tab del
   preset `builtin:preset:task-intake` a ogni richiesta (più chat in parallelo); `PaneHeader` mostra il badge INTAKE (il `launchId` del
   tab è già persistito nella sessione). Dettagli in [BOARD.MD](BOARD.MD).

@@ -1,0 +1,462 @@
+/* Ufficio: bot, fumetti, animazioni. Tutte le misure sono in unita' stanza
+   (`--office-u`, dichiarata sulla stanza: vedi units.ts). Le animazioni sono
+   solo CSS; col movimento ridotto si spengono e restano le pose statiche. */
+
+/* ---------------------------------------------------------------- bot */
+
+.office-bot {
+  position: absolute;
+  z-index: var(--office-z);
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  /* Il bot cammina cambiando left/top: durata impostata dal componente. */
+  transform: translate(-50%, -100%);
+  transition-property: left, top;
+  transition-timing-function: linear;
+}
+
+/* Il bot sotto il mouse o col focus passa davanti a tutti: il fumetto resta leggibile. */
+.office-bot:hover,
+.office-bot:focus-visible {
+  z-index: 10000;
+}
+
+.office-bot:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.office-bot-name {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  max-width: calc(var(--office-u) * 3.2);
+  transform: translateX(-50%);
+  overflow: hidden;
+  font-size: max(8px, calc(var(--office-u) * 0.5));
+  line-height: 1.2;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px #000, 0 0 3px #000;
+  pointer-events: none;
+}
+
+.office-sprite {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.office-sprite[data-pose="slumped"] {
+  filter: saturate(0.5) brightness(0.8);
+}
+
+.office-board-label {
+  position: absolute;
+  overflow: hidden;
+  font-weight: 700;
+  line-height: calc(var(--office-u) * 1.1);
+  color: #1e293b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- fumetti */
+
+.office-bubble {
+  position: absolute;
+  bottom: calc(100% + var(--office-u) * 0.1);
+  left: 50%;
+  max-width: calc(var(--office-u) * 9);
+  padding: 0 calc(var(--office-u) * 0.3);
+  transform: translateX(-50%);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: max(9px, calc(var(--office-u) * 0.6));
+  font-weight: 600;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* Codina del fumetto. */
+.office-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translate(-50%, -3px) rotate(45deg);
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+
+.office-bubble-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.office-bubble--task {
+  border-color: var(--status-running);
+}
+
+.office-bubble--alert {
+  border-color: var(--status-attention);
+  animation: office-blink 1s steps(1) infinite;
+}
+
+.office-bubble--danger {
+  border-color: var(--destructive);
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+.office-bubble--danger::after {
+  border-color: var(--destructive);
+  background: var(--destructive);
+}
+
+.office-bubble--success {
+  border-color: var(--status-finished);
+  color: var(--status-finished);
+}
+
+/* Chiacchiere: i fumetti dei partecipanti si alternano (sfasati dal posto). */
+.office-bubble--chat {
+  opacity: 0;
+  animation: office-chat 3.6s steps(1) infinite;
+  animation-delay: calc(var(--office-seat) * 1.2s);
+}
+
+@keyframes office-chat {
+  0% {
+    opacity: 1;
+  }
+  33.3% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes office-blink {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------- pose dello sprite */
+
+/* Camminata: le gambe si alternano, il busto sobbalza a ogni passo. */
+.office-sprite[data-pose="walking"] {
+  --office-step: 0.5s;
+}
+
+.office-sprite[data-pose="walking"][data-running] {
+  --office-step: 0.3s;
+}
+
+.office-sprite[data-pose="walking"] .office-leg-l {
+  animation: office-step-a var(--office-step) steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="walking"] .office-leg-r {
+  animation: office-step-b var(--office-step) steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="walking"] .office-bob {
+  animation: office-bounce calc(var(--office-step) / 2) steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="walking"] .office-arm-l {
+  animation: office-swing-b var(--office-step) steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="walking"] .office-arm-r {
+  animation: office-swing-a var(--office-step) steps(1, end) infinite;
+}
+
+@keyframes office-step-a {
+  0% {
+    transform: translate(1px, 0);
+  }
+  50% {
+    transform: translate(-1px, -1px);
+  }
+}
+
+@keyframes office-step-b {
+  0% {
+    transform: translate(-1px, -1px);
+  }
+  50% {
+    transform: translate(1px, 0);
+  }
+}
+
+@keyframes office-swing-a {
+  0% {
+    transform: translateY(1px);
+  }
+  50% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes office-swing-b {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1px);
+  }
+}
+
+@keyframes office-bounce {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
+  }
+}
+
+/* Alla scrivania: le mani picchiettano sui tasti. */
+.office-sprite[data-pose="typing"] .office-arm-l,
+.office-sprite[data-pose="typing"] .office-arm-r {
+  animation: office-tap 0.3s steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="typing"] .office-arm-l {
+  animation-delay: 0.15s;
+}
+
+@keyframes office-tap {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1px);
+  }
+}
+
+/* Respiro: in piedi o seduti il busto scende di un pixel ogni tanto. */
+.office-sprite[data-pose="standing"] .office-bob,
+.office-sprite[data-pose="looking"] .office-bob,
+.office-sprite[data-pose="sitting"] .office-bob,
+.office-sprite[data-pose="waiting"] .office-bob,
+.office-sprite[data-pose="coffee"] .office-bob,
+.office-sprite[data-pose="raising-hand"] .office-bob {
+  animation: office-breath 2.4s steps(1, end) infinite;
+}
+
+@keyframes office-breath {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1px);
+  }
+}
+
+/* Guarda fuori dalla finestra / la pianta: la testa si sposta di tanto in tanto. */
+.office-sprite[data-pose="looking"] .office-head {
+  animation: office-look 4s steps(1, end) infinite;
+}
+
+@keyframes office-look {
+  0% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(1px, -1px);
+  }
+}
+
+/* Chiacchiera: annuisce e gesticola, sfasato dal posto. */
+.office-sprite[data-pose="chatting"] .office-head {
+  animation: office-nod 1.2s steps(1, end) infinite;
+  animation-delay: calc(var(--office-seat, 0) * -0.4s);
+}
+
+.office-sprite[data-pose="chatting"] .office-arm-r {
+  animation: office-gesture 0.8s steps(1, end) infinite;
+  animation-delay: calc(var(--office-seat, 0) * -0.3s);
+}
+
+@keyframes office-nod {
+  0% {
+    transform: translateY(0);
+  }
+  33% {
+    transform: translateY(1px);
+  }
+  66% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes office-gesture {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
+  }
+}
+
+/* Attenzione: agita la mano alzata. */
+.office-sprite[data-pose="raising-hand"] .office-arm-r {
+  animation: office-wave 0.6s steps(1, end) infinite;
+}
+
+@keyframes office-wave {
+  0% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(1px);
+  }
+}
+
+/* Consegna: salta di gioia a braccia alzate. */
+.office-sprite[data-pose="celebrating"] .office-jump {
+  animation: office-jump 0.6s steps(1, end) infinite;
+}
+
+.office-sprite[data-pose="celebrating"] .office-arm-l,
+.office-sprite[data-pose="celebrating"] .office-arm-r {
+  animation: office-wave 0.3s steps(1, end) infinite;
+}
+
+@keyframes office-jump {
+  0% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(-1px);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+  75% {
+    transform: translateY(-1px);
+  }
+}
+
+/* In attesa al server: batte il piede. */
+.office-sprite[data-pose="waiting"] .office-leg-r {
+  animation: office-foot 0.8s steps(1, end) infinite;
+}
+
+@keyframes office-foot {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
+  }
+}
+
+/* Caffe': un sorso ogni tanto e il vapore che sale. */
+.office-sprite[data-pose="coffee"] .office-arm-r {
+  animation: office-sip 3s steps(1, end) infinite;
+}
+
+@keyframes office-sip {
+  0% {
+    transform: translateY(0);
+  }
+  80% {
+    transform: translateY(-1px);
+  }
+  90% {
+    transform: translateY(0);
+  }
+}
+
+/* Vapore (tazza del bot e macchina del caffe'). */
+.office-steam {
+  animation: office-rise 1.6s steps(1, end) infinite;
+}
+
+.office-steam--late {
+  animation-delay: 0.8s;
+}
+
+@keyframes office-rise {
+  0% {
+    opacity: 0.9;
+    transform: translateY(0);
+  }
+  33% {
+    opacity: 0.6;
+    transform: translateY(-1px);
+  }
+  66% {
+    opacity: 0.3;
+    transform: translateY(-2px);
+  }
+}
+
+/* ---------------------------------------------------------------- arredi */
+
+.office-led {
+  animation: office-led 1.4s steps(1, end) infinite;
+}
+
+@keyframes office-led {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Il codice sullo schermo del monitor "scorre": le righe lampeggiano sfasate. */
+.office-code {
+  animation: office-code 1.5s steps(1, end) infinite;
+}
+
+@keyframes office-code {
+  0% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.45;
+  }
+}
+
+/* ---------------------------------------------------------------- movimento ridotto */
+
+@media (prefers-reduced-motion: reduce) {
+  .office-room *,
+  .office-room *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* Senza alternanza resta un solo fumetto per chiacchierata: quello del primo posto. */
+  .office-bot[data-seat="0"] .office-bubble--chat {
+    opacity: 1;
+  }
+}

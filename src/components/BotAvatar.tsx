@@ -10,8 +10,8 @@ interface Props {
   className?: string;
 }
 
-const DARK = "#0f172a";
-const LIGHT = "rgba(255, 255, 255, 0.6)";
+export const DARK = "#0f172a";
+export const LIGHT = "rgba(255, 255, 255, 0.6)";
 
 /** Avatar pixel-art di un bot, generato dal nome (SVG inline, nessuna immagine). */
 export default function BotAvatar({ name, size = 18, className }: Props) {

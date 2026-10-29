@@ -76,6 +76,18 @@ ricordato al riavvio. Da **Impostazioni › Generale › Bot** si accende o speg
 funzione, si aggiungono e rimuovono i nomi e si ripristina la pool predefinita
 (`bots.json` nella cartella dati).
 
+### Ufficio
+
+Con i bot attivi, il pulsante **Ufficio** nel piede della sidebar (o **Ctrl+Maiusc+O**) apre
+una vista a parte: una stanza pixel-art per workspace, con un bot per ogni terminale aperto.
+I bot al lavoro stanno alla scrivania col monitor acceso; quelli in pausa vanno a prendere il
+caffè, si siedono sul divano, guardano dalla finestra o chiacchierano tra loro; chi richiede
+attenzione corre alla scrivania e alza la mano con un ❗; i worker in background aspettano
+accanto al server; chi ha consegnato festeggia e chi è fallito si accascia con un ✕. Passa il
+mouse su un bot per nome, workspace e stato; un click apre il suo terminale. Ctrl+Maiusc+O (o
+"Torna ai terminali") chiude la vista. Rispetta il movimento ridotto del sistema (bot fermi nei
+loro posti) e con i bot spenti non c'è.
+
 ## Avvii
 
 Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent:

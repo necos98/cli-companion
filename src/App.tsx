@@ -97,6 +97,10 @@ import type { SessionTab } from "./lib/session";
 import { playAttention, playDing } from "./lib/notifySound";
 import { notifyIfUnfocused } from "./lib/systemNotify";
 import { assignRestoredNames, pickBotName } from "./lib/bots";
+import { officeSession } from "./lib/office";
+import OfficeButton from "./components/office/OfficeButton";
+import OfficeView from "./components/office/OfficeView";
+import { useOfficeShortcut } from "./components/office/useOfficeShortcut";
 
 interface Tab {
   key: string;
@@ -412,6 +416,13 @@ export default function App() {
   const viewWorkspaceId =
     focusedWorkspaceId ?? (layout.activeView === "global" ? null : layout.activeWorkspaceId);
   const managerShown = viewWorkspaceId !== null && managerOpen[viewWorkspaceId] === true;
+  // L'Ufficio e' globale (non per workspace) e vive solo con i bot attivi.
+  const [officeOpen, setOfficeOpen] = useState(false);
+  const officeShown = officeOpen && botSettings.enabled;
+  const officeShownRef = useRef(officeShown);
+  officeShownRef.current = officeShown;
+  // Manager o Ufficio coprono pannello Task e terminali.
+  const overlayShown = managerShown || officeShown;
   const modalOpenRef = useRef(false);
   modalOpenRef.current = settingsOpen || dialogOpen;
   const managerOpenRef = useRef(managerOpen);
@@ -438,6 +449,7 @@ export default function App() {
   // Solo stato: i terminali restano montati.
   const openManager = useCallback(
     (id: string, intent?: Omit<TasksManagerIntent, "nonce">) => {
+      setOfficeOpen(false);
       setManagerIntent(intent ? { ...intent, nonce: ++intentNonceRef.current } : null);
       if (viewWorkspaceIdRef.current !== id) {
         if (layoutRef.current.groups.some((g) => g.workspaceId === id)) {
@@ -454,9 +466,11 @@ export default function App() {
   );
 
   // Sidebar e Ctrl+Maiusc+B: apre il manager, o lo chiude se è già aperto.
+  // Con l'Ufficio aperto apre il manager (e chiude l'Ufficio): non lo chiude
+  // "sotto" l'Ufficio dove non si vedrebbe.
   const toggleManager = useCallback(
     (id: string) => {
-      if (viewWorkspaceIdRef.current === id && managerOpenRef.current[id] === true) {
+      if (!officeShownRef.current && viewWorkspaceIdRef.current === id && managerOpenRef.current[id] === true) {
         setManagerOpen((prev) => ({ ...prev, [id]: false }));
         return;
       }
@@ -474,12 +488,12 @@ export default function App() {
     if (managerShown && managerIntent) setManagerIntent(null);
   }, [managerShown, managerIntent]);
 
-  // Il manager copre i terminali: nessuno deve tenere il focus della tastiera.
+  // Manager e Ufficio coprono i terminali: nessuno deve tenere il focus della tastiera.
   useEffect(() => {
-    if (!managerShown) return;
+    if (!overlayShown) return;
     const el = document.activeElement;
     if (el instanceof HTMLElement && el.closest(".xterm")) el.blur();
-  }, [managerShown]);
+  }, [overlayShown]);
 
   // Un tab messo a fuoco da pannello Task, Tasks Manager o notifica: torna ai
   // terminali del suo workspace (la chiave del tab è l'id di sessione del worker).
@@ -488,6 +502,7 @@ export default function App() {
       // Tab chiuso nel frattempo: niente da mettere a fuoco, la vista resta com'è.
       const tab = tabsRef.current.find((t) => t.key === key);
       if (!tab) return;
+      setOfficeOpen(false);
       showTerminalsOf(tab.workspace.id);
       setLayout((l) => focusTab(l, key));
     },
@@ -510,6 +525,15 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
+
+  // Ufficio: Ctrl+Maiusc+O e pulsante della sidebar. Spegnere i bot lo chiude,
+  // cosi' riaccenderli non lo riapre da solo.
+  const toggleOffice = useCallback(() => setOfficeOpen((open) => !open), []);
+  const closeOffice = useCallback(() => setOfficeOpen(false), []);
+  useOfficeShortcut(botSettings.enabled, modalOpenRef, toggleOffice);
+  useEffect(() => {
+    if (!botSettings.enabled) setOfficeOpen(false);
+  }, [botSettings.enabled]);
 
   // Ctrl+Maiusc+M: massimizza/ripristina il pannello attivo della vista mostrata.
   // In fase di cattura, così xterm non vede il tasto. Niente Esc: serve alle CLI.
@@ -1053,6 +1077,15 @@ export default function App() {
   // Workspace del pannello Task: quello mostrato (anche senza terminali).
   const panelWorkspace = workspaces.find((w) => w.id === viewWorkspaceId && !w.archived);
   const managerWorkspace = managerShown ? panelWorkspace : undefined;
+  // Bot dell'Ufficio: costruiti solo mentre e' aperto.
+  const officeSessions = useMemo(
+    () =>
+      officeShown
+        ? tabs.map((t) => officeSession(t, busyByKey[t.key] === true, tabLabel(t, builtinLaunches)))
+        : [],
+    [officeShown, tabs, busyByKey, builtinLaunches],
+  );
+  const workspaceOrder = useMemo(() => visibleWorkspaces.map((w) => w.id), [visibleWorkspaces]);
 
   const attentionCount = countNeedingInput(statuses);
   const agentsSummary = installedAgentsSummary(agentEnvs);
@@ -1135,6 +1168,7 @@ export default function App() {
                 />
               )}
             </Button>
+            {botSettings.enabled && <OfficeButton shown={officeShown} onToggle={toggleOffice} />}
             {appVersion && (
               <span className="font-mono text-[11px] text-faint">v{appVersion}</span>
             )}
@@ -1152,11 +1186,11 @@ export default function App() {
             className={`flex flex-shrink-0 ${
               panelWorkspace || globalActive ? "bg-pane-area py-[6px] pl-[6px] pr-[2px]" : ""
             }`}
-            aria-hidden={managerShown || undefined}
+            aria-hidden={overlayShown || undefined}
             ref={(el) => {
               // Coperto dal Tasks Manager: non raggiungibile con Tab (solo attributo).
               if (!el) return;
-              if (managerShown) el.setAttribute("inert", "");
+              if (overlayShown) el.setAttribute("inert", "");
               else el.removeAttribute("inert");
             }}
           >
@@ -1198,12 +1232,12 @@ export default function App() {
           <div className="relative min-h-0 min-w-0 flex-1 bg-pane-area">
             <div
               className="absolute inset-[3px]"
-              aria-hidden={managerShown || undefined}
+              aria-hidden={overlayShown || undefined}
               ref={(el) => {
                 // `inert` solo come attributo (niente remount): i terminali
                 // nascosti dal Tasks Manager non restano raggiungibili con Tab.
                 if (!el) return;
-                if (managerShown) el.setAttribute("inert", "");
+                if (overlayShown) el.setAttribute("inert", "");
                 else el.removeAttribute("inert");
               }}
             >
@@ -1233,7 +1267,7 @@ export default function App() {
                     restore={t.restored}
                     rect={pl?.rect ?? null}
                     active={pl?.visible ?? false}
-                    focused={(pl?.focused ?? false) && !managerShown}
+                    focused={(pl?.focused ?? false) && !overlayShown}
                     label={tabLabel(t, builtinLaunches)}
                     bot={shownBot(t)}
                     labelPrefix={
@@ -1296,6 +1330,18 @@ export default function App() {
                 onOpenIntake={() => openIntake(managerWorkspace.id)}
                 intent={managerIntent}
                 isTabOpen={(id) => tabs.some((t) => t.key === id)}
+              />
+            </div>
+          )}
+          {/* L'Ufficio sta sopra tutto, Tasks Manager compreso (z-30 contro z-20);
+              anch'esso lascia i TerminalView montati al loro posto. */}
+          {officeShown && (
+            <div className="absolute inset-[3px] z-30 overflow-hidden rounded-[10px] border bg-pane-area">
+              <OfficeView
+                sessions={officeSessions}
+                workspaceOrder={workspaceOrder}
+                onOpenBot={focusTerminal}
+                onClose={closeOffice}
               />
             </div>
           )}
