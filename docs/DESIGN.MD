@@ -450,14 +450,20 @@ File nella cartella dati dell'app, scritti con `write_atomic`:
 ### `bots.rs` — nomi dei bot (impostazioni globali)
 
 Ogni sessione (tab) è un "bot" con un nome e un avatar: tocco puramente visivo.
-File `bots.json` nella cartella dati: `{ enabled, names }`. File assente o campo
+File `bots.json` nella cartella dati: `{ enabled, names, images }`, con `images` =
+`{ nome: { png, color } }` (`#[serde(default)]`: i file vecchi restano validi). File assente o campo
 mancante = `enabled: true` e la pool predefinita (`DEFAULT_NAMES`, unica fonte: il
 frontend la riceve da `get_bot_settings`). Stesso schema di `launch_settings.rs`: store
 con `Mutex`, file corrotto rinominato `.json.bak`, `update()` salva con `write_atomic`
 prima di aggiornare la memoria. Comandi `get_bot_settings`, `set_bot_settings(enabled,
-names)` (ritorna le impostazioni salvate) e `reset_bot_names`. Validazione: trim, nomi di
-1-24 caratteri, niente caratteri di controllo, niente duplicati (senza maiuscole), al
-massimo 200 nomi; la lista vuota è ammessa.
+names)` (ritorna le impostazioni salvate), `reset_bot_names`, `set_bot_image(name, png,
+color)` e `remove_bot_image(name)` (ritornano anch'essi le impostazioni salvate). Validazione
+dei nomi: trim, 1-24 caratteri, niente caratteri di controllo, niente duplicati (senza
+maiuscole), al massimo 200 nomi; la lista vuota è ammessa. Validazione delle immagini:
+il nome deve essere nella pool (senza maiuscole; si salva con l'ortografia della pool),
+`png` base64 valido con firma PNG e IHDR al massimo 64x64, al massimo 32 KB, `color` nel
+formato `#rrggbb`. Le immagini dei nomi che escono dalla pool sono eliminate da
+`set_bot_settings` e `reset_bot_names`.
 
 ### `lib.rs`
 
@@ -481,6 +487,24 @@ dello store in `setup` e tutti i comandi. Capability minime in
   `PanelRunningCard` (`botOf(tab)` da `App`). Pagina Impostazioni › Generale › Bot
   (`settings/BotsPage.tsx`): interruttore, elenco con rimozione, aggiunta, ripristino
   con conferma; ogni modifica è salvata subito e risale ad `App` (`onBotSettingsChange`).
+  **Immagini dei bot**: l'utente associa un'immagine a un nome della pool e il bot con
+  quel nome la usa come corpo. `lib/botImage.ts` (zero-dep, `tests/bot-image.test.mjs`) è
+  la pipeline di pixelazione, pura: ritaglio dei margini trasparenti, adattamento in
+  24x34 (`fitSize`), ricampionamento a media d'area, alfa binario con soglia al 50% e
+  colore dominante; decodifica del file (`createImageBitmap`, pre-scala a 512 px) ed
+  esportazione PNG stanno nello strato canvas `settings/pixelateFile.ts`. `botImageOf(settings,
+  name)` risolve l'immagine di un bot ("Bolt 2" usa quella di "Bolt") e `botImageHref`
+  ne fa l'URL `data:`. `App` costruisce `botImageFor(name)` (con cache, stesso oggetto
+  finché le impostazioni non cambiano) e la passa come prop `botImage` accanto a `bot`:
+  `TerminalView` → `PaneHeader`, `SidebarTerminal`, `botImageOf(tab)` dei pannelli Task →
+  `PanelRunningCard`, `OfficeSession.botImage` → `OfficeRoom` → `OfficeBot` → `BotSprite`.
+  `BotAvatar` disegna l'immagine in un'`<image>` 12x12 (`contain`, `image-rendering:
+  pixelated`) al posto della testa. `BotSprite` la disegna al posto di busto e testa nella
+  zona del corpo (x 2-14, y 0-17, appoggiata sulle gambe e centrata, `imageBodyBox`);
+  braccia e gambe restano, nell'ombra del colore dominante, e le braccia (`armShiftOf`)
+  si spostano verso il centro e in basso (al massimo 3 px) per restare attaccate a
+  immagini strette o basse. Nella pagina Bot ogni riga ha i bottoni scegli/cambia/rimuovi
+  immagine; dopo la scelta compare l'anteprima (sprite e avatar) con conferma.
 - **Vista Ufficio** (`lib/office.ts` + `officeLayout.ts` + `officePlacement.ts`, zero-dep,
   `tests/office.test.mjs`; `components/office/`): una stanza per workspace (nell'ordine della
   Sidebar), un bot per ogni tab aperto. La logica pura copre la mappatura dell'attivita'

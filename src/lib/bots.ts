@@ -203,3 +203,57 @@ export function botPixels(look: BotLook): PixelRect[] {
     ...ACCESSORY_RECTS[look.accessory],
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Immagini dei nomi della pool
+// ---------------------------------------------------------------------------
+
+/** Immagine di un nome della pool: PNG pixelato (base64) e colore dominante. */
+export interface BotImage {
+  png: string;
+  color: string;
+}
+
+export interface BotImageSource {
+  names: readonly string[];
+  images?: Readonly<Record<string, BotImage>>;
+}
+
+/** Base64 rigoroso: niente caratteri che possano uscire da un URL `data:`. */
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+/** Colore `#rrggbb`. */
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+/** Nome con suffisso numerico generato da `pickBotName` ("Bolt 2"). */
+const SUFFIXED_NAME_PATTERN = /^(.+) (\d+)$/;
+
+/** Immagine ben formata, altrimenti `undefined` (difesa in profondita'). */
+function validImage(image: BotImage | undefined): BotImage | undefined {
+  if (!image || typeof image.png !== "string" || typeof image.color !== "string") return undefined;
+  return BASE64_PATTERN.test(image.png) && HEX_COLOR_PATTERN.test(image.color) ? image : undefined;
+}
+
+/** Ortografia del nome nella pool (senza badare alle maiuscole). */
+function poolSpelling(names: readonly string[], name: string): string | undefined {
+  const key = nameKey(name);
+  return names.find((n) => nameKey(n) === key);
+}
+
+/**
+ * Immagine del bot `botName`: il nome esatto della pool vince; altrimenti un
+ * nome con suffisso numerico ("Bolt 2") usa l'immagine del nome base.
+ */
+export function botImageOf(settings: BotImageSource, botName: string): BotImage | undefined {
+  const images = settings.images;
+  if (!images) return undefined;
+  const exact = poolSpelling(settings.names, botName);
+  if (exact !== undefined) return validImage(images[exact]);
+  const match = SUFFIXED_NAME_PATTERN.exec(botName);
+  if (!match) return undefined;
+  const base = poolSpelling(settings.names, match[1]);
+  return base === undefined ? undefined : validImage(images[base]);
+}
+
+/** URL `data:` dell'immagine (solo per immagini gia' validate). */
+export function botImageHref(image: BotImage): string {
+  return `data:image/png;base64,${image.png}`;
+}

@@ -22,6 +22,7 @@ import EnvChip from "./EnvChip";
 import StatusIcon from "./StatusIcon";
 import { api } from "../lib/tauri";
 import BotAvatar from "./BotAvatar";
+import type { BotImage } from "../lib/bots";
 import { cn } from "../lib/utils";
 import type { BuiltinLaunch, Launch, Workspace } from "../lib/tauri";
 import type { TaskCounts } from "../lib/board";
@@ -38,6 +39,8 @@ export interface SidebarTerminal {
   label: string;
   /** Nome del bot della sessione; assente = funzione spenta. */
   bot?: string;
+  /** Immagine del bot (se il suo nome ne ha una). */
+  botImage?: BotImage;
   status: TabStatus;
   pinned: boolean;
   /** È il pannello attivo del gruppo mostrato. */
@@ -539,7 +542,7 @@ export default function Sidebar({
                       <span className="flex w-3.5 flex-shrink-0 justify-center">
                         <StatusIcon status={t.status} />
                       </span>
-                      {t.bot && <BotAvatar name={t.bot} size={16} />}
+                      {t.bot && <BotAvatar name={t.bot} size={16} image={t.botImage} />}
                       <span className="min-w-0 flex-1 truncate font-mono text-xs">
                         {t.bot ? `${t.bot} · ${t.label}` : t.label}
                       </span>

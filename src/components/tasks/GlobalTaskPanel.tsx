@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { AlertTriangle, ChevronsLeft, ListOrdered, Loader2, Sparkles, XCircle } from "lucide-react";
 import type { BoardView } from "../../lib/board";
 import type { Workspace } from "../../lib/tauri";
+import type { BotImage } from "../../lib/bots";
 import {
   activityGroups,
   activityTotals,
@@ -31,6 +32,8 @@ export interface GlobalTaskPanelProps {
   onFocusTab: (tabId: string) => void;
   /** Nome del bot di un tab (se la funzione e' attiva). */
   botOf?: (tabId: string) => string | undefined;
+  /** Immagine del bot di un tab (se il suo nome ne ha una). */
+  botImageOf?: (tabId: string) => BotImage | undefined;
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -42,6 +45,7 @@ export default function GlobalTaskPanel({
   onOpenWorkspace,
   onFocusTab,
   botOf,
+  botImageOf,
   collapsed,
   onToggleCollapsed,
 }: GlobalTaskPanelProps) {
@@ -118,6 +122,7 @@ export default function GlobalTaskPanel({
                   task={t}
                   now={now}
                   bot={t.session ? botOf?.(t.session) : undefined}
+                  botImage={t.session ? botImageOf?.(t.session) : undefined}
                   onClick={() => (t.session ? onFocusTab(t.session) : onOpenWorkspace(ws.id))}
                 />
               ))}

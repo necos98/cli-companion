@@ -74,7 +74,10 @@ riconoscere le sessioni a colpo d'occhio, in intestazione del pannello, nella si
 nelle card dei task in corso. Il nome non si ripete tra le sessioni aperte e viene
 ricordato al riavvio. Da **Impostazioni › Generale › Bot** si accende o spegne la
 funzione, si aggiungono e rimuovono i nomi e si ripristina la pool predefinita
-(`bots.json` nella cartella dati).
+(`bots.json` nella cartella dati). A ogni nome puoi anche associare un'immagine (PNG,
+JPEG, WebP o GIF fino a 10 MB): viene pixelata in automatico e il bot con quel nome la usa
+come corpo, nell'Ufficio e negli avatar, mantenendo braccia e gambe animate. Funzionano
+meglio PNG con sfondo trasparente; un bot chiamato "Bolt 2" usa l'immagine di "Bolt".
 
 ### Ufficio
 

@@ -17,6 +17,7 @@ import {
 import { cn } from "../lib/utils";
 import PaneHeader from "./PaneHeader";
 import type { PtyEvent, Workspace } from "../lib/tauri";
+import type { BotImage } from "../lib/bots";
 import {
   clipboardKeyAction,
   createBusyTracker,
@@ -89,6 +90,8 @@ interface Props {
   launchId?: string;
   /** Nome del bot della sessione (assente = funzione spenta). */
   bot?: string;
+  /** Immagine del bot (se il suo nome ne ha una). */
+  botImage?: BotImage;
   /** Utilizzo di token della sessione dell'agente (intestazione). */
   usage?: { text: string; title: string };
 }
@@ -127,6 +130,7 @@ function TerminalView({
   usage,
   launchId,
   bot,
+  botImage,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -533,6 +537,7 @@ function TerminalView({
           automation={automation}
           launchId={launchId}
           bot={bot}
+          botImage={botImage}
           usage={usage}
           maximized={maximized}
           pinned={pinned}

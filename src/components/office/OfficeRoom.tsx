@@ -92,6 +92,7 @@ function OfficeRoom({ room, layout, goals, reduced, onOpenBot }: Props) {
           key={bot.key}
           botKey={bot.key}
           name={bot.bot}
+          image={bot.botImage}
           workspaceName={bot.workspaceName}
           label={bot.label}
           activity={bot.activity}

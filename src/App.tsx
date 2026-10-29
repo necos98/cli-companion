@@ -96,7 +96,8 @@ import {
 import type { SessionTab } from "./lib/session";
 import { playAttention, playDing } from "./lib/notifySound";
 import { notifyIfUnfocused } from "./lib/systemNotify";
-import { assignRestoredNames, pickBotName } from "./lib/bots";
+import { assignRestoredNames, botImageOf, pickBotName } from "./lib/bots";
+import type { BotImage } from "./lib/bots";
 import { officeSession } from "./lib/office";
 import OfficeButton from "./components/office/OfficeButton";
 import OfficeView from "./components/office/OfficeView";
@@ -204,9 +205,19 @@ export default function App() {
   const [showUsage, setShowUsage] = useState(true);
   // Bot: nome e avatar di ogni sessione. Caricati col ripristino della sessione
   // (i nomi dei tab ripristinati dipendono dalla pool).
-  const [botSettings, setBotSettings] = useState<BotSettings>({ enabled: true, names: [] });
+  const [botSettings, setBotSettings] = useState<BotSettings>({ enabled: true, names: [], images: {} });
   const botSettingsRef = useRef(botSettings);
   botSettingsRef.current = botSettings;
+  // Immagine di un bot per nome, con cache: stesso oggetto di prima finche' le
+  // impostazioni non cambiano, cosi' i figli memoizzati non si ridisegnano.
+  const botImageFor = useMemo(() => {
+    const source = { names: botSettings.names, images: botSettings.images };
+    const cache = new Map<string, BotImage | undefined>();
+    return (name: string): BotImage | undefined => {
+      if (!cache.has(name)) cache.set(name, botImageOf(source, name));
+      return cache.get(name);
+    };
+  }, [botSettings.names, botSettings.images]);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   // Code dei task per workspace (pannello Task, sidebar, Tasks Manager).
   const { boards, boardErrors, storeBoard, loadBoard } = useBoards(workspaces);
@@ -1052,6 +1063,12 @@ export default function App() {
     const t = tabByKey.get(tabId);
     return t && shownBot(t);
   };
+  const shownBotImage = (t: Tab): BotImage | undefined =>
+    botSettings.enabled ? botImageFor(t.bot) : undefined;
+  const botImageOfTab = (tabId: string): BotImage | undefined => {
+    const t = tabByKey.get(tabId);
+    return t && shownBotImage(t);
+  };
   const sidebarTerminals: Record<string, SidebarTerminal[]> = {};
   for (const g of layout.groups) {
     sidebarTerminals[g.workspaceId] = g.order.flatMap((key) => {
@@ -1062,6 +1079,7 @@ export default function App() {
           key,
           label: tabLabel(t, builtinLaunches),
           bot: shownBot(t),
+          botImage: shownBotImage(t),
           status: statusByKey.get(key)!,
           pinned: layout.global.order.includes(key),
           active: g.activeTabId === key,
@@ -1082,9 +1100,11 @@ export default function App() {
   const officeSessions = useMemo(
     () =>
       officeShown
-        ? tabs.map((t) => officeSession(t, busyByKey[t.key] === true, tabLabel(t, builtinLaunches)))
+        ? tabs.map((t) =>
+            officeSession(t, busyByKey[t.key] === true, tabLabel(t, builtinLaunches), botImageFor(t.bot)),
+          )
         : [],
-    [officeShown, tabs, busyByKey, builtinLaunches],
+    [officeShown, tabs, busyByKey, builtinLaunches, botImageFor],
   );
   const officeDesks = useStableDesks(tabs);
   const workspaceOrder = useMemo(() => visibleWorkspaces.map((w) => w.id), [visibleWorkspaces]);
@@ -1211,6 +1231,7 @@ export default function App() {
                 onNewTask={() => openManager(panelWorkspace.id, { newTask: true })}
                 onFocusTab={focusTerminal}
                 botOf={botOfTab}
+                botImageOf={botImageOfTab}
               />
             ) : globalActive ? (
               <GlobalTaskPanel
@@ -1219,6 +1240,7 @@ export default function App() {
                 onOpenWorkspace={handleSelectWorkspace}
                 onFocusTab={focusTerminal}
                 botOf={botOfTab}
+                botImageOf={botImageOfTab}
                 collapsed={taskPanel.isCollapsed(GLOBAL_ID)}
                 onToggleCollapsed={() => taskPanel.toggle(GLOBAL_ID)}
               />
@@ -1272,6 +1294,7 @@ export default function App() {
                     focused={(pl?.focused ?? false) && !overlayShown}
                     label={tabLabel(t, builtinLaunches)}
                     bot={shownBot(t)}
+                    botImage={shownBotImage(t)}
                     labelPrefix={
                       pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
                     }

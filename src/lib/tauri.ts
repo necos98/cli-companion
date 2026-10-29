@@ -1,6 +1,7 @@
 import { invoke, type Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPermission } from "./workerPermission";
+import type { BotImage } from "./bots";
 import type {
   BoardView,
   Delivery,
@@ -43,10 +44,12 @@ export interface LaunchSettings {
   show_usage: boolean;
 }
 
-/** Impostazioni dei bot: nome e avatar di ogni sessione (puramente visivi). */
+/** Impostazioni dei bot: pool dei nomi e immagini associate (puramente visivi). */
 export interface BotSettings {
   enabled: boolean;
   names: string[];
+  /** Immagine pixelata per nome della pool. */
+  images: Record<string, BotImage>;
 }
 
 export interface Workspace {
@@ -331,6 +334,11 @@ export const api = {
     invoke<BotSettings>("set_bot_settings", { enabled, names }),
 
   resetBotNames: () => invoke<BotSettings>("reset_bot_names"),
+
+  setBotImage: (name: string, png: string, color: string) =>
+    invoke<BotSettings>("set_bot_image", { name, png, color }),
+
+  removeBotImage: (name: string) => invoke<BotSettings>("remove_bot_image", { name }),
 
   agentUsageLimits: (agentId: string, env: string) =>
     invoke<UsageLimitsReply>("agent_usage_limits", { agentId, env }),

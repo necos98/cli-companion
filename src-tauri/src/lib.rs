@@ -150,6 +150,8 @@ pub fn run() {
             bots::get_bot_settings,
             bots::set_bot_settings,
             bots::reset_bot_names,
+            bots::set_bot_image,
+            bots::remove_bot_image,
             agents::builtin_launches,
             workspaces::open_workspace_folder,
             wsl::list_wsl_distros,

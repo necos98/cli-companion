@@ -1,9 +1,13 @@
 //! Bot: ogni sessione dell'app e' un "bot" con un nome preso da una pool
 //! configurabile dall'utente (puramente visivo). Persistenza in `bots.json`.
 //! La pool predefinita (`DEFAULT_NAMES`) e' l'unica fonte: il frontend la riceve
-//! da `get_bot_settings`.
+//! da `get_bot_settings`. Ogni nome della pool puo' avere un'immagine pixel-art
+//! (PNG base64 + colore dominante), validata in `image` e salvata nello stesso file.
+
+mod image;
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
@@ -27,6 +31,19 @@ pub struct BotSettings {
     /// lista vuota e' ammessa (i bot si chiamano "Bot 1", "Bot 2"...).
     #[serde(default = "default_names")]
     pub names: Vec<String>,
+    /// Immagini per nome (con la grafia della pool). I file senza il campo non
+    /// hanno immagini; le chiavi che non sono nella pool vengono eliminate.
+    #[serde(default)]
+    pub images: BTreeMap<String, BotImage>,
+}
+
+/// Immagine di un bot, gia' validata dal backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotImage {
+    /// PNG in base64 standard.
+    pub png: String,
+    /// Colore dominante, `#rrggbb` minuscolo.
+    pub color: String,
 }
 
 fn default_enabled() -> bool {
@@ -39,7 +56,7 @@ fn default_names() -> Vec<String> {
 
 impl Default for BotSettings {
     fn default() -> Self {
-        Self { enabled: true, names: default_names() }
+        Self { enabled: true, names: default_names(), images: BTreeMap::new() }
     }
 }
 
@@ -107,28 +124,88 @@ pub fn get_bot_settings(state: State<BotSettingsStore>) -> BotSettings {
 pub async fn set_bot_settings(app: AppHandle, enabled: bool, names: Vec<String>) -> Result<BotSettings, String> {
     crate::blocking(move || {
         let names = validate_names(names)?;
-        update(&app, |s| *s = BotSettings { enabled, names })
+        update(&app, |s| {
+            s.enabled = enabled;
+            s.names = names;
+            prune_images(s);
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Imposta l'immagine di un nome della pool (la validazione sta fuori dal lock).
+#[tauri::command]
+pub async fn set_bot_image(app: AppHandle, name: String, png: String, color: String) -> Result<BotSettings, String> {
+    crate::blocking(move || {
+        let img = image::validate_image(&png, &color)?;
+        update(&app, |s| {
+            let pool = pool_name(&s.names, &name)
+                .cloned()
+                .ok_or_else(|| format!("il nome “{name}” non è nell'elenco"))?;
+            s.images.insert(pool, img);
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Toglie l'immagine di un nome. Nessun errore se non c'e' o se il nome non e'
+/// nella pool: e' un no-op che restituisce le impostazioni correnti.
+#[tauri::command]
+pub async fn remove_bot_image(app: AppHandle, name: String) -> Result<BotSettings, String> {
+    crate::blocking(move || {
+        update(&app, |s| {
+            if let Some(pool) = pool_name(&s.names, &name).cloned() {
+                s.images.remove(&pool);
+            }
+            Ok(())
+        })
     })
     .await
 }
 
 #[tauri::command]
 pub async fn reset_bot_names(app: AppHandle) -> Result<BotSettings, String> {
-    crate::blocking(move || update(&app, restore_default_names)).await
+    crate::blocking(move || {
+        update(&app, |s| {
+            restore_default_names(s);
+            Ok(())
+        })
+    })
+    .await
 }
 
-/// Rimette il pool di nomi predefinito; `enabled` resta com'e'.
+/// Rimette il pool di nomi predefinito; `enabled` resta com'e'. Restano solo le
+/// immagini dei nomi che sono anche nella pool predefinita.
 fn restore_default_names(s: &mut BotSettings) {
     s.names = default_names();
+    prune_images(s);
+}
+
+/// Il nome nella pool che coincide con `name` senza distinguere le maiuscole.
+fn pool_name<'a>(names: &'a [String], name: &str) -> Option<&'a String> {
+    let wanted = name.trim().to_lowercase();
+    names.iter().find(|n| n.to_lowercase() == wanted)
+}
+
+/// Tiene solo le immagini dei nomi nella pool, con la grafia della pool.
+fn prune_images(s: &mut BotSettings) {
+    let images = std::mem::take(&mut s.images);
+    s.images = images
+        .into_iter()
+        .filter_map(|(name, img)| pool_name(&s.names, &name).map(|pool| (pool.clone(), img)))
+        .collect();
 }
 
 /// Applica `f`, salva e solo poi aggiorna la memoria (se il salvataggio fallisce
 /// lo stato resta invariato). Il lock `inner` non copre l'I/O.
-fn update(app: &AppHandle, f: impl FnOnce(&mut BotSettings)) -> Result<BotSettings, String> {
+/// Se `f` fallisce non salva nulla.
+fn update(app: &AppHandle, f: impl FnOnce(&mut BotSettings) -> Result<(), String>) -> Result<BotSettings, String> {
     let store = app.state::<BotSettingsStore>();
     let _save = store.save.lock().unwrap();
     let mut next = store.inner.lock().unwrap().clone();
-    f(&mut next);
+    f(&mut next)?;
     save_to_disk(app, &next)?;
     *store.inner.lock().unwrap() = next.clone();
     Ok(next)
@@ -155,10 +232,63 @@ mod tests {
     #[test]
     fn restoring_names_keeps_enabled() {
         for enabled in [true, false] {
-            let mut s = BotSettings { enabled, names: names(&["Ada"]) };
+            let mut s = BotSettings { enabled, names: names(&["Ada"]), images: BTreeMap::new() };
             restore_default_names(&mut s);
-            assert_eq!(s, BotSettings { enabled, names: default_names() });
+            assert_eq!(s, BotSettings { enabled, names: default_names(), images: BTreeMap::new() });
         }
+    }
+
+    fn img(color: &str) -> BotImage {
+        BotImage { png: "AAAA".into(), color: color.into() }
+    }
+
+    fn with_images(list: &[&str], images: &[(&str, &str)]) -> BotSettings {
+        BotSettings {
+            enabled: true,
+            names: names(list),
+            images: images.iter().map(|(n, c)| (n.to_string(), img(c))).collect(),
+        }
+    }
+
+    #[test]
+    fn old_files_without_images_load_empty() {
+        let a: BotSettings = serde_json::from_str("{}").unwrap();
+        assert!(a.images.is_empty());
+        let b: BotSettings = serde_json::from_str(r#"{"enabled":true,"names":["Ada"]}"#).unwrap();
+        assert!(b.images.is_empty());
+        assert_eq!(b.names, names(&["Ada"]));
+    }
+
+    #[test]
+    fn serde_roundtrip_keeps_images() {
+        let s = with_images(&["Ada", "Bob"], &[("Ada", "#112233"), ("Bob", "#445566")]);
+        let back: BotSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn pool_name_ignores_case_and_returns_pool_spelling() {
+        let pool = names(&["Ada", "Bob"]);
+        assert_eq!(pool_name(&pool, "aDA").map(String::as_str), Some("Ada"));
+        assert_eq!(pool_name(&pool, "Bob").map(String::as_str), Some("Bob"));
+        assert!(pool_name(&pool, "Eve").is_none());
+    }
+
+    #[test]
+    fn pruning_drops_removed_names_and_rekeys_to_pool_spelling() {
+        let mut s = with_images(&["Ada", "Bob"], &[("Ada", "#111111"), ("bob", "#222222"), ("Eve", "#333333")]);
+        prune_images(&mut s);
+        assert_eq!(s.images.len(), 2);
+        assert_eq!(s.images["Ada"], img("#111111"));
+        assert_eq!(s.images["Bob"], img("#222222"));
+    }
+
+    #[test]
+    fn restoring_names_keeps_images_of_default_names_only() {
+        let mut s = with_images(&["Ada", "Bolt"], &[("Ada", "#111111"), ("Bolt", "#222222")]);
+        restore_default_names(&mut s);
+        assert_eq!(s.images.len(), 1);
+        assert_eq!(s.images["Bolt"], img("#222222"));
     }
 
     #[test]
@@ -181,7 +311,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_keeps_an_empty_pool() {
-        let s = BotSettings { enabled: false, names: vec![] };
+        let s = BotSettings { enabled: false, names: vec![], images: BTreeMap::new() };
         let back: BotSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
     }

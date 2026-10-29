@@ -9,6 +9,8 @@ import {
   EYE_STYLES,
   HEAD_SHAPES,
   assignRestoredNames,
+  botImageHref,
+  botImageOf,
   botLook,
   botPixels,
   pickBotName,
@@ -172,5 +174,66 @@ describe("botPixels", () => {
 
   it("lo stesso aspetto produce lo stesso disegno", () => {
     assert.deepEqual(botPixels(botLook("Bolt")), botPixels(botLook("Bolt")));
+  });
+});
+
+describe("botImageOf", () => {
+  const img = (color = "#ff0000") => ({ png: "iVBORw0KGgo=", color });
+  const settings = (images, names = POOL) => ({ names, images });
+
+  it("trova l'immagine per nome esatto", () => {
+    const bolt = img();
+    assert.equal(botImageOf(settings({ Bolt: bolt }), "Bolt"), bolt);
+  });
+
+  it("ignora le maiuscole e usa l'ortografia della pool", () => {
+    const bolt = img();
+    assert.equal(botImageOf(settings({ Bolt: bolt }), "bOLT"), bolt);
+  });
+
+  it("un nome con suffisso usa l'immagine del nome base", () => {
+    const bolt = img();
+    assert.equal(botImageOf(settings({ Bolt: bolt }), "Bolt 2"), bolt);
+    assert.equal(botImageOf(settings({ Bolt: bolt }), "bolt 12"), bolt);
+  });
+
+  it("senza immagine per la base: undefined", () => {
+    assert.equal(botImageOf(settings({ Pixel: img() }), "Bolt 2"), undefined);
+    assert.equal(botImageOf(settings({}), "Bolt"), undefined);
+  });
+
+  it("base fuori pool o pool vuota: undefined", () => {
+    assert.equal(botImageOf(settings({ Bolt: img() }, ["Pixel"]), "Bolt 2"), undefined);
+    assert.equal(botImageOf(settings({}, []), "Bot 3"), undefined);
+  });
+
+  it("un nome della pool col suffisso vince sulla base", () => {
+    const exact = img("#00ff00");
+    const result = botImageOf(settings({ Bolt: img(), "Bolt 2": exact }, ["Bolt", "Bolt 2"]), "Bolt 2");
+    assert.equal(result, exact);
+  });
+
+  it("campo images assente: undefined", () => {
+    assert.equal(botImageOf({ names: POOL }, "Bolt"), undefined);
+  });
+
+  it("scarta immagini malformate", () => {
+    for (const bad of [
+      { png: "", color: "#ff0000" },
+      { png: 'abc" onload="x', color: "#ff0000" },
+      { png: "abc def", color: "#ff0000" },
+      { png: "iVBORw0KGgo=", color: "red" },
+      { png: "iVBORw0KGgo=", color: "#ff00" },
+      { png: "iVBORw0KGgo=", color: "#gg0000" },
+    ]) {
+      assert.equal(botImageOf(settings({ Bolt: bad }), "Bolt"), undefined);
+    }
+    assert.ok(botImageOf(settings({ Bolt: img("#ABCDEF") }), "Bolt"));
+  });
+});
+
+describe("botImageHref", () => {
+  it("costruisce l'URL data", () => {
+    assert.equal(botImageHref({ png: "AAAA", color: "#000000" }), "data:image/png;base64,AAAA");
   });
 });

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api } from "../../lib/tauri";
 import type { Workspace } from "../../lib/tauri";
+import type { BotImage } from "../../lib/bots";
 import { failedTasks, isParallel, queuedTasks, runningTasks, taskCounts } from "../../lib/board";
 import type { BoardView } from "../../lib/board";
 import PanelFailedCard from "./PanelFailedCard";
@@ -57,6 +58,8 @@ export interface TaskPanelProps {
   onFocusTab: (tabId: string) => void;
   /** Nome del bot di un tab (se la funzione e' attiva). */
   botOf?: (tabId: string) => string | undefined;
+  /** Immagine del bot di un tab (se il suo nome ne ha una). */
+  botImageOf?: (tabId: string) => BotImage | undefined;
 }
 
 const FOOTER_BUTTON =
@@ -76,6 +79,7 @@ export default function TaskPanel({
   onNewTask,
   onFocusTab,
   botOf,
+  botImageOf,
 }: TaskPanelProps) {
   const workspaceId = workspace.id;
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +220,7 @@ export default function TaskPanel({
                     task={t}
                     now={now}
                     bot={t.session ? botOf?.(t.session) : undefined}
+                    botImage={t.session ? botImageOf?.(t.session) : undefined}
                     onClick={() => (t.session ? onFocusTab(t.session) : onOpenManager(t.id))}
                   />
                 ))}

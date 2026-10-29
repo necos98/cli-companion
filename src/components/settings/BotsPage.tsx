@@ -1,13 +1,14 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { X } from "lucide-react";
 import { api } from "../../lib/tauri";
 import type { BotSettings } from "../../lib/tauri";
 import { BOT_NAME_MAX } from "../../lib/bots";
-import BotAvatar from "../BotAvatar";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import BotImagePreview from "./BotImagePreview";
+import BotNameRow from "./BotNameRow";
 import { Field, Section, SettingsPage } from "./shared";
+import { BOT_IMAGE_ACCEPT, useBotImagePicker } from "./useBotImagePicker";
 
 interface Props {
   settings: BotSettings;
@@ -20,6 +21,7 @@ export default function BotsPage({ settings, onSettingsChange }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const picker = useBotImagePicker(setError);
 
   /** Salva subito; in caso di errore lo stato resta quello di prima. */
   const save = async (op: () => Promise<BotSettings>): Promise<boolean> => {
@@ -46,6 +48,15 @@ export default function BotsPage({ settings, onSettingsChange }: Props) {
         settings.names.filter((n) => n !== name),
       ),
     );
+
+  const removeImage = (name: string) => save(() => api.removeBotImage(name));
+
+  const confirmImage = async () => {
+    const { candidate } = picker;
+    if (!candidate) return;
+    const { name, image } = candidate;
+    if (await save(() => api.setBotImage(name, image.png, image.color))) picker.cancel();
+  };
 
   const addName = async (e: FormEvent) => {
     e.preventDefault();
@@ -85,7 +96,7 @@ export default function BotsPage({ settings, onSettingsChange }: Props) {
       <Section>
         <Field
           label="Nomi"
-          help="Ogni nuova sessione prende a caso un nome non usato dalle sessioni aperte. Finiti i nomi, si aggiunge un numero (“Bolt 2”)."
+          help="Ogni nuova sessione prende a caso un nome non usato dalle sessioni aperte. Finiti i nomi, si aggiunge un numero (“Bolt 2”, che usa l’immagine di “Bolt”). A ogni nome puoi associare un’immagine: diventa il corpo del bot (funzionano meglio i PNG con sfondo trasparente)."
         >
           <form onSubmit={(e) => void addName(e)} className="flex gap-2">
             <Input
@@ -103,6 +114,24 @@ export default function BotsPage({ settings, onSettingsChange }: Props) {
           </form>
         </Field>
         {error && <p className="text-[11px] text-destructive">{error}</p>}
+        <input
+          ref={picker.inputRef}
+          type="file"
+          accept={BOT_IMAGE_ACCEPT}
+          className="hidden"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => void picker.onFileChange(e)}
+        />
+        {picker.candidate && (
+          <BotImagePreview
+            name={picker.candidate.name}
+            image={picker.candidate.image}
+            busy={saving || picker.pixelating}
+            onConfirm={() => void confirmImage()}
+            onCancel={picker.cancel}
+          />
+        )}
 
         {settings.names.length === 0 ? (
           <p className="text-xs text-muted-foreground">
@@ -111,25 +140,15 @@ export default function BotsPage({ settings, onSettingsChange }: Props) {
         ) : (
           <ul className="grid grid-cols-2 gap-1.5">
             {settings.names.map((name) => (
-              <li
+              <BotNameRow
                 key={name}
-                className="flex min-w-0 items-center gap-2 rounded-md border bg-background/40 py-1 pl-2 pr-1"
-              >
-                <BotAvatar name={name} size={18} />
-                <span className="min-w-0 flex-1 truncate text-[13px]" title={name}>
-                  {name}
-                </span>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void removeName(name)}
-                  title={`Rimuovi ${name}`}
-                  aria-label={`Rimuovi ${name}`}
-                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </li>
+                name={name}
+                image={settings.images[name]}
+                disabled={saving || picker.pixelating}
+                onPickImage={picker.pick}
+                onRemoveImage={(n) => void removeImage(n)}
+                onRemove={(n) => void removeName(n)}
+              />
             ))}
           </ul>
         )}

@@ -5,6 +5,7 @@
 // qui. Funzioni pure a zero dipendenze: orologio e casualita' sono iniettati.
 // Importabile sia dall'app sia dai test `node --test`.
 
+import type { BotImage } from "./bots.ts";
 import type { AgentPhase } from "./agents.ts";
 import { isIntakeLaunch } from "./automation.ts";
 import { DESKS_PER_ROW, findSpot } from "./officeLayout.ts";
@@ -73,6 +74,8 @@ export interface OfficeSession {
   /** Chiave del tab. */
   key: string;
   bot: string;
+  /** Immagine del bot (se il suo nome ne ha una): il corpo dello sprite. */
+  botImage?: BotImage;
   workspaceId: string;
   workspaceName: string;
   /** `tabLabel(t)` (titolo del task per i worker). */
@@ -95,10 +98,16 @@ export interface OfficeTabLike {
 }
 
 /** Sessione dell'ufficio di un tab, con la shell occupata e l'etichetta gia' calcolate. */
-export function officeSession(tab: OfficeTabLike, busy: boolean, label: string): OfficeSession {
+export function officeSession(
+  tab: OfficeTabLike,
+  busy: boolean,
+  label: string,
+  botImage?: BotImage,
+): OfficeSession {
   return {
     key: tab.key,
     bot: tab.bot,
+    ...(botImage ? { botImage } : {}),
     workspaceId: tab.workspace.id,
     workspaceName: tab.workspace.name,
     label,

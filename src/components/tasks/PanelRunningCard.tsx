@@ -7,12 +7,15 @@ import { ReviewBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import BotAvatar from "../BotAvatar";
+import type { BotImage } from "../../lib/bots";
 
 interface PanelRunningCardProps {
   task: Task;
   now: number;
   /** Nome del bot (se la funzione e' attiva) del tab del worker. */
   bot?: string;
+  /** Immagine del bot (se il suo nome ne ha una). */
+  botImage?: BotImage;
   onClick: () => void;
 }
 
@@ -20,7 +23,7 @@ interface PanelRunningCardProps {
  * Card di un task in corso: spinner ambra e "modello · tempo", oppure triangolo
  * arancione e "Richiede attenzione" (bordo evidenziato). Un solo pulsante.
  */
-export default function PanelRunningCard({ task, now, bot, onClick }: PanelRunningCardProps) {
+export default function PanelRunningCard({ task, now, bot, botImage, onClick }: PanelRunningCardProps) {
   const attention = displayStatus(task) === "attention";
   const preparing = Boolean(task.preparing);
   const meta = attention ? "Richiede attenzione" : preparing ? PREPARING_LABEL : runningMeta(task, now);
@@ -45,7 +48,7 @@ export default function PanelRunningCard({ task, now, bot, onClick }: PanelRunni
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
         {bot && (
           <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-text-secondary">
-            <BotAvatar name={bot} size={14} />
+            <BotAvatar name={bot} size={14} image={botImage} />
             <span className="truncate">{bot}</span>
           </span>
         )}

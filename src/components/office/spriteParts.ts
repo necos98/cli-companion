@@ -1,3 +1,4 @@
+import type { Rect, Size } from "../../lib/botImage";
 import type { BotPose } from "../../lib/office";
 
 // Corpo del bot sulla griglia dello sprite (16 x 24 pixel = 2 x 3 unita'): la
@@ -98,6 +99,52 @@ const ARMS: Record<SpritePose, ArmParts> = {
 };
 
 export const armsOf = (pose: SpritePose): ArmParts => ARMS[pose];
+
+// ---------------------------------------------------------------- corpo da immagine
+
+/** Zona del corpo (busto + testa) che l'immagine di un bot sostituisce. */
+export const BODY_ZONE: Rect = { x: 2, y: 0, w: 12, h: 17 };
+/** Spalle del busto: da qui partono le braccia, e quanto in alto comincia. */
+const TORSO_LEFT = 4;
+const TORSO_RIGHT = 12;
+const TORSO_TOP = 10;
+/** Di quanto al massimo si abbassano le braccia per restare attaccate a un corpo basso. */
+export const MAX_ARM_DROP = 3;
+
+/**
+ * Riquadro dell'immagine nella zona del corpo: scala uniforme che la fa entrare
+ * (un'immagine 24 x 34 e' 12 x 17 pixel dello sprite), appoggiata sulle gambe
+ * (in basso) e centrata in orizzontale.
+ */
+export function imageBodyBox(size: Size): Rect {
+  const scale = Math.min(BODY_ZONE.w / size.w, BODY_ZONE.h / size.h);
+  const w = size.w * scale;
+  const h = size.h * scale;
+  return {
+    x: BODY_ZONE.x + (BODY_ZONE.w - w) / 2,
+    y: BODY_ZONE.y + BODY_ZONE.h - h,
+    w,
+    h,
+  };
+}
+
+export interface ArmShift {
+  dx: number;
+  dy: number;
+}
+
+/**
+ * Spostamento delle braccia per restare attaccate al corpo-immagine: verso il
+ * centro se l'immagine e' piu' stretta del busto, in basso (fino a
+ * `MAX_ARM_DROP`) se e' piu' bassa. Interi, per restare sulla griglia.
+ */
+export function armShiftOf(box: Rect): { left: ArmShift; right: ArmShift } {
+  const dy = Math.round(Math.min(MAX_ARM_DROP, Math.max(0, box.y - TORSO_TOP)));
+  return {
+    left: { dx: Math.round(Math.max(0, box.x - TORSO_LEFT)), dy },
+    right: { dx: -Math.round(Math.max(0, TORSO_RIGHT - (box.x + box.w))), dy },
+  };
+}
 
 /** Vapore sopra la tazza (solo pausa caffe'). */
 export const STEAM: readonly Part[] = [p(13, 2, 1, 1, "steam"), p(15, 1, 1, 1, "steam")];

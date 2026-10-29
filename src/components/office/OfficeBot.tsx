@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { CSSProperties } from "react";
+import type { BotImage } from "../../lib/bots";
 import { ACTIVITY_LABELS, BOT_HEIGHT, BOT_NAME_MAX_WIDTH, BOT_WIDTH, ROOM_WIDTH } from "../../lib/office";
 import type { BotActivity, BotPose, BotSpeed, Facing } from "../../lib/office";
 import BotSprite from "./BotSprite";
@@ -14,6 +15,8 @@ interface Props {
   /** Chiave del tab (identifica il bot verso `onOpen`). */
   botKey: string;
   name: string;
+  /** Immagine del nome (se c'e'): il corpo dello sprite. */
+  image?: BotImage;
   workspaceName: string;
   /** Etichetta del tab (titolo del task per i worker). */
   label: string;
@@ -76,6 +79,7 @@ function OfficeBot(p: Props) {
       )}
       <BotSprite
         name={p.name}
+        image={p.image}
         pose={trip.walking ? "walking" : p.pose}
         facing={trip.walking ? trip.heading : p.facing}
         intake={p.intake}

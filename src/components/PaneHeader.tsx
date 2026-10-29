@@ -1,6 +1,7 @@
 import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
 import { tabBadge, statusWord as workerStatusWord } from "../lib/automation";
+import type { BotImage } from "../lib/bots";
 import { cn } from "../lib/utils";
 import BotAvatar from "./BotAvatar";
 import StatusIcon from "./StatusIcon";
@@ -9,6 +10,8 @@ interface Props {
   label: string;
   /** Nome del bot della sessione; assente = funzione spenta. */
   bot?: string;
+  /** Immagine del bot (se il suo nome ne ha una). */
+  botImage?: BotImage;
   /** Nome del workspace, mostrato come prefisso "workspace / label" nella vista globale. */
   prefix?: string;
   status: TabStatus;
@@ -44,6 +47,7 @@ const BTN =
 export default function PaneHeader({
   label,
   bot,
+  botImage,
   prefix,
   status,
   automation,
@@ -87,7 +91,7 @@ export default function PaneHeader({
       )}
       {bot && (
         <>
-          <BotAvatar name={bot} size={18} />
+          <BotAvatar name={bot} size={18} image={botImage} />
           <span className="max-w-[30%] flex-shrink-0 truncate text-xs font-medium">{bot}</span>
           <span className="text-faint" aria-hidden="true">
             ·
