@@ -33,6 +33,7 @@ import type { TasksManagerIntent } from "./components/tasks/TasksManager";
 import type {
   AgentEnvStatus,
   AgentProfile,
+  BotSettings,
   BuiltinLaunch,
   Launch,
   OutdatedPlugin,
@@ -95,6 +96,7 @@ import {
 import type { SessionTab } from "./lib/session";
 import { playAttention, playDing } from "./lib/notifySound";
 import { notifyIfUnfocused } from "./lib/systemNotify";
+import { assignRestoredNames, pickBotName } from "./lib/bots";
 
 interface Tab {
   key: string;
@@ -108,6 +110,8 @@ interface Tab {
    * nei tab ripristinati (ripresa della conversazione dell'agente).
    */
   startCommand: string;
+  /** Nome del bot della sessione: assegnato sempre, mostrato solo con la funzione attiva. */
+  bot: string;
   /** Tab ripristinato da una sessione precedente (mostra la cronologia salvata). */
   restored?: boolean;
   title?: string;
@@ -142,6 +146,7 @@ function toSessionTab(t: Tab): SessionTab {
     title: t.title,
     agentId: t.agent?.agentId,
     agentSessionId: t.agent?.agentSessionId,
+    botName: t.bot,
   };
 }
 
@@ -192,6 +197,11 @@ export default function App() {
   const pluginCheckStarted = useRef(false);
   // Utilizzo (limiti e token): interruttore globale delle Impostazioni.
   const [showUsage, setShowUsage] = useState(true);
+  // Bot: nome e avatar di ogni sessione. Caricati col ripristino della sessione
+  // (i nomi dei tab ripristinati dipendono dalla pool).
+  const [botSettings, setBotSettings] = useState<BotSettings>({ enabled: true, names: [] });
+  const botSettingsRef = useRef(botSettings);
+  botSettingsRef.current = botSettings;
   const [appVersion, setAppVersion] = useState<string | null>(null);
   // Code dei task per workspace (pannello Task, sidebar, Tasks Manager).
   const { boards, boardErrors, storeBoard, loadBoard } = useBoards(workspaces);
@@ -261,8 +271,11 @@ export default function App() {
         raw,
         workspaces.filter((w) => !w.archived).map((w) => w.id),
       );
+      const bots = await api.getBotSettings().catch(() => botSettingsRef.current);
+      setBotSettings(bots);
       if (data) {
         const byId = new Map(workspaces.map((w) => [w.id, w]));
+        const botNames = assignRestoredNames(data.tabs, bots.names);
         setTabs(
           data.tabs.map(
             (t): Tab => ({
@@ -271,6 +284,7 @@ export default function App() {
               launchId: t.launchId,
               command: t.command,
               startCommand: restoreCommand(t),
+              bot: botNames.get(t.tabId)!,
               restored: true,
               title: t.title,
               agent: t.agentSessionId
@@ -582,18 +596,34 @@ export default function App() {
 
   // Senza `launch` parte l'avvio predefinito del workspace, se esiste;
   // altrimenti una shell semplice. Il nuovo terminale attiva il suo gruppo.
+  const newBotName = useCallback(
+    () =>
+      pickBotName(
+        botSettingsRef.current.names,
+        tabsRef.current.map((t) => t.bot),
+      ),
+    [],
+  );
+
   const spawnTab = useCallback((ws: Workspace, launch?: Launch | BuiltinLaunch) => {
     const chosen = launch ?? resolveDefaultLaunch(ws, builtinLaunches, globalLaunch);
     const key = newTabKey();
     // Per gli integrati si salva il comando di ripristino, si esegue quello di avvio.
     const { command, startCommand } = launchCommands(chosen);
     showTerminalsOf(ws.id);
-    setTabs((prev) => [
-      ...prev,
-      { key, workspace: ws, launchId: chosen?.id, command, startCommand },
-    ]);
+    const tab: Tab = {
+      key,
+      workspace: ws,
+      launchId: chosen?.id,
+      command,
+      startCommand,
+      bot: newBotName(),
+    };
+    // Aggiornamento sincrono del ref: due tab aperti di seguito non prendono lo stesso nome.
+    tabsRef.current = [...tabsRef.current, tab];
+    setTabs((prev) => [...prev, tab]);
     setLayout((l) => openTab(l, ws.id, key));
-  }, [showTerminalsOf, builtinLaunches, globalLaunch]);
+  }, [showTerminalsOf, builtinLaunches, globalLaunch, newBotName]);
 
   // Avviso temporaneo nella sidebar.
   const showNotice = useCallback((text: string) => {
@@ -761,6 +791,7 @@ export default function App() {
           workspace: ws,
           command: "",
           startCommand: ev.command,
+          bot: newBotName(),
           automation: {
             title: ev.title,
             status: "starting",
@@ -990,6 +1021,12 @@ export default function App() {
 
   // Terminali di ogni workspace per la sidebar (ordine della griglia).
   const tabByKey = new Map(tabs.map((t) => [t.key, t]));
+  // Il bot si mostra solo con la funzione attiva.
+  const shownBot = (t: Tab): string | undefined => (botSettings.enabled ? t.bot : undefined);
+  const botOfTab = (tabId: string): string | undefined => {
+    const t = tabByKey.get(tabId);
+    return t && shownBot(t);
+  };
   const sidebarTerminals: Record<string, SidebarTerminal[]> = {};
   for (const g of layout.groups) {
     sidebarTerminals[g.workspaceId] = g.order.flatMap((key) => {
@@ -999,6 +1036,7 @@ export default function App() {
         {
           key,
           label: tabLabel(t, builtinLaunches),
+          bot: shownBot(t),
           status: statusByKey.get(key)!,
           pinned: layout.global.order.includes(key),
           active: g.activeTabId === key,
@@ -1136,6 +1174,7 @@ export default function App() {
                 onOpenIntake={() => openIntake(panelWorkspace.id)}
                 onNewTask={() => openManager(panelWorkspace.id, { newTask: true })}
                 onFocusTab={focusTerminal}
+                botOf={botOfTab}
               />
             ) : globalActive ? (
               <GlobalTaskPanel
@@ -1143,6 +1182,7 @@ export default function App() {
                 boards={boards}
                 onOpenWorkspace={handleSelectWorkspace}
                 onFocusTab={focusTerminal}
+                botOf={botOfTab}
                 collapsed={taskPanel.isCollapsed(GLOBAL_ID)}
                 onToggleCollapsed={() => taskPanel.toggle(GLOBAL_ID)}
               />
@@ -1195,6 +1235,7 @@ export default function App() {
                     active={pl?.visible ?? false}
                     focused={(pl?.focused ?? false) && !managerShown}
                     label={tabLabel(t, builtinLaunches)}
+                    bot={shownBot(t)}
                     labelPrefix={
                       pl?.groupWorkspaceId === GLOBAL_ID ? t.workspace.name : undefined
                     }
@@ -1293,6 +1334,8 @@ export default function App() {
         builtinLaunches={builtinLaunches}
         globalLaunch={globalLaunch}
         onGlobalLaunchChange={setGlobalLaunch}
+        botSettings={botSettings}
+        onBotSettingsChange={setBotSettings}
       />
     </div>
   );

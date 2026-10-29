@@ -3,6 +3,8 @@
 // dipendenze, importabili sia dall'app sia dai test `node --test`
 // (type-stripping). Il backend (session.rs) conserva solo un blob opaco.
 
+import { sanitizeBotName } from "./bots.ts";
+
 export const SESSION_VERSION = 1;
 
 /** Limite del comando salvato (stesso di `LAUNCH_COMMAND_MAX` in launch.ts). */
@@ -46,6 +48,8 @@ export interface SessionTab {
   title?: string;
   agentId?: string;
   agentSessionId?: string;
+  /** Nome del bot della sessione (vedi bots.ts); assente nelle sessioni vecchie. */
+  botName?: string;
 }
 
 export interface SessionGroup {
@@ -110,6 +114,8 @@ function parseTab(raw: unknown, workspaceIds: Set<string>): SessionTab | null {
   const agentId = optStr(raw.agentId, 64);
   if (agentId) tab.agentId = agentId;
   if (isSafeAgentSessionId(raw.agentSessionId)) tab.agentSessionId = raw.agentSessionId;
+  const botName = sanitizeBotName(raw.botName);
+  if (botName) tab.botName = botName;
   return tab;
 }
 

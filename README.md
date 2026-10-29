@@ -66,6 +66,16 @@ Alla chiusura l'app salva schede, gruppi, layout e cronologia dei terminali
 i processi non sopravvivono, ma ogni terminale riparte con la cronologia di prima
 e, per Claude Code, riprende la conversazione (`claude --resume`).
 
+## Bot
+
+Ogni sessione (shell, Claude, Task Intake, worker automatico) è un "bot" con un nome
+preso a caso da una pool e un piccolo avatar pixel-art generato dal nome: serve a
+riconoscere le sessioni a colpo d'occhio, in intestazione del pannello, nella sidebar e
+nelle card dei task in corso. Il nome non si ripete tra le sessioni aperte e viene
+ricordato al riavvio. Da **Impostazioni › Generale › Bot** si accende o spegne la
+funzione, si aggiungono e rimuovono i nomi e si ripristina la pool predefinita
+(`bots.json` nella cartella dati).
+
 ## Avvii
 
 Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent:

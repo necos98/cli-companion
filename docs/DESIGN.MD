@@ -447,6 +447,18 @@ File nella cartella dati dell'app, scritti con `write_atomic`:
   con `agent_notify::is_valid_tab_id` (stesso charset del `CLI_COMPANION_SESSION`).
   `prune_scrollback(keep)` elimina i file dei tab non elencati (chiamato dopo il ripristino).
 
+### `bots.rs` — nomi dei bot (impostazioni globali)
+
+Ogni sessione (tab) è un "bot" con un nome e un avatar: tocco puramente visivo.
+File `bots.json` nella cartella dati: `{ enabled, names }`. File assente o campo
+mancante = `enabled: true` e la pool predefinita (`DEFAULT_NAMES`, unica fonte: il
+frontend la riceve da `get_bot_settings`). Stesso schema di `launch_settings.rs`: store
+con `Mutex`, file corrotto rinominato `.json.bak`, `update()` salva con `write_atomic`
+prima di aggiornare la memoria. Comandi `get_bot_settings`, `set_bot_settings(enabled,
+names)` (ritorna le impostazioni salvate) e `reset_bot_names`. Validazione: trim, nomi di
+1-24 caratteri, niente caratteri di controllo, niente duplicati (senza maiuscole), al
+massimo 200 nomi; la lista vuota è ammessa.
+
 ### `lib.rs`
 
 Registra i plugin (`opener`, `dialog`, `clipboard-manager`, `notification`), gli stati condivisi, il caricamento
@@ -456,6 +468,19 @@ dello store in `setup` e tutti i comandi. Capability minime in
 ## Frontend (`src/`)
 
 - `lib/tauri.ts`: tipi (`Workspace`, eventi PTY) e wrapper `api` sopra `invoke`/`listen`.
+- **Bot** (`lib/bots.ts`, zero-dep, `tests/bots.test.mjs`): `pickBotName(pool, taken)`
+  sceglie a caso un nome non usato dai tab aperti (pool esaurita: suffisso numerico,
+  "Bolt 2"; pool vuota: "Bot 1"...); `botLook(name)` ricava l'aspetto dell'avatar da un
+  hash stabile del nome (colore, testa, antenna, occhi, accessorio) e `botPixels(look)`
+  lo disegna su una griglia 12x12; `assignRestoredNames` assegna i nomi dei tab
+  ripristinati (il secondo con lo stesso nome ne riceve uno nuovo). `Tab.bot` è assegnato
+  alla creazione di ogni tab (shell, Claude, Intake, worker `automation-spawn`) anche a
+  funzione spenta, e si libera alla chiusura. `components/BotAvatar.tsx` è l'SVG
+  `crispEdges` scalabile (riusabile più grande); avatar e nome compaiono, solo con
+  `enabled`, in `PaneHeader`, nella lista terminali della `Sidebar` e in
+  `PanelRunningCard` (`botOf(tab)` da `App`). Pagina Impostazioni › Generale › Bot
+  (`settings/BotsPage.tsx`): interruttore, elenco con rimozione, aggiunta, ripristino
+  con conferma; ogni modifica è salvata subito e risale ad `App` (`onBotSettingsChange`).
 - `App.tsx`: layout barra del titolo + sidebar + area pannelli + barra di stato; stato globale
   (`workspaces`, `tabs`, `layout`, dialog). `tabs` è nell'ordine di creazione
   (ordine di render); gruppi, pannello attivo, ordine nella griglia e maximize
@@ -495,7 +520,7 @@ dello store in `setup` e tutti i comandi. Capability minime in
 - **Persistenza** (`lib/session.ts`, zero-dep, `tests/session.test.mjs`): schema
   `{ version: 1, activeWorkspaceId, groups: [{ workspaceId, order, activeTabId,
   maximizedTabId }], tabs: [{ tabId, workspaceId, launchId?, command, title?, agentId?,
-  agentSessionId? }] }`. Salvataggio con debounce di 500 ms a ogni modifica e alla
+  agentSessionId?, botName? }] }` (`botName` opzionale, nessun bump di versione). Salvataggio con debounce di 500 ms a ogni modifica e alla
   chiusura (`onCloseRequested`, con tetto di 3 s). `parseSession` tollera garbage, versioni
   sconosciute, id non validi e tab di workspace spariti (li scarta, ricostruendo i gruppi).
   Al primo avvio dopo il caricamento dei workspace i tab si ricreano con gli stessi tabId:

@@ -11,17 +11,19 @@ import AgentSettingsTab from "./AgentSettingsTab";
 import UpdateCheck from "./UpdateCheck";
 import ScheduleSettings from "./ScheduleSettings";
 import GeneralLaunchesPage from "./settings/GeneralLaunchesPage";
+import BotsPage from "./settings/BotsPage";
 import WorkspaceLaunchesPage from "./settings/WorkspaceLaunchesPage";
 import WorkerPage from "./settings/WorkerPage";
 import RepoPage from "./settings/RepoPage";
 import DeliveryPage from "./settings/DeliveryPage";
 import ArchivedPage from "./settings/ArchivedPage";
 import { SettingsPage, selectClass } from "./settings/shared";
-import type { AgentEnvStatus, BuiltinLaunch, Workspace } from "../lib/tauri";
+import type { AgentEnvStatus, BotSettings, BuiltinLaunch, Workspace } from "../lib/tauri";
 import { cn } from "../lib/utils";
 
 export type SettingsTab =
   | "general-launches"
+  | "bots"
   | "schedule"
   | "agents"
   | "updates"
@@ -34,6 +36,7 @@ export type SettingsTab =
 /** Pagine della sezione Generale. */
 const GENERAL_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general-launches", label: "Avvii" },
+  { id: "bots", label: "Bot" },
   { id: "schedule", label: "Fasce orarie" },
   { id: "agents", label: "Coding agent" },
   { id: "updates", label: "Aggiornamenti" },
@@ -74,6 +77,9 @@ interface Props {
   /** Avvio predefinito globale (id di un integrato; null = shell vuota). */
   globalLaunch?: string | null;
   onGlobalLaunchChange?: (id: string | null) => void;
+  /** Impostazioni dei bot (nome e avatar delle sessioni). */
+  botSettings: BotSettings;
+  onBotSettingsChange: (settings: BotSettings) => void;
 }
 
 export default function SettingsDialog({
@@ -91,6 +97,8 @@ export default function SettingsDialog({
   builtinLaunches = [],
   globalLaunch = null,
   onGlobalLaunchChange,
+  botSettings,
+  onBotSettingsChange,
 }: Props) {
   // Gli archiviati si gestiscono solo nella loro pagina.
   const workspaces = allWorkspaces.filter((w) => !w.archived);
@@ -163,6 +171,8 @@ export default function SettingsDialog({
             onGlobalLaunchChange={(id) => onGlobalLaunchChange?.(id)}
           />
         );
+      case "bots":
+        return <BotsPage settings={botSettings} onSettingsChange={onBotSettingsChange} />;
       case "schedule":
         return (
           <SettingsPage

@@ -3,6 +3,7 @@ mod agents;
 pub mod automation;
 mod awake;
 pub mod board;
+mod bots;
 mod launch_settings;
 pub mod mcp;
 mod pty;
@@ -111,12 +112,14 @@ pub fn run() {
         .manage(WorkspaceStore::default())
         .manage(PtyState::default())
         .manage(launch_settings::LaunchSettingsStore::default())
+        .manage(bots::BotSettingsStore::default())
         .manage(AutomationState::default())
         .manage(agents::TranscriptCache::default())
         .setup(|app| {
             migrate_legacy_data(app);
             workspaces::load_from_disk(app);
             launch_settings::load_from_disk(app);
+            bots::load_from_disk(app);
             automation::load_boards(app);
             automation::auto::init(app);
             automation::skills::restore_in_background(automation::TauriHost(app.handle().clone()));
@@ -144,6 +147,9 @@ pub fn run() {
             launch_settings::get_launch_settings,
             launch_settings::set_global_default_launch,
             launch_settings::set_show_usage,
+            bots::get_bot_settings,
+            bots::set_bot_settings,
+            bots::reset_bot_names,
             agents::builtin_launches,
             workspaces::open_workspace_folder,
             wsl::list_wsl_distros,

@@ -6,10 +6,13 @@ import { cn } from "@/lib/utils";
 import { ReviewBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
+import BotAvatar from "../BotAvatar";
 
 interface PanelRunningCardProps {
   task: Task;
   now: number;
+  /** Nome del bot (se la funzione e' attiva) del tab del worker. */
+  bot?: string;
   onClick: () => void;
 }
 
@@ -17,7 +20,7 @@ interface PanelRunningCardProps {
  * Card di un task in corso: spinner ambra e "modello · tempo", oppure triangolo
  * arancione e "Richiede attenzione" (bordo evidenziato). Un solo pulsante.
  */
-export default function PanelRunningCard({ task, now, onClick }: PanelRunningCardProps) {
+export default function PanelRunningCard({ task, now, bot, onClick }: PanelRunningCardProps) {
   const attention = displayStatus(task) === "attention";
   const preparing = Boolean(task.preparing);
   const meta = attention ? "Richiede attenzione" : preparing ? PREPARING_LABEL : runningMeta(task, now);
@@ -25,7 +28,7 @@ export default function PanelRunningCard({ task, now, onClick }: PanelRunningCar
     <button
       type="button"
       onClick={onClick}
-      title={task.preparing ?? task.title}
+      title={bot ? `${bot} · ${task.preparing ?? task.title}` : (task.preparing ?? task.title)}
       className={cn(
         "flex w-full min-w-0 items-start gap-2.5 rounded-lg border bg-surface px-2.5 py-[9px] text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         attention ? "border-status-attention/45" : "border-border",
@@ -40,6 +43,12 @@ export default function PanelRunningCard({ task, now, onClick }: PanelRunningCar
         />
       )}
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+        {bot && (
+          <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-text-secondary">
+            <BotAvatar name={bot} size={14} />
+            <span className="truncate">{bot}</span>
+          </span>
+        )}
         <span className="line-clamp-2 break-words text-[13px] font-medium">
           {task.title}
           {isReview(task) && <ReviewBadge className="ml-1.5 align-middle text-[10px]" />}

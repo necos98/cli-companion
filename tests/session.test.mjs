@@ -24,7 +24,7 @@ describe("sessione: serializzazione e lettura", () => {
       ],
       tabs: [
         tab("a", "w1", { command: "claude", launchId: "l1", agentId: "claude-code", agentSessionId: "s-1" }),
-        tab("b", "w1", { title: "vim" }),
+        tab("b", "w1", { title: "vim", botName: "Bolt" }),
         tab("c", "w2"),
       ],
     };
@@ -221,5 +221,25 @@ describe("sessione: vista globale", () => {
     assert.equal(parseSession(doc({ tabs, activeView: "global", global: { order: [] } }), ["w1", "w2"]).activeView, "workspace");
     assert.equal(parseSession(doc({ tabs, activeView: "boh", global: "x" }), ["w1", "w2"]).activeView, "workspace");
     assert.equal(parseSession(doc({ tabs, global: [1] }), ["w1", "w2"]).global.order.length, 0);
+  });
+
+  it("legge il nome del bot, lo pulisce e ignora i valori non validi", () => {
+    const p = parseSession(
+      doc({
+        tabs: [
+          tab("a", "w", { botName: "  Bolt " }),
+          tab("b", "w", { botName: "Pi\nxel" }),
+          tab("c", "w", { botName: "n".repeat(100) }),
+          tab("d", "w", { botName: 42 }),
+          tab("e", "w", { botName: "   " }),
+          tab("f", "w"),
+        ],
+      }),
+      ["w"],
+    );
+    assert.deepEqual(
+      p.tabs.map((t) => t.botName),
+      ["Bolt", "Pixel", "n".repeat(32), undefined, undefined, undefined],
+    );
   });
 });

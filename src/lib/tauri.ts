@@ -43,6 +43,12 @@ export interface LaunchSettings {
   show_usage: boolean;
 }
 
+/** Impostazioni dei bot: nome e avatar di ogni sessione (puramente visivi). */
+export interface BotSettings {
+  enabled: boolean;
+  names: string[];
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -318,6 +324,13 @@ export const api = {
     invoke<void>("show_agent_notification", { tabId, title, body }),
 
   setShowUsage: (enabled: boolean) => invoke<LaunchSettings>("set_show_usage", { enabled }),
+
+  getBotSettings: () => invoke<BotSettings>("get_bot_settings"),
+
+  setBotSettings: (enabled: boolean, names: string[]) =>
+    invoke<BotSettings>("set_bot_settings", { enabled, names }),
+
+  resetBotNames: () => invoke<BotSettings>("reset_bot_names"),
 
   agentUsageLimits: (agentId: string, env: string) =>
     invoke<UsageLimitsReply>("agent_usage_limits", { agentId, env }),

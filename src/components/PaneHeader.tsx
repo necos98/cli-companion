@@ -2,10 +2,13 @@ import { Maximize2, Minimize2, Pin, PinOff, X } from "lucide-react";
 import type { TabStatus } from "../lib/agents";
 import { tabBadge, statusWord as workerStatusWord } from "../lib/automation";
 import { cn } from "../lib/utils";
+import BotAvatar from "./BotAvatar";
 import StatusIcon from "./StatusIcon";
 
 interface Props {
   label: string;
+  /** Nome del bot della sessione; assente = funzione spenta. */
+  bot?: string;
   /** Nome del workspace, mostrato come prefisso "workspace / label" nella vista globale. */
   prefix?: string;
   status: TabStatus;
@@ -40,6 +43,7 @@ const BTN =
 /** Intestazione (30px) di un pannello: trascinabile per riordinare i pannelli. */
 export default function PaneHeader({
   label,
+  bot,
   prefix,
   status,
   automation,
@@ -57,7 +61,8 @@ export default function PaneHeader({
   // Per un worker la parola di stato e' quella del task, non quella dell'agente.
   const word = automation ? workerStatusWord(automation.status) : statusWord(status);
   const badge = tabBadge({ automation, launchId });
-  const baseTitle = prefix ? `${prefix} / ${label}` : label;
+  const tabTitle = prefix ? `${prefix} / ${label}` : label;
+  const baseTitle = bot ? `${bot} · ${tabTitle}` : tabTitle;
   return (
     <div
       draggable
@@ -77,6 +82,15 @@ export default function PaneHeader({
           </span>
           <span className="text-faint" aria-hidden="true">
             /
+          </span>
+        </>
+      )}
+      {bot && (
+        <>
+          <BotAvatar name={bot} size={18} />
+          <span className="max-w-[30%] flex-shrink-0 truncate text-xs font-medium">{bot}</span>
+          <span className="text-faint" aria-hidden="true">
+            ·
           </span>
         </>
       )}

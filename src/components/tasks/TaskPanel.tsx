@@ -55,6 +55,8 @@ export interface TaskPanelProps {
   onNewTask: () => void;
   /** Mette a fuoco un tab nella griglia dei terminali (es. il worker di un task in corso). */
   onFocusTab: (tabId: string) => void;
+  /** Nome del bot di un tab (se la funzione e' attiva). */
+  botOf?: (tabId: string) => string | undefined;
 }
 
 const FOOTER_BUTTON =
@@ -73,6 +75,7 @@ export default function TaskPanel({
   onOpenIntake,
   onNewTask,
   onFocusTab,
+  botOf,
 }: TaskPanelProps) {
   const workspaceId = workspace.id;
   const [error, setError] = useState<string | null>(null);
@@ -212,6 +215,7 @@ export default function TaskPanel({
                     key={t.id}
                     task={t}
                     now={now}
+                    bot={t.session ? botOf?.(t.session) : undefined}
                     onClick={() => (t.session ? onFocusTab(t.session) : onOpenManager(t.id))}
                   />
                 ))}

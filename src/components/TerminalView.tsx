@@ -87,6 +87,8 @@ interface Props {
   automation?: { status: string; tooltip: string };
   /** Avvio del tab (per il badge INTAKE del preset Task Intake). */
   launchId?: string;
+  /** Nome del bot della sessione (assente = funzione spenta). */
+  bot?: string;
   /** Utilizzo di token della sessione dell'agente (intestazione). */
   usage?: { text: string; title: string };
 }
@@ -124,6 +126,7 @@ function TerminalView({
   automation,
   usage,
   launchId,
+  bot,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
@@ -529,6 +532,7 @@ function TerminalView({
           status={paneStatus}
           automation={automation}
           launchId={launchId}
+          bot={bot}
           usage={usage}
           maximized={maximized}
           pinned={pinned}

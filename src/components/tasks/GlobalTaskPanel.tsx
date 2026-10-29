@@ -29,6 +29,8 @@ export interface GlobalTaskPanelProps {
   onOpenWorkspace: (workspaceId: string) => void;
   /** Mette a fuoco un tab nella griglia (es. il worker di un task in corso). */
   onFocusTab: (tabId: string) => void;
+  /** Nome del bot di un tab (se la funzione e' attiva). */
+  botOf?: (tabId: string) => string | undefined;
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -39,6 +41,7 @@ export default function GlobalTaskPanel({
   boards,
   onOpenWorkspace,
   onFocusTab,
+  botOf,
   collapsed,
   onToggleCollapsed,
 }: GlobalTaskPanelProps) {
@@ -114,6 +117,7 @@ export default function GlobalTaskPanel({
                   key={t.id}
                   task={t}
                   now={now}
+                  bot={t.session ? botOf?.(t.session) : undefined}
                   onClick={() => (t.session ? onFocusTab(t.session) : onOpenWorkspace(ws.id))}
                 />
               ))}
