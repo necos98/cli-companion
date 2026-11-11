@@ -34,6 +34,10 @@
     "windows": {
       "nsis": { "installerHooks": "windows/installer-hooks.nsh" }
     },
+    "resources": {
+      "windows/conpty/conpty.dll": "conpty.dll",
+      "windows/conpty/OpenConsole.exe": "OpenConsole.exe"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,2 +1,5 @@
 # I bindings generati da ts-rs hanno sempre LF: con autocrlf su Windows il diff della CI sarebbe sporco.
 src/bindings/** text eol=lf
+# ConPTY distribuito con l'app: binari firmati, mai convertiti.
+src-tauri/windows/conpty/*.dll binary
+src-tauri/windows/conpty/*.exe binary
