@@ -1380,7 +1380,9 @@ src/
   logo "C" in `components/Logo.tsx` (icone in `src-tauri/icons`, sorgenti in `icons/source`).
 - `components/AddWorkspaceDialog.tsx`: modal con toggle Windows/WSL.
   Windows: picker cartella nativo (`@tauri-apps/plugin-dialog`) o path manuale.
-  WSL: lista distro con caricamento async, input percorso con bottone "Verifica".
+  WSL: lista distro con caricamento async, input percorso con bottone "Verifica" e "Sfoglia" (parte da `\\wsl$\<distro>`).
+  Il percorso incollato, scelto o lasciato nel campo passa da `toWslPath` (`lib/wslPath.ts`, `tests/wsl-path.test.mjs`):
+  backslash → slash, `\\wsl.localhost\<distro>\...` → percorso Linux e distro selezionata, `C:\...` → `/mnt/c/...`.
 - `components/SettingsDialog.tsx`: due tab, "Avvii personalizzati" (selettore
   workspace, lista/modifica/elimina/predefinito, form di aggiunta; ogni
   modifica è salvata subito via comandi) e "Integrazioni" (`settings/IntegrationsPage.tsx`: una card per integrazione con

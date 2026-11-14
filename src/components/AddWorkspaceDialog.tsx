@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ClipboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
@@ -6,6 +6,7 @@ import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTi
 import { Input } from "./ui/input";
 import { api } from "../lib/tauri";
 import type { Workspace } from "../lib/tauri";
+import { matchDistro, slashes, toWslPath, wslBrowseStart } from "../lib/wslPath";
 
 interface Props {
   isOpen: boolean;
@@ -59,12 +60,48 @@ export default function AddWorkspaceDialog({ isOpen, onClose, onAdded }: Props) 
     }
   };
 
+  // Percorso WSL incollato, scelto con "Sfoglia" o lasciato nel campo: diventa Linux e, se nomina una
+  // distro dell'elenco (`\\wsl.localhost\<distro>\...`), la seleziona. Restituisce i valori da usare subito.
+  const applyWslPath = (raw: string) => {
+    const parsed = toWslPath(raw);
+    const found = matchDistro(parsed.distro, distros);
+    if (found) setDistro(found);
+    if (parsed.path !== wslPath || (found && found !== distro)) setCheckOk(null);
+    setWslPath(parsed.path);
+    return { path: parsed.path, distro: found ?? distro };
+  };
+
+  const pasteWslPath = (e: ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text");
+    if (!text) return;
+    e.preventDefault();
+    const input = e.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    applyWslPath(input.value.slice(0, start) + text + input.value.slice(end));
+  };
+
+  const browseWsl = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Seleziona cartella",
+        defaultPath: distro ? wslBrowseStart(distro, wslPath) : undefined,
+      });
+      if (typeof selected === "string") applyWslPath(selected);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const verifyWsl = async () => {
-    if (!distro || !wslPath.trim()) return;
+    const target = applyWslPath(wslPath);
+    if (!target.distro || !target.path) return;
     setChecking(true);
     setCheckOk(null);
     try {
-      setCheckOk(await api.checkWslPath(distro, wslPath.trim()));
+      setCheckOk(await api.checkWslPath(target.distro, target.path));
     } catch {
       setCheckOk(false);
     } finally {
@@ -74,12 +111,13 @@ export default function AddWorkspaceDialog({ isOpen, onClose, onAdded }: Props) 
 
   const save = async () => {
     setError(null);
-    const path = kind === "windows" ? winPath.trim() : wslPath.trim();
+    const wsl = kind === "wsl" ? applyWslPath(wslPath) : null;
+    const path = wsl ? wsl.path : winPath.trim();
     if (!path) {
       setError(kind === "windows" ? "Seleziona una cartella." : "Inserisci il percorso Linux.");
       return;
     }
-    if (kind === "wsl" && !distro) {
+    if (wsl && !wsl.distro) {
       setError("Seleziona una distro WSL.");
       return;
     }
@@ -89,7 +127,7 @@ export default function AddWorkspaceDialog({ isOpen, onClose, onAdded }: Props) 
         name: name.trim(),
         kind,
         path,
-        distro: kind === "wsl" ? distro : undefined,
+        distro: wsl ? wsl.distro : undefined,
         shell: shell.trim() || undefined,
       });
       onAdded(ws);
@@ -188,12 +226,17 @@ export default function AddWorkspaceDialog({ isOpen, onClose, onAdded }: Props) 
                   <Input
                     value={wslPath}
                     onChange={(e) => {
-                      setWslPath(e.target.value);
+                      setWslPath(slashes(e.target.value));
                       setCheckOk(null);
                     }}
+                    onPaste={pasteWslPath}
+                    onBlur={() => applyWslPath(wslPath)}
                     placeholder="/home/user/progetto"
                     className="flex-1"
                   />
+                  <Button variant="secondary" onClick={() => void browseWsl()}>
+                    Sfoglia
+                  </Button>
                   <Button
                     variant="secondary"
                     disabled={checking || !distro || !wslPath.trim()}
