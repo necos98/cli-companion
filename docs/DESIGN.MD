@@ -18,7 +18,9 @@ progetto, [CONTRIBUTING.md](../CONTRIBUTING.md).
   grezzi non pre-bundlati -> schermata bianca). Lo vieta la regola ESLint `no-restricted-imports`
   (`eslint.config.js`).
 - Terminali: **xterm.js** (`@xterm/xterm` + `@xterm/addon-fit`) nel frontend,
-  **portable-pty** (ConPTY su Windows) nel backend
+  **portable-pty** (ConPTY su Windows) nel backend. Il ConPTY è quello distribuito con l'app
+  (`conpty.dll` + `OpenConsole.exe` accanto all'eseguibile, vedi `src-tauri/windows/conpty/README.md`), non quello
+  di sistema: su Windows 10 quest'ultimo ridisegna male le interfacce a schermo intero dei coding agent
 - Persistenza: **JSON** nella app-data dir di Tauri. Tutti i file strutturati (`workspaces.json`,
   `launch_settings.json`, `bots.json`, `hub_settings.json`, `schedule.json`, `boards/<workspace_id>.json`,
   `threads/<workspace_id>.json`, `threads/general.json`) passano da `store/`
