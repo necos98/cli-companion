@@ -394,7 +394,7 @@ identico a General e renderebbe ambigua la scelta.
 
 - `task`: `Adds or improves automated tests for existing behaviour, following the project's test conventions; changes production code only to make it testable.`
 - Kinds `[work]`, fascia `Standard`, effort `medium`: lavoro ben definito, ripetitivo. Coerente con lo standard dei
-  worker (`board/prompts/worker_guardrails.md`, punti 7 e 8) che la skill non deve ripetere.
+  worker (`board/prompts/engineering_standard.md`, punti 7 e 8) che la skill non deve ripetere.
 
 **`docs-writer` — Docs Writer** (R9)
 
@@ -472,7 +472,7 @@ Da documentare (es. in [BOARD.MD](BOARD.MD) o nella UI dei Bot come "idee"), non
 - id kebab-case = nome della cartella e del frontmatter `name`; `description` obbligatoria;
 - testo **ASCII**, fine riga LF, in inglese;
 - **nessun nome di agente o modello** (test `skills_name_no_agent_and_no_model`, con elenco di nomi vietati);
-- le skill dei worker non ripetono lo standard dei worker (`worker_guardrails.md`) né le istruzioni di consegna: le
+- le skill dei worker non ripetono lo standard dei worker (`engineering_standard.md`) né le istruzioni di consegna: le
   istruzioni del task hanno la precedenza in caso di conflitto (`texts/skill.rs`);
 - **rischio di attivazione spontanea**: le skill del plugin compaiono anche nelle sessioni interattive dell'utente
   (sono nell'elenco delle skill dell'agente come `cli-companion-notify:<id>`). Una descrizione generica ("Use when

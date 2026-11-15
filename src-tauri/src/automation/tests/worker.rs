@@ -4,7 +4,7 @@
 use super::*;
 use crate::agents::testing::{FakeIntegration, FAKE_WAIT_APPROVAL, FAKE_WAIT_ASK, FAKE_WAIT_NUDGE, FAKE_WAIT_PREFIX};
 use crate::agents::{HookEventKind, HookEvents};
-use crate::board::texts::WORKER_GUARDRAILS;
+use crate::board::texts::{ENGINEERING_STANDARD, WORKER_GUARDRAILS};
 use crate::board::TaskAction;
 use crate::validate::valid_model;
 
@@ -23,6 +23,10 @@ fn get_task_returns_task_instructions_environment_and_delivery() {
     assert!(instr.contains("Work only inside C:\\p\\.worktrees\\a") && instr.contains("complete_task"));
     // Standard di ingegneria prima delle regole del workspace.
     let g = instr.find(WORKER_GUARDRAILS.trim_end()).expect("guardrails in get_task instructions");
+    // Il preambolo rivolto al worker, poi le regole condivise con il revisore.
+    let preamble = "Engineering standard (non-negotiable). You are a strict senior engineer reviewing your own work";
+    assert!(instr[g..].starts_with(preamble), "{instr}");
+    assert!(instr[g..].contains(ENGINEERING_STANDARD.trim_end()));
     let rules = instr.find("Workspace rules (always apply").unwrap();
     assert!(g < rules && instr.ends_with("never run e2e"));
     let env = t["environment"].as_str().unwrap();

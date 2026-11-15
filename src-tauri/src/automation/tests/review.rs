@@ -2,7 +2,7 @@
 //! `get_task`, verdetto di `complete_task`, righe di `list_tasks` e pulizia.
 
 use super::*;
-use crate::board::texts::{REVIEWER_INSTRUCTIONS, WORKER_GUARDRAILS};
+use crate::board::texts::{ENGINEERING_STANDARD, REVIEWER_INSTRUCTIONS, REVIEWER_STANDARD_INTRO, WORKER_GUARDRAILS};
 
 fn review_spec(id: &str, deps: &[&str]) -> Value {
     let mut s = spec(id, deps);
@@ -147,8 +147,14 @@ fn get_task_of_a_review_has_reviewer_instructions_and_the_reports() {
     let instr = t["instructions"].as_str().unwrap();
     assert!(instr.contains("Work only inside C:\\p\\.worktrees\\rev"), "{instr}");
     assert!(instr.contains(REVIEWER_INSTRUCTIONS.trim_end()));
-    assert!(!instr.contains(WORKER_GUARDRAILS.trim_end()));
-    assert!(instr.ends_with("never run e2e") && instr.contains("Workspace rules (always apply"));
+    // Lo standard con la frase del revisore, senza il preambolo rivolto al worker.
+    let standard = format!("{REVIEWER_STANDARD_INTRO}\n\n{}", ENGINEERING_STANDARD.trim_end());
+    let worker_preamble = WORKER_GUARDRAILS.lines().next().unwrap();
+    assert!(instr.contains(&standard), "{instr}");
+    assert!(!instr.contains(worker_preamble), "{instr}");
+    let rules = instr.find("Workspace rules (always apply").unwrap();
+    assert!(instr.find(REVIEWER_INSTRUCTIONS.trim_end()).unwrap() < instr.find(&standard).unwrap());
+    assert!(instr.find(&standard).unwrap() < rules && instr.ends_with("never run e2e"));
     assert!(t["environment"].as_str().unwrap().contains("branch task/rev (created from main)"));
     let reviewed = t["reviewed_tasks"].as_array().unwrap();
     assert_eq!(reviewed.len(), 1);

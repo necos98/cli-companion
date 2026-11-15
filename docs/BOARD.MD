@@ -470,8 +470,10 @@ modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalit�
 **Istruzioni del reviewer.** Per i task `review` `get_task` non restituisce né le istruzioni del
 worker né `delivery` (nessun passo di consegna: il reviewer non committa, non pusha, non
 fa merge): restituisce le istruzioni di `src-tauri/src/board/prompts/reviewer_instructions.md`
-(incluso con `include_str!`, in inglese), più `environment` normale e le regole del workspace
-accodate come al solito. Vedi "Task di review".
+(incluso con `include_str!`, in inglese), seguite dallo standard di ingegneria con cui giudica i
+diff (la frase `REVIEWER_STANDARD_INTRO` e le regole numerate, senza il preambolo del worker; vedi
+"Standard di ingegneria"), più `environment` normale e le regole del workspace accodate come al
+solito. Vedi "Task di review".
 
 **Istruzioni del pianificatore.** Per i task `plan` `get_task` non restituisce `delivery` né lo
 standard di ingegneria: restituisce le istruzioni di `src-tauri/src/board/prompts/planner_instructions.md`
@@ -502,8 +504,13 @@ Al retry di un task fallito `get_task` aggiunge `previous_attempt` (summary del 
 nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 
 **Standard di ingegneria.** Ogni worker riceve, dopo le istruzioni comuni e prima delle regole
-del workspace, lo standard di `src-tauri/src/board/prompts/worker_guardrails.md` (incluso con
-`include_str!`, in inglese): rispetto del progetto e dei pattern del framework, SOLID e codice
+del workspace, lo standard `WORKER_GUARDRAILS` (`board/texts.rs`, in inglese): il preambolo rivolto
+al worker di `src-tauri/src/board/prompts/worker_standard_preamble.md`, una riga vuota e le regole
+numerate di `src-tauri/src/board/prompts/engineering_standard.md` (entrambi inclusi con
+`include_str!` e uniti con `concat!`). Le regole sono **un'unica fonte**: il reviewer riceve lo
+stesso file, introdotto da una frase propria (i worker dei task rivisti dovevano seguire lo
+standard, i diff si giudicano su di esso; le regole che parlano di consegna, `follow_ups`, report o
+`failed` descrivono doveri del worker da controllare, non da eseguire). Le regole: rispetto del progetto e dei pattern del framework, SOLID e codice
 pulito, niente file "god", sicurezza come bloccante (non un follow-up), prestazioni per
 progettazione, errori e casi limite, **concorrenza** (solo se la modifica tocca stato condiviso,
 file, lock, thread o task asincroni: niente race né deadlock, niente I/O sotto lock, scritture
@@ -974,8 +981,15 @@ tutti `done` (nessuna modifica allo scheduler).
   fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
   integrato con `git fetch origin` e `origin/<base>`. Legge le specifiche con `get_task_details`,
   i diff dei task rivisti, esegue build e test richiesti, se una specifica rivista ha scenari E2E esegue la suite E2E sullo stato integrato e controlla che ogni scenario abbia un test (scenario senza test o test che fallisce = difetto reale), controlla ogni "Done when" e
-  l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali;
-  i miglioramenti opzionali vanno in `findings` come suggerimenti.
+  l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali:
+  obiettivo mancato, bug, regressioni, test mancanti, sicurezza e le **violazioni chiare dello
+  standard di ingegneria introdotte dai diff** dei task rivisti (test mancanti o che non possono
+  fallire, file cresciuto oltre la soglia o con responsabilità mescolate, helper esistenti
+  duplicati, errori ignorati, documentazione non aggiornata, report che dichiara verifiche non
+  eseguite, regole su concorrenza o UI violate quando si applicano), ognuna con la regola citata
+  (numero e nome) e il punto del codice (`file:riga`). Stile, gusto, miglioramenti opzionali e
+  codice preesistente fuori dai diff vanno in `findings` come suggerimenti, mai in un task di
+  correzione.
 - **E2E**: se almeno un task rivisto ha `e2e: true` **e** il repository della review ha ancora
   la configurazione `e2e`, le istruzioni del reviewer ricevono in coda un paragrafo (`E2E_REVIEWER`):
   `run_e2e` sullo stato integrato, `get_e2e_result` con `wait_seconds: 25` finché non è più

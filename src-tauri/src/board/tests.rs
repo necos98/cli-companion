@@ -1117,8 +1117,10 @@ fn reviewer_instructions_add_the_e2e_paragraph_only_when_reviewed_and_configured
         ..Default::default()
     };
     let base = format!(
-        "You are an automated cli-companion reviewer. Work only inside C:\\proj\\.worktrees\\a; never touch other folders.\n\n{}",
-        texts::REVIEWER_INSTRUCTIONS.trim_end()
+        "You are an automated cli-companion reviewer. Work only inside C:\\proj\\.worktrees\\a; never touch other folders.\n\n{}\n\n{}\n\n{}",
+        texts::REVIEWER_INSTRUCTIONS.trim_end(),
+        texts::REVIEWER_STANDARD_INTRO,
+        texts::ENGINEERING_STANDARD.trim_end()
     );
     for rules in ["", "  keep it short ", "r"] {
         let tail = if rules.trim().is_empty() {
@@ -1261,16 +1263,24 @@ fn instructions_carry_rules_guardrails_and_the_working_folder() {
     let rules = text.find("Workspace rules (always apply").expect("rules");
     assert!(text.find("Background commands").unwrap() < g && g < rules);
     assert!(text[rules..].contains("never relax the security rules") && text.ends_with("never run the e2e suite"));
-    assert!(texts::WORKER_GUARDRAILS.contains("Security is a blocker"));
+    // Lo standard del worker e' il preambolo rivolto a lui, una riga vuota e le regole condivise.
+    let (preamble, standard) = texts::WORKER_GUARDRAILS.split_once("\n\n").expect("preamble, then the rules");
+    assert!(
+        preamble.starts_with("Engineering standard (non-negotiable). You are a strict senior engineer"),
+        "{preamble}"
+    );
+    assert_eq!(standard, texts::ENGINEERING_STANDARD);
+    assert!(standard.starts_with("1. Project first.") && standard.contains("Security is a blocker"));
     // Senza regole niente blocco.
     assert!(!texts::instructions(&env(&d, &t, None), "  ", false).contains("Workspace rules"));
 }
 
 #[test]
-fn worker_instructions_carry_every_rule_of_the_engineering_standard() {
+fn worker_and_reviewer_instructions_carry_every_rule_of_the_engineering_standard() {
     let d = delivery(DeliveryMode::Commit, false);
     let t = worktree_task(&d);
     let text = texts::instructions(&env(&d, &t, None), "", false);
+    let reviewer = texts::reviewer_instructions(&env(&d, &t, None), "", false);
     for rule in [
         "Concurrency, only when the change touches shared state",
         "Write files atomically",
@@ -1285,10 +1295,14 @@ fn worker_instructions_carry_every_rule_of_the_engineering_standard() {
     ] {
         assert!(text.contains(rule), "missing {rule:?}");
     }
-    // Regole numerate da 1 a 13 senza buchi.
-    let numbered = texts::WORKER_GUARDRAILS.lines().filter(|l| l.starts_with(|c: char| c.is_ascii_digit()));
-    let numbers: Vec<usize> = numbered.map(|l| l.split('.').next().unwrap().parse().unwrap()).collect();
+    // Regole numerate da 1 a 13 senza buchi, ognuna anche nelle istruzioni del revisore.
+    let numbered: Vec<&str> =
+        texts::ENGINEERING_STANDARD.lines().filter(|l| l.starts_with(|c: char| c.is_ascii_digit())).collect();
+    let numbers: Vec<usize> = numbered.iter().map(|l| l.split('.').next().unwrap().parse().unwrap()).collect();
     assert_eq!(numbers, (1..=13).collect::<Vec<_>>());
+    for rule in numbered {
+        assert!(reviewer.contains(rule), "reviewer misses {rule:?}");
+    }
 }
 
 #[test]

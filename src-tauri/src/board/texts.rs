@@ -13,8 +13,18 @@ mod skill;
 
 pub use skill::skill_instruction;
 
-/// Standard di ingegneria che ogni worker riceve, prima delle regole del workspace.
-pub const WORKER_GUARDRAILS: &str = include_str!("prompts/worker_guardrails.md");
+/// Regole numerate dello standard di ingegneria: unica fonte, per il worker e per il revisore.
+pub const ENGINEERING_STANDARD: &str = include_str!("prompts/engineering_standard.md");
+
+/// Standard di ingegneria che ogni worker riceve, prima delle regole del workspace:
+/// il preambolo rivolto al worker, una riga vuota, poi le regole.
+pub const WORKER_GUARDRAILS: &str =
+    concat!(include_str!("prompts/worker_standard_preamble.md"), "\n", include_str!("prompts/engineering_standard.md"));
+
+/// Introduce lo standard nelle istruzioni del revisore, al posto del preambolo del worker.
+pub const REVIEWER_STANDARD_INTRO: &str = "Engineering standard of the reviewed tasks. The workers of the reviewed tasks had to follow \
+this engineering standard; judge their diffs against it. Where a rule speaks of delivering, `follow_ups`, reporting or completing \
+the task as failed, it describes the worker's duties: check that the worker met them, never perform them yourself.";
 
 /// Aggiunta alle istruzioni del pianificatore quando `ask_user` e' disponibile.
 pub const PLANNER_ASK_USER: &str = include_str!("prompts/planner_ask_user.md");
@@ -116,7 +126,7 @@ pub fn instructions(e: &EnvInfo, workspace_rules: &str, ask_user: bool) -> Strin
 }
 
 /// Istruzioni del revisore di un task `review`: cartella di lavoro, regole del
-/// revisore e del workspace.
+/// revisore, standard di ingegneria con cui giudica i diff e regole del workspace.
 /// `reviewed_e2e`: almeno un task revisionato ha `e2e` (il paragrafo c'e' solo se il repository ha la configurazione).
 pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str, reviewed_e2e: bool) -> String {
     let mut s = format!(
@@ -124,6 +134,10 @@ pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str, reviewed_e2e: b
         dir = e.workdir
     );
     s.truncate(s.trim_end().len());
+    s.push_str("\n\n");
+    s.push_str(REVIEWER_STANDARD_INTRO);
+    s.push_str("\n\n");
+    s.push_str(ENGINEERING_STANDARD.trim_end());
     if e.free {
         s.push_str(REVIEWER_FREE);
     }
