@@ -1267,6 +1267,31 @@ fn instructions_carry_rules_guardrails_and_the_working_folder() {
 }
 
 #[test]
+fn worker_instructions_carry_every_rule_of_the_engineering_standard() {
+    let d = delivery(DeliveryMode::Commit, false);
+    let t = worktree_task(&d);
+    let text = texts::instructions(&env(&d, &t, None), "", false);
+    for rule in [
+        "Concurrency, only when the change touches shared state",
+        "Write files atomically",
+        "A test must fail when the behaviour it covers breaks",
+        "Tests are deterministic",
+        "User interface, only when the change touches one",
+        "Every view handles its loading, error and empty states",
+        "Documentation in step",
+        "Comments explain why, not what",
+        "Report honestly",
+        "Never report a build, test or check as passing unless it ran on the final code",
+    ] {
+        assert!(text.contains(rule), "missing {rule:?}");
+    }
+    // Regole numerate da 1 a 13 senza buchi.
+    let numbered = texts::WORKER_GUARDRAILS.lines().filter(|l| l.starts_with(|c: char| c.is_ascii_digit()));
+    let numbers: Vec<usize> = numbered.map(|l| l.split('.').next().unwrap().parse().unwrap()).collect();
+    assert_eq!(numbers, (1..=13).collect::<Vec<_>>());
+}
+
+#[test]
 fn e2e_flag_defaults_to_false_is_parsed_and_omitted_when_false() {
     let base = spec("a", &[]);
     assert!(!parse_spec(&json!({"title": "T", "task": "x"}), None).unwrap().e2e);

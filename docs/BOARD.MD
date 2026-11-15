@@ -505,8 +505,17 @@ nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 del workspace, lo standard di `src-tauri/src/board/prompts/worker_guardrails.md` (incluso con
 `include_str!`, in inglese): rispetto del progetto e dei pattern del framework, SOLID e codice
 pulito, niente file "god", sicurezza come bloccante (non un follow-up), prestazioni per
-progettazione, errori e casi limite, test come parte della modifica, **scenari E2E** (se la specifica ha una sezione E2E scenarios ogni scenario diventa un test della suite E2E del progetto, con locator rivolti all'utente, esiti osservabili, niente attese fisse e test indipendenti; la suite si esegue prima della consegna), rigore sul perimetro e
-**autorevisione severa** del proprio diff prima di consegnare. Le regole del workspace aggiungono
+progettazione, errori e casi limite, **concorrenza** (solo se la modifica tocca stato condiviso,
+file, lock, thread o task asincroni: niente race né deadlock, niente I/O sotto lock, scritture
+atomiche con file temporaneo e rename, operazioni ritentate idempotenti), **test utili** come
+parte della modifica (falliscono se il comportamento si rompe, asseriscono esiti osservabili,
+deterministici e indipendenti), **scenari E2E** (se la specifica ha una sezione E2E scenarios ogni scenario diventa un test della suite E2E del progetto, con locator rivolti all'utente, esiti osservabili, niente attese fisse e test indipendenti; la suite si esegue prima della consegna), **UI** (solo se la modifica
+tocca un'interfaccia: tastiera e nome accessibile per ogni elemento interattivo, focus visibile e
+gestito nei dialog, testi tradotti col meccanismo del progetto, stati di caricamento, errore e
+vuoto), **documentazione allineata** nella stessa modifica (i commenti spiegano il perché),
+rigore sul perimetro e **autorevisione severa** del proprio diff prima di consegnare, con un
+**report onesto**: cosa è stato verificato e come, cosa no e perché, mai un controllo dichiarato
+passato se non è stato eseguito sul codice finale. Le regole del workspace aggiungono
 specifiche del progetto e non allentano mai le regole di sicurezza.
 
 ## Scheduler

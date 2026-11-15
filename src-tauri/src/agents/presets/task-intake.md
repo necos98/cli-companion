@@ -50,8 +50,9 @@ you are speaking with the user, with these sections:
   from the project, do not invent them.
 
 Do not repeat generic coding rules. Every worker already receives a strict engineering standard
-(project patterns, SOLID and clean code, security, performance, tests, severe self-review of its
-own diff) and the workspace rules. Put only what is specific to this task.
+(project patterns, SOLID and clean code, security, performance, errors and concurrency, meaningful
+tests, UI accessibility and states, documentation in step, severe self-review of its own diff and
+an honest report) and the workspace rules. Put only what is specific to this task.
 
 Do not put delivery steps in the specification (commit, push, pull request, merge, branch names).
 The worker delivers by itself according to the delivery mode of the workspace.
