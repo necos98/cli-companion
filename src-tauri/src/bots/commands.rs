@@ -5,6 +5,7 @@
 use super::agent::{AgentBot, AgentBotDraft, SkillRef};
 use super::agent_bots;
 use super::catalog::AgentCatalog;
+use super::engineering_standard::{prepare_standard_file, StandardFile};
 use super::launch_refs;
 use super::launches::{self, BotLaunch, BotTabLaunch, BotTabRestore};
 use super::skills::{selectable_skills, BotSkillOption};
@@ -13,7 +14,7 @@ use super::{update, BotSettings, BotSettingsStore};
 use crate::agents::registry;
 use crate::hub::settings::HubSettingsStore;
 use crate::store::data_dir;
-use crate::workspaces::WorkspaceStore;
+use crate::workspaces::{Workspace, WorkspaceStore};
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
@@ -102,7 +103,8 @@ pub fn bot_launches(state: State<BotSettingsStore>, workspace_agent: Option<Stri
 }
 
 /// Prepara il lancio di un Bot nel tab `tab_id` che il frontend sta per aprire:
-/// le variabili d'ambiente dell'agente vengono messe da parte per `pty_spawn`.
+/// le variabili d'ambiente dell'agente vengono messe da parte per `pty_spawn`. Un Bot
+/// con `work` riceve lo standard di ingegneria interattivo (vedi `engineering_standard`).
 #[tauri::command]
 pub async fn bot_interactive_launch(
     app: AppHandle,
@@ -124,10 +126,14 @@ pub async fn bot_interactive_launch(
             Some(SkillRef::User(_)) => crate::user_skills::list(&crate::user_skills::store_dir(&data_dir(&app)?))?,
             _ => Vec::new(),
         };
-        let (launch, env) =
-            launches::build_bot_launch(&bot, &workspace_agent_id(ws.agent), &AgentCatalog::current(), |name| {
-                user_skills.iter().any(|s| s.name == name)
-            })?;
+        let standard = standard_file(&app, &ws);
+        let (launch, env) = launches::build_bot_launch(
+            &bot,
+            &workspace_agent_id(ws.agent),
+            &AgentCatalog::current(),
+            |name| user_skills.iter().any(|s| s.name == name),
+            &standard,
+        )?;
         if !env.is_empty() {
             crate::pty::stage_env(&app, &tab_id, env);
         }
@@ -153,11 +159,15 @@ pub async fn bot_restore_env(
         }
         let ws = app.state::<WorkspaceStore>().find(&workspace_id).ok_or("Workspace non trovato.")?;
         let bot = app.state::<BotSettingsStore>().read(|s| s.agents.iter().find(|b| b.id == bot_id).cloned());
+        // Sempre, anche se il Bot e' cambiato: la riga salvata di un agente che porta
+        // il file nel comando lo nomina e la CLI rifiuta un file che non c'e'.
+        let standard = standard_file(&app, &ws);
         let (env, warning) = launches::build_bot_restore(
             bot.as_ref(),
             &agent_id,
             &workspace_agent_id(ws.agent),
             &AgentCatalog::current(),
+            &standard,
         );
         if !env.is_empty() {
             crate::pty::stage_env(&app, &tab_id, env);
@@ -165,4 +175,10 @@ pub async fn bot_restore_env(
         Ok(BotTabRestore { warning })
     })
     .await
+}
+
+/// Il file dello standard interattivo per i tab del workspace `ws`, scritto
+/// nella cartella dati dell'app; un errore diventa l'avviso del lancio.
+fn standard_file(app: &AppHandle, ws: &Workspace) -> StandardFile {
+    prepare_standard_file(&data_dir(app)?, ws.kind)
 }

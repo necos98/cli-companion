@@ -33,6 +33,8 @@ const ENV_EXAMPLE_FILES: &str = "*.env.example";
 const KEY_MODEL: &str = "model";
 const KEY_DEFAULT_AGENT: &str = "default_agent";
 const KEY_PERMISSIONS: &str = "permissions";
+/// File di istruzioni aggiuntive (path assoluti o glob), in coda agli `AGENTS.md`.
+const KEY_INSTRUCTIONS: &str = "instructions";
 
 /// Una regola nel formato JSON di OpenCode.
 pub(super) fn rule(action: &str, resource: &str, effect: &str) -> Value {
@@ -85,10 +87,20 @@ pub(super) fn config_content(mode: PermissionMode, model: Option<&str>) -> Strin
     config.to_string()
 }
 
-/// `OPENCODE_CONFIG_CONTENT` con il solo modello: niente permessi ne' agente di
-/// partenza, cosi' un tab interattivo conserva la configurazione dell'utente.
-pub(super) fn model_only_content(model: &str) -> String {
-    json!({ KEY_MODEL: model }).to_string()
+/// `OPENCODE_CONFIG_CONTENT` di un tab interattivo: il modello e il file di
+/// istruzioni, se dati, e nient'altro (niente permessi ne' agente di partenza,
+/// cosi' il tab conserva la configurazione dell'utente). `None` se non c'e'
+/// niente da impostare. Le istruzioni si aggiungono a quelle delle altre
+/// configurazioni e agli `AGENTS.md` (documentazione di `instructions`).
+pub(super) fn interactive_content(model: Option<&str>, instructions_file: Option<&str>) -> Option<String> {
+    let mut config = serde_json::Map::new();
+    if let Some(model) = model {
+        config.insert(KEY_MODEL.to_string(), json!(model));
+    }
+    if let Some(file) = instructions_file {
+        config.insert(KEY_INSTRUCTIONS.to_string(), json!([file]));
+    }
+    (!config.is_empty()).then(|| Value::Object(config).to_string())
 }
 
 #[cfg(test)]
@@ -171,7 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn model_only_content_carries_nothing_but_the_model() {
-        assert_eq!(model_only_content("opencode/gpt-5.5"), r#"{"model":"opencode/gpt-5.5"}"#);
+    fn interactive_content_carries_only_the_model_and_the_instructions() {
+        assert_eq!(
+            interactive_content(Some("opencode/gpt-5.5"), None).as_deref(),
+            Some(r#"{"model":"opencode/gpt-5.5"}"#)
+        );
+        let file = r"C:\Users\Mario Rossi\std.md";
+        let both: Value = serde_json::from_str(&interactive_content(Some("p/m"), Some(file)).unwrap()).unwrap();
+        assert_eq!(both, json!({ "model": "p/m", "instructions": [file] }));
+        assert_eq!(
+            interactive_content(None, Some("/mnt/c/x.md")).as_deref(),
+            Some(r#"{"instructions":["/mnt/c/x.md"]}"#)
+        );
+        assert_eq!(interactive_content(None, None), None);
     }
 }

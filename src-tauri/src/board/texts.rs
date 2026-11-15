@@ -10,16 +10,10 @@ use in_place::{in_place_description, root_planner_environment};
 mod free;
 mod in_place;
 mod skill;
+mod standard;
 
 pub use skill::skill_instruction;
-
-/// Regole numerate dello standard di ingegneria: unica fonte, per il worker e per il revisore.
-pub const ENGINEERING_STANDARD: &str = include_str!("prompts/engineering_standard.md");
-
-/// Standard di ingegneria che ogni worker riceve, prima delle regole del workspace:
-/// il preambolo rivolto al worker, una riga vuota, poi le regole.
-pub const WORKER_GUARDRAILS: &str =
-    concat!(include_str!("prompts/worker_standard_preamble.md"), "\n", include_str!("prompts/engineering_standard.md"));
+pub use standard::{ENGINEERING_STANDARD, INTERACTIVE_STANDARD, WORKER_GUARDRAILS};
 
 /// Introduce lo standard nelle istruzioni del revisore, al posto del preambolo del worker.
 pub const REVIEWER_STANDARD_INTRO: &str = "Engineering standard of the reviewed tasks. The workers of the reviewed tasks had to follow \

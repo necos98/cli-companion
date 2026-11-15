@@ -5,6 +5,7 @@
 
 use super::agent::{AgentBot, ModelChoice, SkillRef};
 use super::catalog::AgentCatalog;
+use super::engineering_standard::{BotStandard, StandardFile};
 use super::resolve::{resolve_bot, ResolvedBot};
 use crate::agents::{
     first_invalid_env_name, AgentIntegration, AgentUnavailable, InteractiveLauncher, InteractiveRequest,
@@ -109,12 +110,15 @@ fn bot_launch(bot: &AgentBot, workspace_agent: &str, catalog: &AgentCatalog) -> 
 
 /// Il lancio del Bot e le variabili d'ambiente da preparare per il tab prima
 /// che parta. `user_skill_exists` dice se una skill utente c'e' ancora: se manca
-/// il lancio fallisce, senza ripiegare su un Bot senza skill.
+/// il lancio fallisce, senza ripiegare su un Bot senza skill. `standard_file` e' il
+/// file dello standard di ingegneria interattivo, che riceve un Bot con `work`: se
+/// l'agente non lo sa applicare o il file manca, il Bot parte senza e con un avviso.
 pub fn build_bot_launch(
     bot: &AgentBot,
     workspace_agent: &str,
     catalog: &AgentCatalog,
     user_skill_exists: impl Fn(&str) -> bool,
+    standard_file: &StandardFile,
 ) -> Result<(BotTabLaunch, Vec<(String, String)>), String> {
     if !bot.enabled {
         return Err(format!("Il Bot «{}» è disabilitato.", bot.name));
@@ -130,10 +134,12 @@ pub fn build_bot_launch(
             ));
         }
     }
+    let standard = BotStandard::of(bot, launcher, standard_file);
     let request = InteractiveRequest {
         model: resolved.model.as_deref(),
         effort: resolved.effort,
         skill: resolved.skill.as_ref().map(SkillRef::launch_skill),
+        instructions_file: standard.file(),
     };
     let launch = launcher.launch(&request).ok_or_else(|| {
         format!(
@@ -153,7 +159,7 @@ pub fn build_bot_launch(
         agent_id: resolved.agent_id,
         command: launch.command,
         restore_command: launch.restore_command,
-        warnings: resolved.warnings,
+        warnings: resolved.warnings.into_iter().chain(standard.launch_warning(agent.display_name())).collect(),
     };
     Ok((tab, launch.env))
 }
@@ -178,12 +184,15 @@ fn restore_without_bot(reason: &str) -> RestoredEnv {
 /// l'eventuale avviso. La skill non si ricarica e non serve che esista ancora.
 /// Se il Bot non c'e' piu', non si risolve, il suo agente non e' quello del tab
 /// (`saved_agent`) o l'ambiente non e' valido, il tab riparte comunque, senza
-/// ambiente e con un avviso: mai un ripiego silenzioso.
+/// ambiente e con un avviso: mai un ripiego silenzioso. Un Bot con `work` riprende
+/// lo standard di ingegneria (`standard_file`), se l'agente lo applica; se il file
+/// manca riparte senza, con un avviso.
 pub fn build_bot_restore(
     bot: Option<&AgentBot>,
     saved_agent: &str,
     workspace_agent: &str,
     catalog: &AgentCatalog,
+    standard_file: &StandardFile,
 ) -> RestoredEnv {
     let Some(bot) = bot else { return restore_without_bot("Il Bot di questo terminale non esiste più.") };
     let Ok((agent, resolved)) = resolve(bot, workspace_agent, catalog) else {
@@ -195,202 +204,35 @@ pub fn build_bot_restore(
     if resolved.model.is_none() && bot.model != ModelChoice::Default {
         return restore_without_bot(&format!("Il modello del Bot «{}» non è più disponibile.", bot.name));
     }
-    let request = InteractiveRequest { model: resolved.model.as_deref(), effort: resolved.effort, skill: None };
-    let restore_env = agent
-        .capabilities()
-        .interactive_launch
-        .and_then(|launcher| launcher.launch(&request))
-        .map(|launch| launch.restore_env)
-        .filter(|env| first_invalid_env_name(env).is_none());
+    let not_applicable =
+        || restore_without_bot(&format!("Le impostazioni del Bot «{}» non sono più applicabili.", bot.name));
+    let Some(launcher) = agent.capabilities().interactive_launch else { return not_applicable() };
+    let standard = BotStandard::of(bot, launcher, standard_file);
+    let request = InteractiveRequest {
+        model: resolved.model.as_deref(),
+        effort: resolved.effort,
+        skill: None,
+        instructions_file: standard.file(),
+    };
+    let restore_env =
+        launcher.launch(&request).map(|launch| launch.restore_env).filter(|env| first_invalid_env_name(env).is_none());
     match restore_env {
-        Some(env) => (env, None),
-        None => restore_without_bot(&format!("Le impostazioni del Bot «{}» non sono più applicabili.", bot.name)),
+        Some(env) => (env, restore_standard_warning(bot, standard)),
+        None => not_applicable(),
+    }
+}
+
+/// L'avviso di un ripristino senza lo standard che il Bot dovrebbe avere: solo se
+/// il file manca (se l'agente non lo applica l'avvio lo ha gia' detto).
+fn restore_standard_warning(bot: &AgentBot, standard: BotStandard) -> Option<String> {
+    match standard {
+        BotStandard::Unavailable(reason) => Some(format!(
+            "Lo standard di ingegneria del Bot «{}» non si è potuto preparare ({reason}): il terminale riparte senza.",
+            bot.name
+        )),
+        _ => None,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agents::testing::{FakeIntegration, FAKE_MODEL_ENV, FAKE_MODEL_LARGE};
-    use crate::bots::agent::ModelChoice;
-    use crate::bots::presets::{self, GENERAL_ID};
-
-    const FULL: &str = "fake-full";
-    const BARE: &str = "fake-bare";
-    const OFF: &str = "fake-off";
-
-    fn with_catalog<R>(f: impl FnOnce(&AgentCatalog) -> R) -> R {
-        let full = FakeIntegration::full(FULL);
-        let bare = FakeIntegration::bare(BARE, "fake-cli");
-        let off = FakeIntegration::full(OFF);
-        let registered = [&full as &dyn AgentIntegration, &bare, &off];
-        f(&AgentCatalog::new(&registered, vec![FULL.into(), BARE.into()]))
-    }
-
-    fn preset(id: &str) -> AgentBot {
-        presets::find(id).unwrap().bot()
-    }
-
-    fn build(bot: &AgentBot, workspace: &str) -> Result<(BotTabLaunch, Vec<(String, String)>), String> {
-        with_catalog(|c| build_bot_launch(bot, workspace, c, |name| name == "my-skill"))
-    }
-
-    #[test]
-    fn only_enabled_bots_are_listed_in_order_with_the_prefix() {
-        let off = AgentBot { enabled: false, ..preset("intake") };
-        let bots = [preset(GENERAL_ID), off, preset("setup")];
-        let list = with_catalog(|c| bot_launches(&bots, FULL, c));
-        let ids: Vec<_> = list.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(ids, ["bot:general", "bot:setup"]);
-        assert_eq!(list[0].bot_id, "general");
-        assert_eq!(list[0].name, "General");
-    }
-
-    #[test]
-    fn a_launchable_bot_shows_its_effective_agent() {
-        let list = with_catalog(|c| bot_launches(&[preset(GENERAL_ID)], FULL, c));
-        assert_eq!(
-            list[0],
-            BotLaunch {
-                id: "bot:general".into(),
-                bot_id: "general".into(),
-                name: "General".into(),
-                agent_id: Some(FULL.into()),
-                agent_name: Some("Fake".into()),
-                blocked_reason: None,
-            }
-        );
-    }
-
-    #[test]
-    fn an_unusable_agent_blocks_the_entry_in_italian() {
-        let disabled = AgentBot { agent: Some(OFF.into()), ..preset(GENERAL_ID) };
-        let unknown = AgentBot { agent: Some("gone".into()), ..preset("setup") };
-        let list = with_catalog(|c| bot_launches(&[disabled, unknown], FULL, c));
-        assert_eq!(list[0].blocked_reason.as_deref(), Some("Fake è disabilitato: abilitalo nelle Integrazioni."));
-        assert_eq!(list[1].blocked_reason.as_deref(), Some("L'agente «gone» del Bot non è registrato."));
-        for entry in &list {
-            assert_eq!((&entry.agent_id, &entry.agent_name), (&None, &None));
-        }
-    }
-
-    #[test]
-    fn an_agent_without_the_contract_blocks_but_keeps_its_identity() {
-        let list = with_catalog(|c| bot_launches(&[preset(GENERAL_ID)], BARE, c));
-        assert_eq!(list[0].blocked_reason.as_deref(), Some("Fake non supporta l'avvio dei Bot."));
-        assert_eq!(list[0].agent_id.as_deref(), Some(BARE));
-        assert_eq!(list[0].agent_name.as_deref(), Some("Fake"));
-    }
-
-    #[test]
-    fn a_bot_becomes_the_command_of_its_agent_with_model_effort_and_skill() {
-        let (tab, env) = build(&preset("intake"), FULL).unwrap();
-        assert_eq!(tab.name, "Intake");
-        assert_eq!(tab.agent_id, FULL);
-        assert_eq!(
-            tab.command,
-            format!("fake --yes --model {FAKE_MODEL_LARGE} --think high \"/fake-plugin:task-intake\"")
-        );
-        assert_eq!(tab.restore_command, format!("fake --yes --model {FAKE_MODEL_LARGE} --think high"));
-        assert!(tab.warnings.is_empty() && env.is_empty());
-    }
-
-    #[test]
-    fn what_the_agent_cannot_apply_comes_back_as_warnings() {
-        let (tab, _) = build(&AgentBot { skill: None, ..preset("setup") }, FULL).unwrap();
-        assert_eq!(tab.warnings, ["Fake does not support the effort level \"medium\": ignored"]);
-        assert!(!tab.command.contains("--think"));
-    }
-
-    #[test]
-    fn a_missing_user_skill_fails_instead_of_falling_back() {
-        let bot = |name: &str| AgentBot { skill: Some(SkillRef::User(name.into())), ..preset(GENERAL_ID) };
-        let (tab, _) = build(&bot("my-skill"), FULL).unwrap();
-        assert_eq!(tab.command, "fake --yes \"/my-skill\"");
-        assert_eq!(
-            build(&bot("gone"), FULL).err().as_deref(),
-            Some("La skill «gone» del Bot «General» non esiste più: sceglila di nuovo nelle impostazioni del Bot.")
-        );
-    }
-
-    #[test]
-    fn unsafe_skill_names_are_refused_with_a_message_for_the_user() {
-        let bot = AgentBot { skill: Some(SkillRef::User("a b".into())), ..preset(GENERAL_ID) };
-        let error = with_catalog(|c| build_bot_launch(&bot, FULL, c, |_| true)).err().unwrap();
-        assert!(error.contains("caratteri non ammessi"), "{error}");
-    }
-
-    #[test]
-    fn a_model_the_agent_knows_is_passed_through() {
-        let bot =
-            AgentBot { agent: Some(FULL.into()), model: ModelChoice::Id("fake-small".into()), ..preset(GENERAL_ID) };
-        assert_eq!(build(&bot, BARE).unwrap().0.command, "fake --yes --model fake-small");
-    }
-
-    #[test]
-    fn disabled_bots_and_unusable_agents_do_not_launch() {
-        let off = AgentBot { enabled: false, ..preset(GENERAL_ID) };
-        assert_eq!(build(&off, FULL).err().as_deref(), Some("Il Bot «General» è disabilitato."));
-        assert_eq!(
-            build(&preset(GENERAL_ID), "gone").err().as_deref(),
-            Some("L'agente «gone» del Bot non è registrato.")
-        );
-        assert_eq!(build(&preset(GENERAL_ID), BARE).err().as_deref(), Some("Fake non supporta l'avvio dei Bot."));
-        let disabled = AgentBot { agent: Some(OFF.into()), ..preset(GENERAL_ID) };
-        assert_eq!(build(&disabled, FULL).err().as_deref(), Some("Fake è disabilitato: abilitalo nelle Integrazioni."));
-    }
-
-    fn restore(bot: Option<&AgentBot>, saved_agent: &str, workspace: &str) -> RestoredEnv {
-        with_catalog(|c| build_bot_restore(bot, saved_agent, workspace, c))
-    }
-
-    #[test]
-    fn a_restored_tab_gets_the_environment_of_the_bot_model() {
-        let (env, warning) = restore(Some(&preset("intake")), FULL, FULL);
-        assert_eq!(env, [(FAKE_MODEL_ENV.to_string(), FAKE_MODEL_LARGE.to_string())]);
-        assert_eq!(warning, None);
-    }
-
-    #[test]
-    fn a_restored_tab_without_a_model_has_no_environment() {
-        let bot = AgentBot { model: ModelChoice::Default, ..preset(GENERAL_ID) };
-        assert_eq!(restore(Some(&bot), FULL, FULL), (Vec::new(), None));
-    }
-
-    #[test]
-    fn the_restore_never_needs_the_skill_to_exist() {
-        let bot = AgentBot { skill: Some(SkillRef::User("gone".into())), ..preset("intake") };
-        let (env, warning) = restore(Some(&bot), FULL, FULL);
-        assert_eq!((env.len(), warning), (1, None));
-    }
-
-    #[test]
-    fn a_restored_tab_whose_bot_changed_still_opens_with_a_warning() {
-        let other_agent = AgentBot { agent: Some(BARE.into()), ..preset("intake") };
-        let unknown = AgentBot { agent: Some("gone".into()), ..preset("intake") };
-        let cases = [
-            (None, FULL, "Il Bot di questo terminale non esiste più."),
-            (Some(&other_agent), FULL, "Il Bot «Intake» ora usa un altro agente."),
-            (Some(&unknown), FULL, "L'agente del Bot «Intake» non è più disponibile."),
-            (Some(&preset("intake")), BARE, "Il Bot «Intake» ora usa un altro agente."),
-        ];
-        for (bot, saved_agent, reason) in cases {
-            let (env, warning) = restore(bot, saved_agent, FULL);
-            assert!(env.is_empty(), "{reason}");
-            assert_eq!(
-                warning.as_deref(),
-                Some(
-                    format!("{reason} Il terminale riparte con il comando salvato, senza le scelte del Bot.").as_str()
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn a_model_that_is_no_longer_valid_restores_without_environment_and_warns() {
-        let bot = AgentBot { model: ModelChoice::Id("a b;x".into()), ..preset(GENERAL_ID) };
-        let (env, warning) = restore(Some(&bot), FULL, FULL);
-        assert!(env.is_empty());
-        assert!(warning.unwrap().starts_with("Il modello del Bot «General» non è più disponibile."));
-    }
-}
+mod tests;

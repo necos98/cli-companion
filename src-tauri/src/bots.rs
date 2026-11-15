@@ -14,6 +14,7 @@
 //! - `agent_bots`: le operazioni pure sull'elenco, `commands`: i comandi Tauri;
 //! - `resolve`: da un Bot ad agente, modello, effort e skill di un lancio;
 //! - `launches`: le voci del menu di avvio e il lancio di un Bot in un tab;
+//! - `engineering_standard`: lo standard di ingegneria dei Bot `work` avviati in un tab;
 //! - `skills`: le skill selezionabili per l'interfaccia;
 //! - `derived`: i Bot derivati da un predefinito con un agente fissato;
 //! - `launch_refs`: gli avvii predefiniti da azzerare quando un Bot viene eliminato;
@@ -24,6 +25,7 @@ mod agent_bots;
 mod catalog;
 pub mod commands;
 mod derived;
+mod engineering_standard;
 mod image;
 mod launch_refs;
 mod launches;

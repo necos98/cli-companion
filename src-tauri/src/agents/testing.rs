@@ -29,6 +29,8 @@ pub enum Flaw {
     RestoreKeepsSkill,
     /// L'avvio interattivo accetta un nome di skill con `$`.
     LaunchAcceptsDollarSkill,
+    /// L'avvio interattivo dichiara le istruzioni di sistema ma le ignora.
+    InstructionsIgnored,
 }
 
 #[derive(Debug, Clone)]
@@ -43,12 +45,23 @@ pub struct FakeIntegration {
     pub found: bool,
     /// Il pacchetto risulta installato (se l'agente e' presente).
     pub installed: bool,
+    /// L'avvio interattivo applica il file di istruzioni di sistema.
+    pub applies_instructions: bool,
 }
 
 impl FakeIntegration {
     /// Nessun contratto dichiarato.
     pub fn bare(id: &'static str, interactive: &'static str) -> Self {
-        Self { id, interactive, version: "1.0-hfake", declares: Vec::new(), flaw: None, found: false, installed: false }
+        Self {
+            id,
+            interactive,
+            version: "1.0-hfake",
+            declares: Vec::new(),
+            flaw: None,
+            found: false,
+            installed: false,
+            applies_instructions: true,
+        }
     }
 
     /// Dichiara solo il pacchetto, con la versione data.
@@ -91,6 +104,12 @@ impl FakeIntegration {
     /// Toglie un contratto fra quelli dichiarati.
     pub fn without(mut self, capability: Capability) -> Self {
         self.declares.retain(|c| *c != capability);
+        self
+    }
+
+    /// L'avvio interattivo ignora il file di istruzioni di sistema (e lo dichiara).
+    pub fn without_instructions(mut self) -> Self {
+        self.applies_instructions = false;
         self
     }
 
@@ -392,7 +411,7 @@ impl EffortLevels for FakeIntegration {
 }
 
 impl InteractiveLauncher for FakeIntegration {
-    /// `<interattivo> [--model m] [<argomenti effort>] ["/<skill>"]`, con la skill del plugin come `/plugin:<id>`.
+    /// `<interattivo> [--model m] [<argomenti effort>] [--system-file "<file>"] ["/<skill>"]`, con la skill del plugin come `/plugin:<id>`.
     fn launch(&self, req: &InteractiveRequest) -> Option<InteractiveLaunch> {
         let mut restore_command = self.interactive.to_string();
         if let Some(model) = req.model {
@@ -403,6 +422,14 @@ impl InteractiveLauncher for FakeIntegration {
         }
         if let Some(effort) = req.effort {
             restore_command.push_str(&format!(" {}", EffortLevels::command_args(self, effort)?));
+        }
+        if let Some(file) =
+            req.instructions_file.filter(|_| self.applies_instructions && self.flaw != Some(Flaw::InstructionsIgnored))
+        {
+            if !is_shell_safe_path(file) {
+                return None;
+            }
+            restore_command.push_str(&format!(" --system-file \"{file}\""));
         }
         let lenient = self.flaw == Some(Flaw::LaunchAcceptsDollarSkill);
         let skill_ok = |name: &str| is_safe_launch_token(name) || (lenient && name.contains('$'));
@@ -420,5 +447,9 @@ impl InteractiveLauncher for FakeIntegration {
             if self.flaw == Some(Flaw::RestoreKeepsSkill) { command.clone() } else { restore_command };
         let restore_env = req.model.map(|m| (FAKE_MODEL_ENV.to_string(), m.to_string())).into_iter().collect();
         Some(InteractiveLaunch { command, restore_command, env: Vec::new(), restore_env })
+    }
+
+    fn applies_instructions(&self) -> bool {
+        self.applies_instructions
     }
 }

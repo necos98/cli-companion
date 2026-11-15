@@ -284,6 +284,8 @@ Con `pr` e `local_merge` puoi attivare i **worker in parallelo**: un git worktre
 `pr` richiede `gh` autenticato; `local_merge` in parallelo richiede il checkout sul branch base.
 Ogni worker riceve inoltre le regole del workspace e uno standard di ingegneria rigoroso
 (`src-tauri/src/board/prompts/engineering_standard.md`), con cui il reviewer giudica poi i diff.
+Un Bot con `work` aperto in un tab riceve la variante interattiva dello stesso standard (senza
+coda né consegna) come istruzioni di sistema dell'agente.
 
 ### Tool MCP
 

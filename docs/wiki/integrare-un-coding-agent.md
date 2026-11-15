@@ -625,7 +625,9 @@ statica (come era per i preset, oggi rimossi: la skill del plugin passa da qui).
 
 ```rust
 fn launch(&self, req: &InteractiveRequest) -> Option<InteractiveLaunch>;
-// InteractiveRequest { model: Option<&str>, effort: Option<Effort>, skill: Option<LaunchSkill> }
+fn applies_instructions(&self) -> bool;
+// InteractiveRequest { model: Option<&str>, effort: Option<Effort>, skill: Option<LaunchSkill>,
+//                      instructions_file: Option<&str> }
 // LaunchSkill        { Plugin(&str), User(&str) }
 // InteractiveLaunch  { command: String, restore_command: String, env: Vec<(String, String)>,
 //                      restore_env: Vec<(String, String)> }
@@ -650,6 +652,14 @@ fn is_safe_launch_token(value: &str) -> bool;   // funzione libera del contratto
 - **Effort.** Il core consegna `effort` solo se `EffortLevels` dell'agente lo ammette; con un
   agente senza il contratto lo toglie e lo segnala in inglese fra gli avvisi
   (`bots::resolve::resolve_bot`). Chi non lo dichiara può quindi ignorarlo.
+- **Istruzioni di sistema.** `instructions_file` è un file scritto dall'app nella sua cartella
+  dati (oggi la variante interattiva dello standard di ingegneria, per i Bot con `work`), già
+  nel formato di path del target: l'agente lo aggiunge alle proprie istruzioni di sistema con
+  il suo meccanismo documentato, sia nell'avvio sia nel ripristino (`restore_command` o
+  `restore_env`), mai come primo prompt. Un path che non supera `is_shell_safe_path` dà `None`.
+  `applies_instructions` dichiara se l'agente lo sa fare: se è `false` il core non lo consegna,
+  il Bot parte senza e l'avviso in inglese `<nome> does not support system instructions: the
+  engineering standard is not applied` finisce fra gli avvisi del lancio.
 
 **Core con il contratto.** `bots/launches.rs` (puro) produce le voci del menu di avvio
 `bot:<id del Bot>` (una per Bot abilitato, con agente effettivo e un eventuale motivo di
@@ -675,16 +685,21 @@ consigliati), effort (nessuno e i livelli dichiarati) e skill (nessuna, ogni ski
 sono sicuri per la shell e partono da `interactive_command()`; senza skill coincidono; il
 ripristino non contiene mai la skill (nemmeno in `restore_env`); `env` e `restore_env` sono valide; gli argomenti dell'effort
 dichiarato compaiono in entrambe le righe. Nomi di skill con `$`, `"`, spazi o vuoti e un
-modello come `a b;x` sono rifiutati.
+modello come `a b;x` sono rifiutati. Se `applies_instructions`, un file di istruzioni sicuro
+compare nell'avvio e nel ripristino (nella riga o nell'ambiente) e uno con `$` è rifiutato.
 
 **Claude Code.** `claude --dangerously-skip-permissions [--model <m>] [--effort <livello>]
-["/cli-companion-notify:<id>" | "/<nome>"]`: nessuna `env`.
+[--append-system-prompt-file "<file>"] ["/cli-companion-notify:<id>" | "/<nome>"]`: nessuna
+`env`. Il flag è nell'help della CLI (`claude --help`, voce `--bare`), aggiunge il file al prompt
+di sistema predefinito e resta in `restore_command`; la CLI si ferma se il file non esiste.
 **OpenCode.** Il TUI non ha `--model`: il modello (validato da `ModelCatalog::is_valid`)
 passa da `OPENCODE_CONFIG_CONTENT` con il solo `{"model":"…"}` (niente permessi né agente
 di partenza: un tab interattivo conserva la configurazione dell'utente). La skill, di plugin
 o dell'utente, è il primo prompt dei preset (`--prompt "Use the skill tool to load the
 skill <id>, then follow its instructions."`); `restore_command` è `opencode --standalone` e `restore_env` ripete `OPENCODE_CONFIG_CONTENT`.
-L'effort è ignorato: OpenCode non dichiara `EffortLevels`.
+Il file di istruzioni va nella stessa variabile come `{"instructions":["<file>"]}` (documentazione
+v2 "Instructions": un path assoluto è usato com'è scritto e le istruzioni configurate seguono gli
+`AGENTS.md`). L'effort è ignorato: OpenCode non dichiara `EffortLevels`.
 
 ## Procedura passo passo
 
@@ -807,7 +822,7 @@ Due casi reali, entrambi emersi con OpenCode e risolti così (non con un `if`):
 - [ ] Se dichiari `automation`: ogni `PermissionMode` mappato; il server MCP è
       utilizzabile senza conferme; prompt, modello e path non fidati rifiutati;
       eventuali `env` con nomi e valori validi, path già nel formato del target.
-- [ ] Se dichiari `interactive_launch`: modello e nome della skill passano da `is_safe_launch_token` (o dalla regola dell'agente) e, se non sicuri, `None`; `restore_command` mai con la skill; eventuali `env` con nomi e valori validi.
+- [ ] Se dichiari `interactive_launch`: modello e nome della skill passano da `is_safe_launch_token` (o dalla regola dell'agente) e, se non sicuri, `None`; `restore_command` mai con la skill; eventuali `env` con nomi e valori validi; `applies_instructions` vero solo se `instructions_file` arriva all'agente sia all'avvio sia al ripristino (altrimenti `false`: il core avvisa).
 - [ ] Se dichiari `models`: `is_valid` rifiuta ciò che non è sicuro come argomento;
       almeno un modello consigliato per fascia (`Standard` e `Strong`), con
       etichetta; `default_model` valido (o `None`); i nomi dei modelli restano nella
@@ -1072,7 +1087,8 @@ sezione 11 dei contratti.
 L'effort non è dichiarato (nessun flag nel TUI). L'avvio interattivo dei Bot (`interactive_launch.rs`)
 riusa le parti già provate: il modello va in `OPENCODE_CONFIG_CONTENT` con il solo campo `model`
 (stessa variabile dei worker, senza permessi né agente di partenza), la skill è il primo prompt
-(`plugin_skills::skill_command`, condiviso) e il ripristino è `opencode --standalone`.
+(`plugin_skills::skill_command`, condiviso) e il ripristino è `opencode --standalone`. Il file di
+istruzioni di sistema è la chiave `instructions` dello stesso JSON (`mode_rules::interactive_content`).
 
 ### Riepilogo: cosa dichiara OpenCode
 

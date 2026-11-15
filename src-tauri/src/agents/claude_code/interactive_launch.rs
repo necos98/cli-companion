@@ -1,15 +1,22 @@
 //! Contratto `InteractiveLauncher` di Claude Code:
-//! `claude --dangerously-skip-permissions [--model <m>] [--effort <livello>] ["/<skill>"]`.
+//! `claude --dangerously-skip-permissions [--model <m>] [--effort <livello>]
+//! [--append-system-prompt-file "<file>"] ["/<skill>"]`.
 //! Claude Code si configura solo con i flag: nessuna variabile d'ambiente.
+//! `--append-system-prompt-file` e' nell'help della CLI (`claude --help`, voce
+//! `--bare`) e la CLI rifiuta un file che non esiste.
 
 use super::plugin_skills::plugin_skill_invocation;
 use super::{ClaudeCode, INTERACTIVE_COMMAND};
 use crate::agents::{
-    is_safe_launch_token, EffortLevels, InteractiveLaunch, InteractiveLauncher, InteractiveRequest, LaunchSkill,
+    is_safe_launch_token, is_shell_safe_path, EffortLevels, InteractiveLaunch, InteractiveLauncher, InteractiveRequest,
+    LaunchSkill,
 };
 
 /// Flag della CLI che sceglie il modello.
 const MODEL_FLAG: &str = "--model";
+
+/// Flag della CLI che aggiunge un file al prompt di sistema predefinito.
+const APPEND_SYSTEM_PROMPT_FILE_FLAG: &str = "--append-system-prompt-file";
 
 /// Il prompt che avvia la skill: `/<plugin>:<id>` per quelle del plugin,
 /// `/<nome>` per quelle dell'utente. `None` se il nome non e' sicuro.
@@ -23,7 +30,8 @@ fn skill_invocation(skill: LaunchSkill) -> Option<String> {
 
 impl InteractiveLauncher for ClaudeCode {
     /// Il prompt della skill va in coda, fra doppi apici (come i preset);
-    /// `restore_command` e' la stessa riga senza di lui.
+    /// `restore_command` e' la stessa riga senza di lui, quindi conserva le
+    /// istruzioni di sistema.
     fn launch(&self, req: &InteractiveRequest) -> Option<InteractiveLaunch> {
         let mut restore_command = INTERACTIVE_COMMAND.to_string();
         if let Some(model) = req.model {
@@ -36,11 +44,22 @@ impl InteractiveLauncher for ClaudeCode {
             restore_command.push(' ');
             restore_command.push_str(&self.command_args(effort)?);
         }
+        if let Some(file) = req.instructions_file {
+            // Fra doppi apici: valido in PowerShell, cmd e bash se privo di `" $ ` % !`.
+            if !is_shell_safe_path(file) {
+                return None;
+            }
+            restore_command.push_str(&format!(" {APPEND_SYSTEM_PROMPT_FILE_FLAG} \"{file}\""));
+        }
         let command = match req.skill {
             Some(skill) => format!("{restore_command} \"{}\"", skill_invocation(skill)?),
             None => restore_command.clone(),
         };
         Some(InteractiveLaunch { command, restore_command, env: Vec::new(), restore_env: Vec::new() })
+    }
+
+    fn applies_instructions(&self) -> bool {
+        true
     }
 }
 
@@ -50,11 +69,20 @@ mod tests {
     use crate::agents::{AgentIntegration, Effort};
 
     const BASE: &str = "claude --dangerously-skip-permissions";
+    const FILE: &str = r"C:\Users\Mario Rossi\AppData\Roaming\cli-companion\bot-instructions\engineering-standard.md";
 
     fn launch(model: Option<&str>, effort: Option<Effort>, skill: Option<LaunchSkill>) -> Option<InteractiveLaunch> {
-        ClaudeCode.launch(&InteractiveRequest { model, effort, skill })
+        ClaudeCode.launch(&InteractiveRequest { model, effort, skill, instructions_file: None })
     }
 
+    fn launch_with_file(file: &str, skill: Option<LaunchSkill>) -> Option<InteractiveLaunch> {
+        ClaudeCode.launch(&InteractiveRequest {
+            model: Some("opus"),
+            effort: Some(Effort::High),
+            skill,
+            instructions_file: Some(file),
+        })
+    }
     #[test]
     fn an_empty_request_is_the_interactive_command() {
         let l = launch(None, None, None).unwrap();
@@ -113,5 +141,40 @@ mod tests {
             assert!(launch(None, None, Some(LaunchSkill::Plugin(bad))).is_none(), "plugin {bad:?}");
             assert!(launch(None, None, Some(LaunchSkill::User(bad))).is_none(), "user {bad:?}");
         }
+    }
+
+    #[test]
+    fn the_instructions_file_is_appended_to_the_system_prompt_and_kept_on_restore() {
+        let flag = format!("--append-system-prompt-file \"{FILE}\"");
+        let l = launch_with_file(FILE, Some(LaunchSkill::Plugin("task-intake"))).unwrap();
+        assert_eq!(
+            l.command,
+            format!("{BASE} --model opus --effort high {flag} \"/cli-companion-notify:task-intake\"")
+        );
+        assert_eq!(l.restore_command, format!("{BASE} --model opus --effort high {flag}"));
+        assert!(l.env.is_empty() && l.restore_env.is_empty());
+        let wsl = "/mnt/c/Users/me/AppData/Roaming/cli-companion/bot-instructions/engineering-standard.md";
+        let l = launch_with_file(wsl, None).unwrap();
+        assert!(l.command.ends_with(&format!("--append-system-prompt-file \"{wsl}\"")));
+        assert_eq!(l.command, l.restore_command);
+    }
+
+    #[test]
+    fn without_an_instructions_file_the_system_prompt_is_untouched() {
+        let l = launch(Some("opus"), None, Some(LaunchSkill::User("my-skill"))).unwrap();
+        assert!(!l.command.contains(APPEND_SYSTEM_PROMPT_FILE_FLAG));
+        assert!(!l.restore_command.contains(APPEND_SYSTEM_PROMPT_FILE_FLAG));
+    }
+
+    #[test]
+    fn an_unsafe_instructions_file_is_rejected() {
+        for bad in [r"C:\a$b\x.md", r"C:\a`b\x.md", r"C:\100%\x.md", r#"C:\a"b\x.md"#, r"C:\hi!\x.md", "C:/a\nb", ""] {
+            assert!(launch_with_file(bad, None).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn instructions_are_declared() {
+        assert!(ClaudeCode.applies_instructions());
     }
 }

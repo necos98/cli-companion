@@ -504,13 +504,32 @@ Al retry di un task fallito `get_task` aggiunge `previous_attempt` (summary del 
 nota), così il worker riparte da dove si era fermato (stesso branch/worktree).
 
 **Standard di ingegneria.** Ogni worker riceve, dopo le istruzioni comuni e prima delle regole
-del workspace, lo standard `WORKER_GUARDRAILS` (`board/texts.rs`, in inglese): il preambolo rivolto
+del workspace, lo standard `WORKER_GUARDRAILS` (`board/texts/standard.rs`, in inglese): il preambolo rivolto
 al worker di `src-tauri/src/board/prompts/worker_standard_preamble.md`, una riga vuota e le regole
 numerate di `src-tauri/src/board/prompts/engineering_standard.md` (entrambi inclusi con
-`include_str!` e uniti con `concat!`). Le regole sono **un'unica fonte**: il reviewer riceve lo
-stesso file, introdotto da una frase propria (i worker dei task rivisti dovevano seguire lo
-standard, i diff si giudicano su di esso; le regole che parlano di consegna, `follow_ups`, report o
-`failed` descrivono doveri del worker da controllare, non da eseguire). Le regole: rispetto del progetto e dei pattern del framework, SOLID e codice
+`include_str!`). Le regole sono **un'unica fonte** con due varianti: nel file il testo che vale solo
+per i task in coda sta fra `<queue>` e `</queue>`, quello che vale solo in un tab interattivo fra
+`<interactive>` e `</interactive>`, il resto vale per entrambe; i marcatori non arrivano mai al
+modello, una regola che resta vuota sparisce e le regole si rinumerano. La variante dei task in coda
+(`ENGINEERING_STANDARD`, 13 regole) la ricevono il worker e il reviewer, introdotta per lui da una
+frase propria (i worker dei task rivisti dovevano seguire lo standard, i diff si giudicano su di esso;
+le regole che parlano di consegna, `follow_ups`, report o `failed` descrivono doveri del worker da
+controllare, non da eseguire). La **variante interattiva** (`INTERACTIVE_STANDARD`, stesso preambolo,
+12 regole) è per i Bot con `work` avviati in un tab: niente regola degli scenari E2E della specifica,
+i problemi estranei si segnalano all'utente invece che in `follow_ups`, l'autorevisione precede la
+fine del lavoro invece della consegna e, se la verifica non passa, si dice all'utente cosa fallisce
+invece di chiudere il task come `failed`; non cita mai `complete_task`, `follow_ups` né la consegna.
+L'app la scrive (`bots/engineering_standard.rs`, scrittura atomica, solo se è cambiata) in
+`<cartella dati>/bot-instructions/engineering-standard.md` a ogni avvio e ripristino di un tab Bot, e
+la consegna come `InteractiveRequest::instructions_file` nel formato di path del target (Windows o
+`/mnt/...` per WSL, rifiutato se non è sicuro fra doppi apici nelle shell): Claude Code la aggiunge
+al prompt di sistema con `--append-system-prompt-file "<file>"` (anche in `restore_command`), OpenCode
+con la chiave `instructions` di `OPENCODE_CONFIG_CONTENT` (anche in `restore_env`). Un agente che non
+dichiara `applies_instructions` avvia comunque il Bot, senza lo standard e con l'avviso `<agente> does
+not support system instructions: the engineering standard is not applied`; un file che non si è potuto
+scrivere dà l'avviso `the engineering standard could not be prepared (...): not applied` (al
+ripristino un avviso in italiano). Un tab salvato prima di questa versione non ha il flag nel comando
+di ripristino di Claude Code: riparte senza lo standard finché non si riapre il Bot. Le regole: rispetto del progetto e dei pattern del framework, SOLID e codice
 pulito, niente file "god", sicurezza come bloccante (non un follow-up), prestazioni per
 progettazione, errori e casi limite, **concorrenza** (solo se la modifica tocca stato condiviso,
 file, lock, thread o task asincroni: niente race né deadlock, niente I/O sotto lock, scritture
@@ -1169,7 +1188,11 @@ solo `skill_path`) contiene la skill di ogni preset (per Claude Code `skills/<id
 `orchestrate`/`workflow`: l'installazione rimuove le cartelle obsolete). Le skill non hanno voci rapide proprie
 (niente sottomenu “Avvia con…”): una sessione guidata da una skill del plugin parte solo
 come **Bot** (`bot:<id>`, `bots/launches.rs`), che porta agente, modello, effort e skill nella sua configurazione
-(`bots.json`); i Bot predefiniti `intake`, `setup` e `skill-wizard` usano le skill `task-intake`, `project-setup` e
+(`bots.json`). Un Bot con `work` fra i suoi `kinds` (General, Bug Fixer, Refactorer, Test Writer, Docs Writer, Git
+Operator, Release e i Bot dell'utente con `work`) avviato in un tab riceve anche la **variante interattiva dello
+standard di ingegneria** come istruzioni di sistema, ripristino dopo un riavvio compreso (vedi "Standard di
+ingegneria." in "Istruzioni di consegna"); Intake, Setup, Skill Wizard (`kinds` vuoti), i Bot solo `review` o `plan`
+e i tab dell'agente puro non la ricevono. I Bot predefiniti `intake`, `setup` e `skill-wizard` usano le skill `task-intake`, `project-setup` e
 `skill-wizard`; `code-answer` e `bug-fix` sono skill da worker dei Bot `quick-answer` e `bug-fixer` (vedi sotto e
 "Bot predefiniti"); `code-research`, `test-qa`, `docs-writer` e `safe-refactor` sono le skill da worker dei Bot
 `researcher`, `test-writer`, `docs-writer` e `refactorer`; `git-ops` e `release-prep` sono

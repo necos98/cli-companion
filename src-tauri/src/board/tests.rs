@@ -1269,7 +1269,7 @@ fn instructions_carry_rules_guardrails_and_the_working_folder() {
         preamble.starts_with("Engineering standard (non-negotiable). You are a strict senior engineer"),
         "{preamble}"
     );
-    assert_eq!(standard, texts::ENGINEERING_STANDARD);
+    assert_eq!(standard, texts::ENGINEERING_STANDARD.as_str());
     assert!(standard.starts_with("1. Project first.") && standard.contains("Security is a blocker"));
     // Senza regole niente blocco.
     assert!(!texts::instructions(&env(&d, &t, None), "  ", false).contains("Workspace rules"));

@@ -52,7 +52,7 @@ const INTEGRATIONS: &[Integration] = &[
 ];
 
 /// Cartelle di `agents/` che non sono integrazioni.
-const CORE_FOLDERS: [&str; 3] = ["architecture", "contracts", "presets"];
+const CORE_FOLDERS: [&str; 4] = ["architecture", "conformance", "contracts", "presets"];
 
 /// File che dichiarano e registrano i moduli delle integrazioni.
 const REGISTRATION_FILES: [&str; 2] = ["agents/mod.rs", "agents/registry.rs"];

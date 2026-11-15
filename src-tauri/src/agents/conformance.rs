@@ -12,6 +12,10 @@ use crate::platform::{Target, TargetKind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod interactive_launch;
+
+use interactive_launch::interactive_launch;
+
 /// Cartella temporanea unica (pid + contatore + nome), eliminata al drop.
 struct Scratch(PathBuf);
 
@@ -335,92 +339,6 @@ fn effort(i: &dyn AgentIntegration, effort: &dyn EffortLevels) -> Vec<String> {
 /// Nome di skill dell'utente usato dalla suite (solo se l'agente dichiara `user_skills`).
 const CONFORMANCE_USER_SKILL: &str = "conformance-skill";
 
-/// Nomi di skill e modello che l'avvio interattivo deve rifiutare.
-const UNSAFE_SKILL_NAMES: [&str; 4] = ["a$b", "a\"b", "a b", ""];
-const UNSAFE_LAUNCH_MODEL: &str = "a b;x";
-
-/// Avvio interattivo: ogni combinazione di modello, effort e skill che l'agente
-/// dichiara produce righe sicure che partono dal comando interattivo; il
-/// ripristino non riporta mai la skill e l'effort dichiarato e' nelle righe.
-fn interactive_launch(i: &dyn AgentIntegration, launcher: &dyn InteractiveLauncher) -> Vec<String> {
-    let mut v = Vec::new();
-    let caps = i.capabilities();
-    let models: Vec<Option<&str>> = std::iter::once(None)
-        .chain(caps.models.iter().flat_map(|c| c.suggested().iter().map(|m| Some(m.id))))
-        .collect();
-    let efforts: Vec<Option<Effort>> =
-        std::iter::once(None).chain(caps.effort.iter().flat_map(|c| c.levels().iter().copied().map(Some))).collect();
-    let mut skills: Vec<Option<LaunchSkill>> = vec![None];
-    if caps.plugin_skills.is_some() {
-        skills.extend(PRESETS.iter().map(|p| Some(LaunchSkill::Plugin(p.id))));
-    }
-    if caps.user_skills.is_some() {
-        skills.push(Some(LaunchSkill::User(CONFORMANCE_USER_SKILL)));
-    }
-    let interactive = i.interactive_command();
-    for &model in &models {
-        for &effort in &efforts {
-            for &skill in &skills {
-                let req = InteractiveRequest { model, effort, skill };
-                let Some(launch) = launcher.launch(&req) else {
-                    v.push(format!("interactive_launch: nessun avvio per {req:?}"));
-                    continue;
-                };
-                let InteractiveLaunch { command, restore_command, env, restore_env } = &launch;
-                for (what, line) in [("command", command), ("restore_command", restore_command)] {
-                    if !shell_safe(line) {
-                        v.push(format!("interactive_launch: {what} non sicuro per la shell ({req:?}): {line:?}"));
-                    }
-                    if !line.starts_with(interactive) {
-                        v.push(format!(
-                            "interactive_launch: {what} non parte dal comando interattivo ({req:?}): {line:?}"
-                        ));
-                    }
-                    let args = effort.and_then(|e| caps.effort?.command_args(e));
-                    if args.is_some_and(|args| !line.contains(&args)) {
-                        v.push(format!(
-                            "interactive_launch: {what} senza gli argomenti dell'effort ({req:?}): {line:?}"
-                        ));
-                    }
-                }
-                if skill.is_none() && command != restore_command {
-                    v.push(format!("interactive_launch: senza skill command e restore_command differiscono ({req:?})"));
-                }
-                if let Some(LaunchSkill::Plugin(name) | LaunchSkill::User(name)) = skill {
-                    if restore_command.contains(name) {
-                        v.push(format!("interactive_launch: restore_command riporta la skill {name:?} ({req:?})"));
-                    }
-                }
-                for (what, vars) in [("env", env), ("restore_env", restore_env)] {
-                    if let Some(name) = first_invalid_env_name(vars) {
-                        v.push(format!(
-                            "interactive_launch: {what} con variabile d'ambiente non valida o duplicata ({req:?}): {name:?}"
-                        ));
-                    }
-                }
-                if let Some(LaunchSkill::Plugin(name) | LaunchSkill::User(name)) = skill {
-                    if restore_env.iter().any(|(_, value)| value.contains(name)) {
-                        v.push(format!("interactive_launch: restore_env riporta la skill {name:?} ({req:?})"));
-                    }
-                }
-            }
-        }
-    }
-    for name in UNSAFE_SKILL_NAMES {
-        for skill in [LaunchSkill::Plugin(name), LaunchSkill::User(name)] {
-            let req = InteractiveRequest { model: None, effort: None, skill: Some(skill) };
-            if launcher.launch(&req).is_some() {
-                v.push(format!("interactive_launch: skill non sicura accettata: {skill:?}"));
-            }
-        }
-    }
-    let req = InteractiveRequest { model: Some(UNSAFE_LAUNCH_MODEL), effort: None, skill: None };
-    if launcher.launch(&req).is_some() {
-        v.push(format!("interactive_launch: modello non sicuro accettato: {UNSAFE_LAUNCH_MODEL:?}"));
-    }
-    v
-}
-
 /// Nome di programma (o flag) utilizzabile cosi' com'e' in una riga di comando.
 fn plain_token(token: &str) -> bool {
     !token.is_empty() && !token.contains(char::is_whitespace) && shell_safe(token) && !token.contains('"')
@@ -687,6 +605,16 @@ fn a_restore_command_that_keeps_the_skill_is_reported() {
         found.iter().any(|m| m.contains("interactive_launch:") && m.contains("restore_command riporta")),
         "{found:?}"
     );
+}
+
+#[test]
+fn declared_instructions_that_are_ignored_are_reported() {
+    let broken = FakeIntegration::full("broken-instructions").with_flaw(Flaw::InstructionsIgnored);
+    let found = violations(&broken);
+    assert!(found.iter().any(|m| m.contains("non applicato all'avvio")), "{found:?}");
+    assert!(found.iter().any(|m| m.contains("perso al ripristino")), "{found:?}");
+    // Un agente che non le dichiara non e' tenuto ad applicarle.
+    assert!(violations(&FakeIntegration::full("no-instructions").without_instructions()).is_empty());
 }
 
 #[test]
