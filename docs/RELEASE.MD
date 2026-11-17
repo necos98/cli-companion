@@ -240,6 +240,28 @@ vanno scritte qui sotto, per versione, prima del tag.
 - **CI su Node 24.** Le azioni `checkout`, `setup-node` e `upload-artifact` dei workflow di
   GitHub passano alla v7, che gira su Node 24. Nulla cambia per chi usa l'app.
 
+### v0.25.0: cambio cartella del workspace e Project Setup con Lampo
+
+- **Cambiare la cartella di un workspace.** Nel menu «⋯» del workspace, «Cambia cartella…»
+  collega il workspace a un'altra cartella, anche passando da Windows a WSL o viceversa, e tiene
+  impostazioni, avvii e task. La nuova posizione si verifica come all'aggiunta di un workspace e
+  non può essere quella di un altro workspace. Si rifiuta finché un task è in esecuzione o ha
+  ancora un worktree (il suo percorso punta alla vecchia cartella). Cambiando ambiente la shell
+  torna quella predefinita. Nessun file viene spostato e i tab già aperti restano dove sono.
+- **Project Setup riconosce i progetti Lampo.** Su un workspace Windows, per un repository PHP
+  registrato in [Lampo](https://github.com/necos98/lampo), Project Setup propone nei comandi di
+  `setup` e `cleanup` `lampo.exe worktree up`/`worktree down`: ogni worktree diventa un sito di
+  anteprima e viene rimosso a fine task. Con la consegna in parallelo e task che toccano lo schema
+  chiede se usare il database condiviso o uno per worktree (`fresh` o `clone:<db>`), avvertendo
+  che il `.env` copiato punta ancora al database del progetto padre.
+- **Variabili dei comandi nella sintassi giusta.** Project Setup scrive le variabili dei comandi
+  di `setup` e `cleanup` nella sintassi della shell del workspace: `%WORKTREE%` in `cmd` su
+  Windows, `$WORKTREE` in `sh` su WSL.
+- **Chi ha già le impostazioni.** Nulla da migrare: i file di impostazioni non cambiano. La skill
+  `project-setup` aggiornata arriva con l'aggiornamento del pacchetto dell'agente, Claude Code e
+  OpenCode (prontezza «da aggiornare» finché non lo si aggiorna); le configurazioni già proposte
+  o salvate restano come sono.
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali
