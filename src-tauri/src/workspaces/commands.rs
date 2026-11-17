@@ -1,8 +1,10 @@
 //! Comandi Tauri sui workspace (elenco, creazione, impostazioni, ordine,
 //! archiviazione, rimozione). Ognuno valida l'input, poi modifica e salva con
-//! `store::edit`; i comandi sugli avvii sono in `launches`.
+//! `store::edit`; i comandi sugli avvii sono in `launches`, il cambio di cartella
+//! in `location`.
 
 use super::delivery::Delivery;
+use super::location::{ensure_free, Location};
 use super::model::Workspace;
 use super::repo_config::RepoConfig;
 use super::store::{change, edit, now_millis, WorkspaceStore, WORKSPACE_ID_PREFIX, WORKSPACE_NOT_FOUND};
@@ -36,14 +38,12 @@ pub async fn add_workspace(
     shell: Option<String>,
 ) -> Result<Workspace, String> {
     crate::blocking(move || {
-        let kind = TargetKind::parse(&kind)?;
-        let (path, distro) = resolve_location(kind, path, distro)?;
+        let location = Location::resolve(TargetKind::parse(&kind)?, path, distro)?;
         let dir = data_dir(&app)?;
         let store = app.state::<WorkspaceStore>();
         store.update(&dir, |list| {
-            if list.iter().any(|w| w.kind == kind && w.path == path && w.distro == distro) {
-                return Err("workspace già presente".to_string());
-            }
+            ensure_free(list, &location, None)?;
+            let Location { kind, path, distro } = location;
             let name = if name.trim().is_empty() { default_name_for(&path) } else { name.trim().to_string() };
             let mut ws = Workspace::new(store.next_id(WORKSPACE_ID_PREFIX), name, kind, path);
             ws.distro = distro;
@@ -54,40 +54,6 @@ pub async fn add_workspace(
         })
     })
     .await
-}
-
-/// Percorso e distro verificati: la cartella esiste (su Windows) o si raggiunge
-/// con `wsl.exe` (WSL, dove si accetta anche un percorso Windows o `\\wsl$\...`).
-fn resolve_location(
-    kind: TargetKind,
-    path: String,
-    distro: Option<String>,
-) -> Result<(String, Option<String>), String> {
-    let mut path = path.trim().to_string();
-    if path.is_empty() {
-        return Err("percorso mancante".to_string());
-    }
-    match kind {
-        TargetKind::Wsl => {
-            let distro = distro.unwrap_or_default().trim().to_string();
-            if distro.is_empty() {
-                return Err(super::target::WSL_DISTRO_MISSING.to_string());
-            }
-            if !path.starts_with('/') {
-                path = crate::platform::windows_to_wsl_path(&path)
-                    .ok_or_else(|| "il percorso WSL deve essere assoluto (es. /home/user/proj)".to_string())?;
-            }
-            crate::wsl::ensure_wsl_dir(&distro, &path)?;
-            Ok((path, Some(distro)))
-        }
-        TargetKind::Windows => {
-            let meta = std::fs::metadata(&path).map_err(|_| format!("cartella non trovata: {path}"))?;
-            if !meta.is_dir() {
-                return Err(format!("non è una cartella: {path}"));
-            }
-            Ok((path, None))
-        }
-    }
 }
 
 /// Nome predefinito: l'ultimo componente del percorso.
@@ -306,9 +272,9 @@ pub async fn remove_workspace(app: AppHandle, id: String) -> Result<(), String> 
     .await
 }
 
-/// Dopo il salvataggio di consegna / fasce orarie lo scheduler va riallineato.
-/// Da chiamare fuori dal lock dei workspace: lo scheduler li rilegge.
-fn reconcile_automation(app: &AppHandle) {
+/// Dopo il salvataggio di consegna, fasce orarie o posizione lo scheduler va
+/// riallineato. Da chiamare fuori dal lock dei workspace: lo scheduler li rilegge.
+pub(super) fn reconcile_automation(app: &AppHandle) {
     let automation = app.state::<AutomationState>();
     automation.reconcile(&TauriHost(app.clone()));
 }
@@ -356,21 +322,5 @@ mod tests {
         assert_eq!(default_name_for("C:\\work\\proj\\\\"), "proj");
         assert_eq!(default_name_for("/"), FALLBACK_NAME);
         assert_eq!(default_name_for(""), FALLBACK_NAME);
-    }
-
-    #[test]
-    fn a_location_needs_a_path_a_distro_for_wsl_and_an_existing_folder() {
-        assert_eq!(resolve_location(TargetKind::Windows, "  ".into(), None).unwrap_err(), "percorso mancante");
-        let missing = resolve_location(TargetKind::Windows, "Z:\\non\\esiste\\davvero".into(), None).unwrap_err();
-        assert!(missing.starts_with("cartella non trovata"), "{missing}");
-        let tmp = std::env::temp_dir();
-        let (path, distro) = resolve_location(TargetKind::Windows, format!(" {} ", tmp.display()), None).unwrap();
-        assert_eq!((path.as_str(), distro), (tmp.to_str().unwrap(), None));
-        let file = std::env::current_exe().unwrap();
-        let not_dir = resolve_location(TargetKind::Windows, file.display().to_string(), None).unwrap_err();
-        assert!(not_dir.starts_with("non è una cartella"), "{not_dir}");
-        let no_distro = resolve_location(TargetKind::Wsl, "/home/me".into(), Some("  ".into())).unwrap_err();
-        assert_eq!(no_distro, super::super::target::WSL_DISTRO_MISSING);
-        assert!(resolve_location(TargetKind::Wsl, "/home/me".into(), None).is_err());
     }
 }

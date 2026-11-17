@@ -378,16 +378,24 @@ riportato senza far perdere gli altri).
   `shared_launch_ids()`). Una proposta in attesa salvata prima dell'aggiornamento con un `default_launch`
   `builtin:preset:*` viene rimappata al volo (`launch_migration::current_launch_id`: sul Bot derivato se esiste, altrimenti
   sul Bot del preset).
-- Comandi (`commands.rs`, `launches.rs`, `explorer.rs`): `list_workspaces`, `add_workspace`, `rename_workspace`,
-  `reorder_workspaces`, `set_workspace_archived`, `remove_workspace`, `set_worker_permission`,
+- Comandi (`commands.rs`, `launches.rs`, `explorer.rs`, `location.rs`): `list_workspaces`, `add_workspace`,
+  `rename_workspace`, `set_workspace_location`, `reorder_workspaces`, `set_workspace_archived`, `remove_workspace`, `set_worker_permission`,
   `set_workspace_agent`, `set_worker_permission_rules`, `set_worker_model`, `set_worker_rules`, `set_delivery`, `set_use_schedule`,
   `set_repo_config`, `add_launch`, `update_launch`, `remove_launch`, `set_default_launch`,
   `open_workspace_folder` (`explorer.exe`; per WSL il percorso UNC `\\wsl.localhost\<distro>\...`). I comandi
-  tornano il `Workspace` aggiornato; quelli che toccano consegna, fasce, archiviazione o rimozione avvisano poi
+  tornano il `Workspace` aggiornato; quelli che toccano consegna, fasce, posizione, archiviazione o rimozione avvisano poi
   `AutomationState`, fuori dal lock dei workspace (lo scheduler li rilegge).
 - `add_workspace` valida tutto prima di salvare: Windows, il path deve esistere ed essere una cartella; WSL, distro
   non vuota, path assoluto (accetta anche `C:\...` o `\\wsl$\...` convertendoli) e cartella esistente nella distro;
-  niente duplicati a parità di `kind + path + distro`; nome vuoto → ultimo segmento del percorso.
+  niente duplicati a parità di `kind + path + distro`; nome vuoto → ultimo segmento del percorso. La verifica e il
+  controllo dei duplicati sono in `location.rs` (`Location::resolve`, `ensure_free`).
+- `set_workspace_location(id, kind, path, distro)` ("Cambia cartella…" nel menu ⋯) cambia solo `kind`, `path` e
+  `distro` del workspace, con la stessa verifica di `add_workspace`; la posizione di un altro workspace si rifiuta,
+  la propria si accetta senza cambi. Cambiando `kind` la `shell` torna `None`. Si rifiuta se un task è `running` o ha
+  ancora un worktree (`board::relocation_blockers`, il cui percorso assoluto punta alla vecchia cartella): il controllo
+  e il salvataggio avvengono sotto il lock del registro (`AutomationState::with_board_tasks`), così lo scheduler non
+  avvia un task nel frattempo; poi lo scheduler si riallinea. Nessun file si sposta; i tab già aperti restano dove
+  sono.
 
 ### `pty/` — sessioni terminale
 
@@ -1351,7 +1359,9 @@ src/
   compatte (al passaggio del mouse: "+" nuovo terminale, cartella, menu "⋯"); il
   workspace selezionato e' una card con l'elenco dei suoi terminali (stato, etichetta,
   pin; il click usa `focusTab`) e il pulsante diviso "+ Terminale" (avvio predefinito) con
-  caret sul menu degli avvii. Menu "⋯": avvii, "Gestisci avvii…", Rinomina, Elimina
+  caret sul menu degli avvii. Menu "⋯": avvii, "Gestisci avvii…", Rinomina, "Cambia cartella…"
+  (`WorkspaceLocationDialog`, la scelta della posizione è condivisa con il dialogo di aggiunta in
+  `components/workspace-location/`), Archivia, Elimina
   (`DropdownMenu modal={false}`; le Impostazioni si aprono con un `setTimeout` a menu
   chiuso). Rinomina inline, elimina con doppia conferma. Footer: Impostazioni (pallino
   accent se c'e' un update), pulsante "Ufficio" (solo con i bot attivi) e versione (`getVersion()`); con l'Agents HUB

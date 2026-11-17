@@ -7,6 +7,7 @@ import AddWorkspaceDialog from "./AddWorkspaceDialog";
 import NoticeCenter from "./NoticeCenter";
 import PluginUpdateDialog from "./PluginUpdateDialog";
 import SettingsDialog from "./SettingsDialog";
+import WorkspaceLocationDialog from "./WorkspaceLocationDialog";
 
 /** Avvisi e dialoghi dell'app: ognuno legge il proprio stato dagli archivi. */
 export default function AppDialogs() {
@@ -19,6 +20,7 @@ export default function AppDialogs() {
       <AddWorkspaceDialog isOpen={addWorkspaceOpen} onClose={closeAddWorkspace} onAdded={workspaceAdded} />
       <PluginUpdateDialog outdated={outdatedPlugins} onClose={closePluginUpdate} onBeforeRestart={flushBeforeExit} />
       <SettingsDialog />
+      <WorkspaceLocationDialog />
     </>
   );
 }

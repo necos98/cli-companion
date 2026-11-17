@@ -3,7 +3,7 @@
 
 import { api } from "../../lib/tauri";
 import type { Workspace } from "../../lib/tauri";
-import { openLaunchSettings } from "../../app/actions/settings";
+import { openLaunchSettings, openWorkspaceLocation } from "../../app/actions/settings";
 import { archiveWorkspace, removeWorkspace, renameWorkspace } from "../../app/actions/workspaces";
 import { sidebarStore } from "./sidebarState";
 
@@ -53,4 +53,9 @@ export function openFolder(id: string): void {
 // Radix non si sovrappongono (altrimenti resta `pointer-events: none`).
 export function manageLaunches(ws: Workspace): void {
   setTimeout(() => openLaunchSettings(ws), 0);
+}
+
+/** "Cambia cartella…": stesso motivo, il dialogo si apre a menu chiuso. */
+export function changeLocation(ws: Workspace): void {
+  setTimeout(() => openWorkspaceLocation(ws), 0);
 }

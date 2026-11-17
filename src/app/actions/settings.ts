@@ -1,4 +1,4 @@
-// Dialoghi e impostazioni: apertura di Impostazioni e "Aggiungi workspace",
+// Dialoghi e impostazioni: apertura di Impostazioni, "Aggiungi workspace" e "Cambia cartella",
 // e i valori che le Impostazioni riportano all'app.
 
 import { api } from "../../lib/tauri";
@@ -44,6 +44,15 @@ export function openAddWorkspace(): void {
 
 export function closeAddWorkspace(): void {
   uiStore.setAddWorkspaceOpen(false);
+}
+
+/** Dialogo "Cambia cartella" del workspace. */
+export function openWorkspaceLocation(ws: Workspace): void {
+  uiStore.setLocationWorkspace(ws.id);
+}
+
+export function closeWorkspaceLocation(): void {
+  uiStore.setLocationWorkspace(null);
 }
 
 export function setShowUsage(showUsage: boolean): void {

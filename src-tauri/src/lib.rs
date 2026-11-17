@@ -115,6 +115,7 @@ pub fn run() {
             workspaces::list_workspaces,
             workspaces::add_workspace,
             workspaces::rename_workspace,
+            workspaces::set_workspace_location,
             workspaces::set_worker_permission,
             workspaces::set_workspace_agent,
             workspaces::set_worker_model,

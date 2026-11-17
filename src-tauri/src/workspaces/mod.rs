@@ -6,6 +6,7 @@
 //! - `validate`: validazione dei valori (errori tipizzati, vedi `crate::validate`);
 //! - `store`, `migrations`: stato in memoria e persistenza su `workspaces.json`;
 //! - `commands`, `launches`, `explorer`: comandi Tauri;
+//! - `location`: posizione del workspace (verifica, duplicati, cambio di cartella);
 //! - `settings_patch`: modifiche proposte dagli agenti;
 //! - `target`: dove girano i comandi del workspace.
 
@@ -14,6 +15,7 @@ mod delivery;
 mod e2e;
 mod explorer;
 mod launches;
+mod location;
 mod migrations;
 mod model;
 mod repo_config;
@@ -28,6 +30,7 @@ pub use delivery::{Delivery, DeliveryMode, MergeMethod};
 pub use e2e::{E2eConfig, MAX_E2E_TIMEOUT_MIN, MIN_E2E_TIMEOUT_MIN};
 pub use explorer::*;
 pub use launches::*;
+pub use location::*;
 pub(crate) use migrations::take_legacy_worker_fields;
 #[cfg(test)]
 pub(crate) use model::Launch;

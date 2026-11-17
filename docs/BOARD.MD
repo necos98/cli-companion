@@ -1402,7 +1402,9 @@ Argomenti camelCase lato JS.
   AutomationTabInfo[]`: i worker con il tab aperto, per ricostruire lo stato dopo un ricaricamento.
   `frontend_ready()`: sessione ripristinata e listener registrati; il timer dell'automazione parte da qui
   (vedi DESIGN.MD, "Avvio"). `set_workspace_archived(workspace_id, archived)` (workspace): archiviato = congelato,
-  la board non avvia task e i `running` tornano `queued` (vedi "Ciclo di vita").
+  la board non avvia task e i `running` tornano `queued` (vedi "Ciclo di vita"). `set_workspace_location` (workspace)
+  cambia la cartella e si rifiuta finché un task è `running` o ha ancora un worktree (`board::relocation_blockers`):
+  il percorso del worktree punta alla vecchia cartella (vedi DESIGN.MD, `workspaces/`).
 - Eventi: `board-update` (BoardView), `automation-update` (stato dei tab worker),
   `automation-spawn` (apre il tab del worker: `role` non c'è più, `parent_tab_id` vuoto),
   `schedule-state`, `e2e-update` (`{ workspace_id, repo, run: E2eRun }`: l'esecuzione manuale di

@@ -61,6 +61,7 @@ import type { TargetKind } from "../bindings/TargetKind.ts";
 import type { UsageLimitsReply } from "../bindings/UsageLimitsReply.ts";
 import type { Workspace } from "../bindings/Workspace.ts";
 import type { BoardView, E2eRun, NewTaskSpec, TaskAction, TaskNotifyEvent, TaskPatch } from "./board.ts";
+import type { ChosenLocation } from "./workspaceLocation.ts";
 
 // I tipi dei dati scambiati con il backend sono generati dal Rust (src/bindings):
 // qui prendono i nomi usati dall'interfaccia.
@@ -146,6 +147,15 @@ export const api = {
     }),
 
   renameWorkspace: (id: string, name: string) => invoke<Workspace>("rename_workspace", { id, name }),
+
+  /** Collega il workspace a un'altra cartella (anche cambiando ambiente); il resto del workspace non cambia. */
+  setWorkspaceLocation: (id: string, location: ChosenLocation) =>
+    invoke<Workspace>("set_workspace_location", {
+      id,
+      kind: location.kind,
+      path: location.path,
+      distro: location.distro ?? null,
+    }),
 
   /** Agente dei worker del workspace (`null` = il predefinito globale). */
   setWorkspaceAgent: (id: string, agent: string | null) => invoke<Workspace>("set_workspace_agent", { id, agent }),

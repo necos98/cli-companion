@@ -19,6 +19,8 @@ export interface SettingsState {
 
 export interface UiState {
   addWorkspaceOpen: boolean;
+  /** Workspace di cui si sta cambiando la cartella (dialogo "Cambia cartella"); `null` = chiuso. */
+  locationWorkspaceId: string | null;
   settings: SettingsState;
   /** Modalità per workspace: true = si mostra il Tasks Manager al posto dei terminali. */
   managerOpen: Readonly<Record<string, boolean>>;
@@ -45,6 +47,7 @@ export const DEFAULT_SETTINGS_TAB: SettingsTab = "general-launches";
 
 export const INITIAL_UI: UiState = {
   addWorkspaceOpen: false,
+  locationWorkspaceId: null,
   settings: { open: false, tab: DEFAULT_SETTINGS_TAB },
   managerOpen: {},
   managerIntent: null,
@@ -59,11 +62,16 @@ export const INITIAL_UI: UiState = {
 
 /** Un dialogo è aperto: le scorciatoie globali non fanno nulla. */
 export function modalOpen(s: UiState): boolean {
-  return s.settings.open || s.addWorkspaceOpen;
+  return s.settings.open || s.addWorkspaceOpen || s.locationWorkspaceId !== null;
 }
 
 export function setAddWorkspaceOpen(s: UiState, open: boolean): UiState {
   return s.addWorkspaceOpen === open ? s : { ...s, addWorkspaceOpen: open };
+}
+
+/** Apre il dialogo "Cambia cartella" sul workspace `id`, o lo chiude con `null`. */
+export function setLocationWorkspace(s: UiState, id: string | null): UiState {
+  return s.locationWorkspaceId === id ? s : { ...s, locationWorkspaceId: id };
 }
 
 /** Apre le Impostazioni su una pagina (e su un workspace, per quelle per-workspace). */
@@ -149,6 +157,7 @@ export function createUiStore() {
   return {
     ...store,
     setAddWorkspaceOpen: (open: boolean) => store.update((s) => setAddWorkspaceOpen(s, open)),
+    setLocationWorkspace: (id: string | null) => store.update((s) => setLocationWorkspace(s, id)),
     openSettings: (tab: SettingsTab, workspaceId?: string) => store.update((s) => openSettings(s, tab, workspaceId)),
     closeSettings: () => store.update(closeSettings),
     openManager: (id: string, intent?: Omit<TasksManagerIntent, "nonce">) =>

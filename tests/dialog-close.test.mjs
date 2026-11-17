@@ -28,7 +28,14 @@ describe("modali: chiusura solo esplicita", () => {
   });
 
   it("le modali non ridefiniscono la chiusura fuori contenuto", () => {
-    for (const file of ["PluginUpdateDialog", "SettingsDialog", "AddWorkspaceDialog", "tasks/NewTaskDialog"]) {
+    const files = [
+      "PluginUpdateDialog",
+      "SettingsDialog",
+      "AddWorkspaceDialog",
+      "WorkspaceLocationDialog",
+      "tasks/NewTaskDialog",
+    ];
+    for (const file of files) {
       assert.doesNotMatch(read(`src/components/${file}.tsx`), /onEscapeKeyDown|onPointerDownOutside|onInteractOutside/);
     }
   });

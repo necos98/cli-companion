@@ -20,6 +20,7 @@ function rustCommands() {
     "workspaces/commands.rs",
     "workspaces/launches.rs",
     "workspaces/explorer.rs",
+    "workspaces/location.rs",
     "wsl.rs",
     "updater.rs",
     "ipc/server.rs",

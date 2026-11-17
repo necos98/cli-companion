@@ -1,8 +1,9 @@
-// Gestione dei workspace: aggiunta, modifica, rinomina, rimozione,
+// Gestione dei workspace: aggiunta, modifica, rinomina, cambio di cartella, rimozione,
 // archiviazione e riordino. Backend per primo, poi gli archivi.
 
 import { api } from "../../lib/tauri";
 import type { Workspace } from "../../lib/tauri";
+import type { ChosenLocation } from "../../lib/workspaceLocation";
 import { hasGroup, layoutStore, viewWorkspaceId } from "../../stores/layout";
 import { tabsStore } from "../../stores/tabs";
 import { workspacesStore } from "../../stores/workspaces";
@@ -23,6 +24,11 @@ export function workspaceUpdated(updated: Workspace): void {
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
   workspaceUpdated(await api.renameWorkspace(id, name));
+}
+
+/** Collega il workspace a un'altra cartella: i tab aperti restano dove sono, i nuovi partono da lì. */
+export async function changeWorkspaceLocation(id: string, location: ChosenLocation): Promise<void> {
+  workspaceUpdated(await api.setWorkspaceLocation(id, location));
 }
 
 /** Chiude i tab di un workspace, con la stessa via della chiusura da parte dell'utente. */

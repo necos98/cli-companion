@@ -10,7 +10,7 @@ import {
 import type { Workspace } from "../../lib/tauri";
 import { cn } from "../../lib/utils";
 import LaunchItems from "./LaunchItems";
-import { manageLaunches } from "./actions";
+import { changeLocation, manageLaunches } from "./actions";
 import { sidebarStore } from "./sidebarState";
 import { ICON_BTN, MENU_CONTENT, MENU_ITEM } from "./styles";
 
@@ -38,6 +38,9 @@ function WorkspaceMenu({ ws }: { ws: Workspace }) {
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => sidebarStore.startEdit(ws.id, ws.name)} className={MENU_ITEM}>
           Rinomina
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => changeLocation(ws)} className={MENU_ITEM}>
+          Cambia cartella…
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => sidebarStore.askArchive(ws.id)} className={MENU_ITEM}>
           Archivia

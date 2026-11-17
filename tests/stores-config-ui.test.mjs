@@ -21,6 +21,7 @@ import {
   openManager,
   openSettings,
   setAddWorkspaceOpen,
+  setLocationWorkspace,
   setNotice,
   setOffice,
   setOutdatedPlugins,
@@ -100,9 +101,11 @@ describe("config: bot", () => {
 });
 
 describe("ui: dialoghi", () => {
-  it("modalOpen vale per Impostazioni e dialogo di aggiunta", () => {
+  it("modalOpen vale per Impostazioni, dialogo di aggiunta e cambio di cartella", () => {
     assert.ok(!modalOpen(INITIAL_UI));
     assert.ok(modalOpen(setAddWorkspaceOpen(INITIAL_UI, true)));
+    assert.ok(modalOpen(setLocationWorkspace(INITIAL_UI, "w1")));
+    assert.ok(!modalOpen(setLocationWorkspace(setLocationWorkspace(INITIAL_UI, "w1"), null)));
     assert.ok(modalOpen(openSettings(INITIAL_UI, "bots")));
     assert.ok(!modalOpen(closeSettings(openSettings(INITIAL_UI, "bots"))));
   });
@@ -122,6 +125,10 @@ describe("ui: dialoghi", () => {
 
   it("setAddWorkspaceOpen, setNotice, setUpdateAvailable, setSessionReady: stesso valore = stesso stato", () => {
     assert.equal(setAddWorkspaceOpen(INITIAL_UI, false), INITIAL_UI);
+    assert.equal(setLocationWorkspace(INITIAL_UI, null), INITIAL_UI);
+    const open = setLocationWorkspace(INITIAL_UI, "w1");
+    assert.equal(open.locationWorkspaceId, "w1");
+    assert.equal(setLocationWorkspace(open, "w1"), open);
     assert.equal(setNotice(INITIAL_UI, null), INITIAL_UI);
     assert.equal(setUpdateAvailable(INITIAL_UI, false), INITIAL_UI);
     assert.equal(setSessionReady(INITIAL_UI, false), INITIAL_UI);

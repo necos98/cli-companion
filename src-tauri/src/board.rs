@@ -14,7 +14,8 @@
 //! MCP), `worker` (stati del worker e tabella degli hook), `persist` (busta e
 //! schema del file, riga dell'archivio), `legacy` (migrazioni dello schema),
 //! `recovery` (recupero dopo un riavvio), `archive` (task conclusi da archiviare),
-//! `review` e `plan` (regole dei task di revisione e di pianificazione).
+//! `review` e `plan` (regole dei task di revisione e di pianificazione),
+//! `relocation` (task che impediscono di cambiare la cartella del workspace).
 
 mod agent;
 mod agent_gate;
@@ -31,6 +32,7 @@ mod question;
 mod queue;
 mod record;
 mod recovery;
+mod relocation;
 mod report;
 mod review;
 mod scheduler;
@@ -62,6 +64,7 @@ pub use model::{
 pub use persist::{archive_line, board_store};
 pub use plan::{check_kind_input, check_plan_report, check_plan_spec, PLAN_KIND_RESERVED};
 pub use question::{parse_question, TaskQuestion, ANSWER_MAX, OPTIONS_MAX, OPTION_MAX, QUESTIONS_KEPT, QUESTION_MAX};
+pub use relocation::{relocation_blockers, relocation_refusal};
 pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
 pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Verdict};
 pub use scheduler::{schedule, SchedCtx};

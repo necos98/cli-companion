@@ -131,6 +131,15 @@ impl AutomationState {
         self.registry().load_board(board);
     }
 
+    /// Esegue `f` sui task della board del workspace (nessuno se non ha una
+    /// board) tenendo il registro: finche' `f` non torna lo scheduler non
+    /// avvia nulla. `f` puo' prendere il lock dei workspace: l'ordine e' lo
+    /// stesso di `run` (prima il registro, poi i workspace).
+    pub fn with_board_tasks<T>(&self, ws_id: &str, f: impl FnOnce(&[Task]) -> T) -> T {
+        let reg = self.registry();
+        f(reg.boards.get(ws_id).map_or(&[], |b| b.tasks.as_slice()))
+    }
+
     pub fn open_tabs(&self) -> Vec<AutomationTabInfo> {
         self.registry().open_tabs()
     }
