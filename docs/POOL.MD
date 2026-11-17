@@ -394,7 +394,8 @@ identico a General e renderebbe ambigua la scelta.
 
 - `task`: `Adds or improves automated tests for existing behaviour, following the project's test conventions; changes production code only to make it testable.`
 - Kinds `[work]`, fascia `Standard`, effort `medium`: lavoro ben definito, ripetitivo. Coerente con lo standard dei
-  worker (`board/prompts/engineering_standard.md`, punti 7 e 8) che la skill non deve ripetere.
+  worker (`board/prompts/engineering_standard.md`, regole *Tests are part of the change* ed *E2E scenarios*) che la
+  skill non deve ripetere.
 
 **`docs-writer` — Docs Writer** (R9)
 
