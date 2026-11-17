@@ -422,3 +422,25 @@ fn project_setup_skill_covers_the_e2e_suite() {
         assert!(skill.contains(t), "{t}");
     }
 }
+
+#[test]
+fn project_setup_skill_covers_lampo() {
+    let skill = preset("project-setup").skill_text();
+    for t in [
+        "## Lampo",
+        "see \"Lampo\" below",
+        "worktree up \"%WORKTREE%\"",
+        "worktree down \"%WORKTREE%\"",
+        "--db",
+        "fresh",
+        "clone:<db>",
+        "--drop-database",
+        ".env",
+        "WSL",
+        "propose nothing about Lampo",
+        "Windows: commands run in `cmd`, so `%WORKTREE%`",
+        "WSL: commands run in `sh`, so `$WORKTREE`",
+    ] {
+        assert!(skill.contains(t), "{t}");
+    }
+}

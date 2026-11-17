@@ -1234,7 +1234,15 @@ nomina mai un agente o un modello: li legge da `get_workspace_settings.agents`.
   worktree (file ignorati ma necessari → `copy_ignored`; docker-compose/Dockerfile → servizio e
   `container_root`; package manager → comandi `setup` dopo la creazione e `cleanup` prima della
   rimozione; branch di default → `base_branch`); comandi di setup ripetibili (al retry si
-  rifanno) e su una riga sola; una domanda alla volta e solo se cambia la configurazione;
+  rifanno) e su una riga sola, con le variabili nella sintassi della shell del workspace
+  (`%WORKTREE%` in `cmd` su Windows, `$WORKTREE` in `sh` su WSL). Progetti PHP gestiti da
+  **Lampo** (solo workspace Windows, `lampo.exe` installato e repository registrato in Lampo):
+  propone nel `setup` `lampo.exe worktree up "%WORKTREE%" --db shared --json` e nel `cleanup`
+  `lampo.exe worktree down "%WORKTREE%"` (percorso completo tra virgolette), così ogni worktree ha
+  il suo sito di anteprima; con `delivery.parallel` e task che toccano lo schema chiede tra DB
+  `shared` e `fresh`/`clone:<db>` (con `fresh` aggiunge le migrazioni, con un DB per worktree
+  aggiunge `--drop-database` e avverte che il `.env` copiato punta ancora al DB del padre). Una
+  domanda alla volta e solo se cambia la configurazione;
   propone solo i campi da cambiare; mostra in chat il prima → dopo e il perché; poi
   `propose_settings` con un `reason` chiaro (correggendo e richiamando in caso di errore di
   validazione) e chiude il turno spiegando che la proposta attende nel pannello Task, senza

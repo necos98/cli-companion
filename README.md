@@ -313,8 +313,10 @@ momento (se non è più valida compare l'errore e la proposta resta); **Scarta**
 Tauri è `settings_proposal_decide`.
 
 **Project Setup** è il preset pensato per questo: esplora il repository (file ignorati necessari,
-docker-compose, package manager, branch di default), fa solo le domande che cambiano la
-configurazione, mostra in chat la proposta e la manda con `propose_settings`. Non modifica file né
+docker-compose, package manager, branch di default), riconosce i progetti PHP gestiti da
+[Lampo](https://github.com/necos98/lampo) e in quel caso propone i comandi `setup`/`cleanup` che
+registrano ogni worktree come ambiente Lampo e lo rimuovono a fine task (un sito di anteprima per
+task), fa solo le domande che cambiano la configurazione, mostra in chat la proposta e la manda con `propose_settings`. Non modifica file né
 impostazioni da solo, e non propone permessi `bypass` senza una richiesta esplicita. Anche Task Intake
 può usare i due tool per le richieste che riguardano la configurazione e non il codice.
 
