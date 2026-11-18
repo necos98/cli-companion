@@ -80,6 +80,7 @@ function TaskPanelArea() {
           onToggleCollapsed={() => taskPanel.toggle(panelWorkspace.id)}
           onBoard={storeBoard}
           onOpenManager={(taskId) => openManager(panelWorkspace.id, taskId ? { taskId } : undefined)}
+          onOpenGoal={(goalId) => openManager(panelWorkspace.id, { goalId })}
           onOpenIntake={() => openIntake(panelWorkspace.id)}
           onNewTask={() => openManager(panelWorkspace.id, { newTask: true })}
           onFocusTab={focusTerminal}

@@ -1,9 +1,13 @@
 import { useMemo } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import ListFilters from "./ListFilters";
+import ListGroups from "./ListGroups";
+import ListGroupToggle from "./ListGroupToggle";
 import ListRow, { LIST_GRID } from "./ListRow";
 import { isFiltering } from "../../lib/board";
-import type { BoardView } from "../../lib/board";
+import type { BoardView, Task } from "../../lib/board";
+import { filterByGoal, goalLabel, groupByGoal } from "../../lib/goals";
+import type { GoalFilter } from "../../lib/goals";
 import { agentFilterOptions, agentName, showAgentFilter } from "../../lib/taskAgent";
 import type { TaskAgents } from "../../lib/taskAgent";
 import { listRows, listSubtitle, queuePositions, statusCounts, toggleSort } from "../../lib/taskViews";
@@ -19,10 +23,15 @@ interface Props {
   onQuery: (query: string) => void;
   prefs: ListPrefs;
   onPrefs: (prefs: ListPrefs) => void;
+  /** Filtro per goal (già ricondotto a un goal esistente) e sua modifica. */
+  goalFilter: GoalFilter;
+  onGoalFilter: (filter: GoalFilter) => void;
   /** Repository del workspace (più di uno = multi-repo). */
   repoChoices: string[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Apre il dettaglio di un goal (intestazione di un gruppo). */
+  onOpenGoal: (goalId: string) => void;
   now: number;
   onNewTask: () => void;
 }
@@ -46,13 +55,18 @@ export default function ListView({
   onQuery,
   prefs,
   onPrefs,
+  goalFilter,
+  onGoalFilter,
   repoChoices,
   selectedId,
   onSelect,
+  onOpenGoal,
   now,
   onNewTask,
 }: Props) {
-  const tasks = board.tasks;
+  const tasks = useMemo(() => filterByGoal(board.tasks, goalFilter), [board.tasks, goalFilter]);
+  const hasGoals = board.goals.length > 0;
+  const grouped = hasGoals && prefs.groupByGoal;
   const multiRepo = repoChoices.length > 1;
   const agentIds = useMemo(() => agentFilterOptions(tasks, prefs.agents), [tasks, prefs.agents]);
   const agentFilter = showAgentFilter(agentIds);
@@ -71,13 +85,28 @@ export default function ListView({
   );
   const rows = useMemo(() => listRows(tasks, filter, prefs.sort, now), [tasks, filter, prefs.sort, now]);
   const counts = useMemo(() => statusCounts(tasks, filter), [tasks, filter]);
-  const positions = useMemo(() => queuePositions(tasks), [tasks]);
-  const filtering = isFiltering(filter);
+  const positions = useMemo(() => queuePositions(board.tasks), [board.tasks]);
+  const filtering = isFiltering(filter) || goalFilter !== null;
 
   const reset = () => {
     onQuery("");
+    onGoalFilter(null);
     onPrefs({ ...prefs, statuses: [], repos: [], agents: [] });
   };
+
+  const renderRow = (t: Task) => (
+    <ListRow
+      key={t.id}
+      task={t}
+      subtitle={listSubtitle(t, board.tasks, positions)}
+      agents={agents}
+      now={now}
+      selected={t.id === selectedId}
+      showRepo={multiRepo}
+      goalTitle={grouped ? null : goalLabel(board.goals, t.goal)}
+      onSelect={onSelect}
+    />
+  );
 
   return (
     <section aria-label="Elenco dei task" className="flex h-full min-h-0 min-w-0 flex-col">
@@ -93,6 +122,11 @@ export default function ListView({
         onAgents={(selected) => onPrefs({ ...prefs, agents: selected })}
         filtering={filtering}
         onReset={reset}
+        trailing={
+          hasGoals && (
+            <ListGroupToggle on={prefs.groupByGoal} onChange={(groupByGoal) => onPrefs({ ...prefs, groupByGoal })} />
+          )
+        }
       />
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -126,22 +160,15 @@ export default function ListView({
           })}
         </div>
 
-        {rows.map((t) => (
-          <ListRow
-            key={t.id}
-            task={t}
-            subtitle={listSubtitle(t, tasks, positions)}
-            agents={agents}
-            now={now}
-            selected={t.id === selectedId}
-            showRepo={multiRepo}
-            onSelect={onSelect}
-          />
-        ))}
+        {grouped ? (
+          <ListGroups groups={groupByGoal(rows, board.goals)} renderRow={renderRow} onOpenGoal={onOpenGoal} />
+        ) : (
+          rows.map(renderRow)
+        )}
 
         {rows.length === 0 && (
           <div className="flex flex-col items-center gap-2 px-4 py-12 text-center text-[13px] text-muted-foreground">
-            {tasks.length === 0 ? (
+            {board.tasks.length === 0 ? (
               <>
                 <span>Nessun task in questo workspace.</span>
                 <button
@@ -169,7 +196,7 @@ export default function ListView({
       </div>
 
       <div className="flex-shrink-0 border-t px-4 py-2 text-xs text-muted-foreground">
-        {rows.length} di {tasks.length} task
+        {rows.length} di {board.tasks.length} task
       </div>
     </section>
   );

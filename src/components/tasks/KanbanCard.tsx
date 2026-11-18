@@ -4,6 +4,7 @@ import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import AgentBadge from "./AgentBadge";
 import BotBadge from "./BotBadge";
+import GoalTag from "./GoalTag";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
@@ -27,6 +28,8 @@ interface Props {
   selected: boolean;
   /** Mostra il repository (workspace multi-repo). */
   showRepo: boolean;
+  /** Titolo del goal del task; null = sciolto. */
+  goalTitle: string | null;
   /** Dove cadrebbe il task trascinato rispetto a questa card. */
   dropEdge: DropEdge;
   dragging: boolean;
@@ -49,6 +52,7 @@ function KanbanCard({
   now,
   selected,
   showRepo,
+  goalTitle,
   dropEdge,
   dragging,
   onSelect,
@@ -96,6 +100,7 @@ function KanbanCard({
         <TaskE2eBadge task={task} />
         <BotBadge bots={agents.bots} id={task.bot} />
         <AgentBadge name={agentBadge(agents, task.agent)} />
+        {goalTitle && <GoalTag title={goalTitle} />}
         {waiting && (
           <span
             className={cn(

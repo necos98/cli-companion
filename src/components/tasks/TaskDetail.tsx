@@ -25,6 +25,7 @@ import {
 } from "../../lib/board";
 import type { BoardView, Task, TaskAction } from "../../lib/board";
 import { isReview } from "../../lib/review";
+import { goalLabel } from "../../lib/goals";
 import { isPlan } from "../../lib/plan";
 import { PlanBadge } from "./PlanBadge";
 import { agentBadge } from "../../lib/taskAgent";
@@ -54,6 +55,8 @@ export interface TaskDetailProps {
   onOpenTerminal: (tabId: string) => void;
   /** Click su una dipendenza: il manager seleziona quel task. */
   onSelectTask: (taskId: string) => void;
+  /** Click sul goal del task: il manager ne apre il dettaglio. */
+  onOpenGoal: (goalId: string) => void;
   /** Repository rilevati del workspace (più quelli dei task); assente = solo quelli dei task. */
   repos?: string[];
   /** Configurazione per repository del workspace (`Workspace.repos`): dice dove gli E2E sono configurati. */
@@ -75,6 +78,7 @@ export default function TaskDetail({
   onClose,
   onOpenTerminal,
   onSelectTask,
+  onOpenGoal,
   repos = NO_REPOS,
   repoConfigs,
   agents,
@@ -212,6 +216,8 @@ export default function TaskDetail({
               bots={agents.bots}
               showRepo={isMultiRepo(repoChoices)}
               onSelectTask={onSelectTask}
+              goalTitle={goalLabel(board.goals, task.goal)}
+              onOpenGoal={onOpenGoal}
             />
           </>
         )}

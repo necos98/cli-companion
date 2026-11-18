@@ -1,10 +1,13 @@
 import { ArrowLeft, Plus, Sparkles } from "lucide-react";
 import type { RefObject } from "react";
 import { Button } from "../ui/button";
+import GoalFilterSelect from "./GoalFilterSelect";
 import ManagerSearch from "./ManagerSearch";
 import ManagerViewSwitch from "./ManagerViewSwitch";
 import ManagerWorkers from "./ManagerWorkers";
 import type { BoardView } from "../../lib/board";
+import { effectiveGoalFilter, goalChoices } from "../../lib/goals";
+import type { GoalFilter } from "../../lib/goals";
 import type { ManagerView } from "../../lib/taskViews";
 
 interface Props {
@@ -16,6 +19,9 @@ interface Props {
   onView: (view: ManagerView) => void;
   query: string;
   onQuery: (query: string) => void;
+  /** Filtro per goal salvato nelle preferenze; il selettore compare solo se la board ha goal e la vista lo usa. */
+  goalFilter: GoalFilter;
+  onGoalFilter: (filter: GoalFilter) => void;
   searchRef: RefObject<HTMLInputElement>;
   busy: boolean;
   onBackToTerminals: () => void;
@@ -49,6 +55,13 @@ export default function ManagerHeader(p: Props) {
         <ManagerViewSwitch view={p.view} onView={p.onView} />
       </div>
       <ManagerSearch value={p.query} onChange={p.onQuery} inputRef={p.searchRef} />
+      {p.board && p.board.goals.length > 0 && p.view !== "graph" && (
+        <GoalFilterSelect
+          choices={goalChoices(p.board.goals, p.board.tasks)}
+          value={effectiveGoalFilter(p.goalFilter, p.board.goals)}
+          onChange={p.onGoalFilter}
+        />
+      )}
       <div className="ml-auto flex flex-wrap items-center gap-2">
         <ManagerWorkers board={p.board} busy={p.busy} onMaxParallel={p.onMaxParallel} onTogglePause={p.onTogglePause} />
         <Button

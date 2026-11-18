@@ -243,7 +243,14 @@ describe("preferenze", () => {
     const m = memory();
     const p = {
       view: "list",
-      list: { statuses: ["done"], repos: ["api"], agents: ["ag-one"], sort: { key: "title", desc: false } },
+      goal: "export",
+      list: {
+        statuses: ["done"],
+        repos: ["api"],
+        agents: ["ag-one"],
+        sort: { key: "title", desc: false },
+        groupByGoal: true,
+      },
     };
     writePrefs(m, "w1", p);
     writePrefs(m, "w2", { ...defaultPrefs(), view: "graph" });

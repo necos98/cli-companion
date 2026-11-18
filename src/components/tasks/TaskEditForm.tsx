@@ -6,7 +6,7 @@ import { Button } from "../ui/button";
 import { repoHasE2e, withRepoE2e } from "../../lib/e2e";
 import type { TaskAgents } from "../../lib/taskAgent";
 import { api } from "../../lib/tauri";
-import { buildPatch, formFromTask, hasErrors, validateTaskForm } from "../../lib/taskForm";
+import { buildPatch, formFromTask, goalDependencyPool, hasErrors, validateTaskForm } from "../../lib/taskForm";
 import type { TaskFormErrors, TaskFormValues } from "../../lib/taskForm";
 import type { BoardView, Task } from "../../lib/board";
 import type { Workspace } from "../../lib/tauri";
@@ -69,7 +69,7 @@ export default function TaskEditForm({
         values={values}
         onChange={change}
         errors={errors}
-        tasks={board.tasks}
+        tasks={goalDependencyPool(board.tasks, board.goals, task.goal ?? null)}
         selfId={task.id}
         repoChoices={repoChoices}
         repoLocked={repoLocked}

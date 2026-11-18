@@ -1597,12 +1597,21 @@ Testi in italiano.
   ricordato per workspace (`localStorage`, con try/catch).
 - Intestazione: "Task", pausa/riprendi la coda, "Apri Tasks Manager" (Ctrl+Maiusc+B), comprimi.
   Con la coda in pausa: banner "Coda in pausa…"; con la fascia chiusa: "Fuori fascia oraria".
-- Sezioni: **Proposte** (card Accetta/Scarta e card "Proposta di impostazioni" Applica/Scarta,
-  vedi "Proposte di impostazioni"), **In corso N/M** (card: titolo, modello · tempo
-  trascorso oppure "Richiede attenzione"; clic → mette a fuoco il tab del worker nella griglia),
+- Sezioni: **Serve a te** (solo se non vuota; sostituisce "Proposte" e "Falliti"), nell'ordine:
+  proposte di task (con il goal a cui appartengono e, per le correzioni, "correzione · giro N") e
+  di impostazioni (card "Proposta di impostazioni", vedi "Proposte di impostazioni"), task che
+  aspettano l'utente (domanda del worker, poi attenzione; clic → tab del worker), task falliti (motivo,
+  "Blocca: …" coi task in coda che bloccano, Riprova). Le azioni sono quelle di prima (Accetta/Scarta,
+  Applica/Scarta, Riprova). La voce è calcolata da `needsYou` (`src/lib/needsYou.ts`).
+  Poi **Goal in corso** (solo se ci sono goal aperti: titolo, fase, giro dal secondo, avanzamento
+  "3/5", un segno "Serve a te" se il goal aspetta l'utente; clic → dettaglio del goal nel Tasks Manager;
+  ordine: prima chi aspetta, poi dal più vecchio). Poi **In corso N/M** (card: titolo, modello · tempo
+  trascorso oppure "Richiede attenzione"; clic → mette a fuoco il tab del worker nella griglia; i task
+  con attenzione compaiono anche in "Serve a te") e
   **In coda N** (numerata, trascinabile per riordinare, "attende X" se aspetta dipendenze, "bloccato da X" se una è fallita; clic
-  → dettaglio), **Falliti** (solo se non vuota, con il motivo e Riprova). Piede: "+ Nuovo task" e "Task
+  → dettaglio). I task in corso e in coda mostrano il goal come etichetta. Piede: "+ Nuovo task" e "Task
   Intake" (apre il primo Bot abilitato con la skill `task-intake`).
+- Barra compressa: stessi contatori di prima più i goal aperti (solo se > 0). La vista Globale non cambia.
 - Da vuoto: "Nessun task" + pulsante "Apri Task Intake".
 - I tab dei worker restano nella griglia dei terminali come oggi (badge AUTO).
 - **Vista Globale**: il pannello raggruppa per workspace (solo quelli con task attivi o
@@ -1631,6 +1640,17 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   multipla con conteggi, filtro repo solo nei multi-repo, "Azzera filtri", stato vuoto.
   Colonne: Stato, Titolo (+ sottotitolo: esito o motivo), Modello, Aggiornato (ordinamento
   default, desc), Durata. Filtri ricordati per workspace. Piede "N di M task".
+- **Goal** (visibili solo se la board ne ha): selettore "Goal" accanto alla ricerca (Kanban e Lista;
+  "Tutti i goal", i goal aperti, i chiusi, "Senza goal"), ricordato per workspace; un goal sparito
+  dalla board non nasconde i task (`effectiveGoalFilter`). Nella Lista l'interruttore "Raggruppa per
+  goal" divide le righe con un'intestazione per goal (fase, avanzamento; clic → dettaglio). I task
+  mostrano il goal come etichetta (Kanban, Lista, grafo, dettaglio). Logica in `src/lib/goals.ts`.
+- **Dettaglio del goal** (stesso pannello laterale del task, uno solo alla volta): fase, giro e
+  avanzamento, cosa aspetta l'utente, richiesta, criteri, decisioni con "Aggiungi nota" (1..=500
+  caratteri, solo goal aperti), task per giro con stato, esito delle review, "Chiudi goal" con
+  conferma in linea che elenca i task in coda/falliti e le proposte che verranno eliminati (con un
+  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data. Consegna,
+  branch, correzioni e consegna automatiche arrivano con le tappe successive.
 - **Dipendenze**: il grafo React Flow attuale, ripulito (nodi con i 4 stati).
 - **Dettaglio** (pannello laterale destro agganciato, uguale per tutte le viste e aperto anche
   dal pannello Task): stato, id, titolo, azioni per stato (Da fare: Modifica, In cima alla
@@ -1643,7 +1663,8 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   renderer minimale per titoli, liste, codice inline/blocchi, grassetto, link), dipendenze,
   modello, repo, durata. Modifica (solo Da fare/Fallito): titolo, testo, dipendenze, modello.
 - **Nuovo task** (dialog): titolo, specifica (textarea), dipendenze (multi-selezione tra i task
-  non fatti), modello (default del workspace), repo (solo multi-repo). Suggerimento: "Per una
+  non fatti; con un goal, solo quelli dello stesso goal; senza goal, quelli sciolti o di goal chiusi), goal
+  (facoltativo, fra i goal aperti; solo se ce ne sono), modello (default del workspace), repo (solo multi-repo). Suggerimento: "Per una
   specifica completa usa Task Intake".
 
 ### Impostazioni

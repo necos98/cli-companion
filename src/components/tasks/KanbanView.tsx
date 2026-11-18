@@ -3,6 +3,8 @@ import type { DragEvent } from "react";
 import KanbanCard from "./KanbanCard";
 import KanbanColumn from "./KanbanColumn";
 import { useCommand } from "./useDetailCommand";
+import { goalLabel, filterByGoal } from "../../lib/goals";
+import type { GoalFilter } from "../../lib/goals";
 import { isParallel, statusDotClass } from "../../lib/board";
 import type { BoardView, Task, TaskStatus } from "../../lib/board";
 import { acceptsDrop, dragIntent, kanbanColumns, reorderTarget } from "../../lib/taskViews";
@@ -16,6 +18,8 @@ interface Props {
   /** Agenti del workspace: badge e motivo di un agente non pronto sulle card. */
   agents: TaskAgents;
   query: string;
+  /** Filtro per goal (già ricondotto a un goal esistente). */
+  goalFilter: GoalFilter;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onBoard: (board: BoardView) => void;
@@ -51,6 +55,7 @@ export default function KanbanView({
   board,
   agents,
   query,
+  goalFilter,
   selectedId,
   onSelect,
   onBoard,
@@ -58,7 +63,10 @@ export default function KanbanView({
   now,
   onShowAllDone,
 }: Props) {
-  const cols = useMemo(() => kanbanColumns(board.tasks, query, now), [board.tasks, query, now]);
+  const cols = useMemo(
+    () => kanbanColumns(filterByGoal(board.tasks, goalFilter), query, now),
+    [board.tasks, goalFilter, query, now],
+  );
   const queueIds = useMemo(() => board.tasks.filter((t) => t.status === "queued").map((t) => t.id), [board.tasks]);
   const runningTotal = useMemo(() => board.tasks.filter((t) => t.status === "running").length, [board.tasks]);
   const hasDone = useMemo(() => board.tasks.some((t) => t.status === "done"), [board.tasks]);
@@ -135,6 +143,7 @@ export default function KanbanView({
       now={now}
       selected={t.id === selectedId}
       showRepo={showRepo}
+      goalTitle={goalLabel(board.goals, t.goal)}
       dropEdge={queued && hover?.id === t.id ? (hover.after ? "after" : "before") : null}
       dragging={drag?.id === t.id}
       onSelect={onSelect}

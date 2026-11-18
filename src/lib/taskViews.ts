@@ -16,6 +16,7 @@ import {
   updatedLabel,
 } from "./board.ts";
 import type { Task, TaskFilter, TaskStatus } from "./board.ts";
+import type { GoalFilter } from "./goals.ts";
 import { canDo } from "./taskActions.ts";
 
 // ---------------------------------------------------------------- viste
@@ -204,15 +205,23 @@ export interface ListPrefs {
   /** Agenti ammessi (id dell'integrazione); vuoto = tutti. */
   agents: string[];
   sort: ListSort;
+  /** Raggruppa le righe per goal. */
+  groupByGoal: boolean;
 }
 
 export interface WorkspacePrefs {
   view: ManagerView;
+  /** Filtro per goal, comune a Kanban e Lista (null = tutti). */
+  goal: GoalFilter;
   list: ListPrefs;
 }
 
 export function defaultPrefs(): WorkspacePrefs {
-  return { view: "kanban", list: { statuses: [], repos: [], agents: [], sort: { ...DEFAULT_SORT } } };
+  return {
+    view: "kanban",
+    goal: null,
+    list: { statuses: [], repos: [], agents: [], sort: { ...DEFAULT_SORT }, groupByGoal: false },
+  };
 }
 
 /** Parte minima di `Storage` che serve qui. */
@@ -241,12 +250,14 @@ export function readPrefs(storage: StorageLike | null | undefined, workspaceId: 
   if (typeof raw !== "object" || raw === null) return out;
   const p = raw as Record<string, unknown>;
   if (isView(p.view)) out.view = p.view;
+  if (typeof p.goal === "string" && p.goal !== "") out.goal = p.goal;
   const list = p.list;
   if (typeof list === "object" && list !== null) {
     const l = list as Record<string, unknown>;
     if (Array.isArray(l.statuses)) out.list.statuses = STATUSES.filter((s) => (l.statuses as unknown[]).includes(s));
     if (Array.isArray(l.repos)) out.list.repos = l.repos.filter((r): r is string => typeof r === "string");
     if (Array.isArray(l.agents)) out.list.agents = l.agents.filter((a): a is string => typeof a === "string");
+    out.list.groupByGoal = l.groupByGoal === true;
     const sort = l.sort as Record<string, unknown> | null | undefined;
     if (sort && (sort.key === "updated" || sort.key === "title" || sort.key === "duration")) {
       out.list.sort = { key: sort.key, desc: sort.desc === true };

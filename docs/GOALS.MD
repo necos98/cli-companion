@@ -401,7 +401,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 |---|---|---|
 | T1 | `fail_reason` e `blocked_by` (modello, vista, badge, `list_tasks`) — **consegnata** | — |
 | T2 | Goal: modello, `propose_tasks` con `goal`/`goal_id`, eredità dalle review, fase, chiusura a mano, archivio, `list_goals`/`get_goal`, skill `task-intake` — **consegnata** | — |
-| T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal | T1, T2 |
+| T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal — **consegnata** | T1, T2 |
 | T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia | T2 |
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` | T3, T4 |
 | T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |

@@ -9,26 +9,26 @@ import {
   Play,
   Plus,
   Sparkles,
+  Target,
   XCircle,
   ChevronsLeft,
 } from "lucide-react";
-import { workspaceUpdated } from "../../app/actions/workspaces";
 import { useTaskAgents } from "../../hooks/useTaskAgents";
 import { agentBadge } from "../../lib/taskAgent";
 import { api } from "../../lib/tauri";
 import type { Workspace } from "../../lib/tauri";
 import type { BotImage } from "../../lib/bots";
-import { failedTasks, isParallel, queuedTasks, runningTasks, taskCounts } from "../../lib/board";
+import { isParallel, queuedTasks, runningTasks, taskCounts } from "../../lib/board";
 import type { BoardView } from "../../lib/board";
-import PanelFailedCard from "./PanelFailedCard";
+import { goalLabel, openGoals } from "../../lib/goals";
+import GoalsInProgress from "./GoalsInProgress";
+import NeedsYouSection from "./NeedsYouSection";
 import PanelHeaderButton from "./PanelHeaderButton";
 import PanelQueue from "./PanelQueue";
 import PanelRail from "./PanelRail";
 import type { PanelRailItem } from "./PanelRail";
 import PanelRunningCard from "./PanelRunningCard";
 import PanelSection from "./PanelSection";
-import ProposalCard from "./ProposalCard";
-import SettingsProposalCard from "./SettingsProposalCard";
 import { usePanelNow } from "./usePanelNow";
 
 /**
@@ -58,6 +58,8 @@ export interface TaskPanelProps {
   onNewTask: () => void;
   /** Mette a fuoco un tab nella griglia dei terminali (es. il worker di un task in corso). */
   onFocusTab: (tabId: string) => void;
+  /** Apre il goal `goalId` nel Tasks Manager. */
+  onOpenGoal: (goalId: string) => void;
   /** Nome del bot di un tab (se la funzione e' attiva). */
   botOf?: (tabId: string) => string | undefined;
   /** Immagine del bot di un tab (se il suo nome ne ha una). */
@@ -67,7 +69,7 @@ export interface TaskPanelProps {
 const FOOTER_BUTTON =
   "flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-border-strong text-[13px] transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** Pannello Task del workspace: proposte, in corso, in coda trascinabile, falliti. */
+/** Pannello Task del workspace: serve a te, goal in corso, in corso, in coda trascinabile. */
 export default function TaskPanel({
   workspace,
   board,
@@ -79,6 +81,7 @@ export default function TaskPanel({
   onOpenIntake,
   onNewTask,
   onFocusTab,
+  onOpenGoal,
   botOf,
   botImageOf,
 }: TaskPanelProps) {
@@ -90,7 +93,7 @@ export default function TaskPanel({
   const counts = useMemo(() => taskCounts(board), [board]);
   const running = useMemo(() => (board ? runningTasks(board) : []), [board]);
   const queued = useMemo(() => (board ? queuedTasks(board) : []), [board]);
-  const failed = useMemo(() => (board ? failedTasks(board) : []), [board]);
+  const goalsOpen = useMemo(() => (board ? openGoals(board.goals).length : 0), [board]);
   const now = usePanelNow(!collapsed && running.length > 0);
 
   /** Esegue un comando sulla board: la risposta va ad App, un errore resta in linea. */
@@ -161,6 +164,7 @@ export default function TaskPanel({
         className: "text-muted-foreground",
       },
       { key: "failed", icon: XCircle, count: counts.failed, label: "task falliti", className: "text-destructive" },
+      { key: "goals", icon: Target, count: goalsOpen, label: "goal in corso", className: "text-text-secondary" },
     ];
     return (
       <PanelRail
@@ -172,7 +176,7 @@ export default function TaskPanel({
   }
 
   const parallel = board ? isParallel(board.delivery ?? { mode: "commit", parallel: false }) : false;
-  const hasActive = running.length + queued.length + failed.length + counts.proposals > 0;
+  const hasActive = running.length + queued.length + counts.failed + counts.proposals + goalsOpen > 0;
 
   return (
     <aside
@@ -217,25 +221,16 @@ export default function TaskPanel({
           </p>
         ) : (
           <>
-            {board.proposals.map((p) => (
-              <ProposalCard
-                key={p.id}
-                workspaceId={workspaceId}
-                proposal={p}
-                board={board}
-                agents={agents}
-                onBoard={onBoard}
-              />
-            ))}
-            {board.settings_proposals.map((p) => (
-              <SettingsProposalCard
-                key={p.id}
-                workspaceId={workspaceId}
-                proposal={p}
-                onBoard={onBoard}
-                onWorkspace={workspaceUpdated}
-              />
-            ))}
+            <NeedsYouSection
+              workspaceId={workspaceId}
+              board={board}
+              agents={agents}
+              onBoard={onBoard}
+              onRetry={retry}
+              onOpenManager={onOpenManager}
+              onFocusTab={onFocusTab}
+            />
+            <GoalsInProgress goals={board.goals} onOpenGoal={onOpenGoal} />
 
             {running.length > 0 && (
               <PanelSection
@@ -249,6 +244,7 @@ export default function TaskPanel({
                     now={now}
                     bots={agents.bots}
                     agent={agentBadge(agents, t.agent)}
+                    goal={goalLabel(board.goals, t.goal)}
                     bot={t.session ? botOf?.(t.session) : undefined}
                     botImage={t.session ? botImageOf?.(t.session) : undefined}
                     onClick={() => (t.session ? onFocusTab(t.session) : onOpenManager(t.id))}
@@ -263,17 +259,10 @@ export default function TaskPanel({
                   queue={queued}
                   allTasks={board.tasks}
                   bots={agents.bots}
+                  goals={board.goals}
                   onOpen={onOpenManager}
                   onMove={move}
                 />
-              </PanelSection>
-            )}
-
-            {failed.length > 0 && (
-              <PanelSection title="FALLITI" titleClassName="text-destructive">
-                {failed.map((t) => (
-                  <PanelFailedCard key={t.id} task={t} onRetry={retry} onOpen={onOpenManager} />
-                ))}
               </PanelSection>
             )}
 

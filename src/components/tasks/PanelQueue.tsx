@@ -11,6 +11,9 @@ import { isPlan } from "../../lib/plan";
 import { PlanBadge } from "./PlanBadge";
 import BotBadge from "./BotBadge";
 import type { AgentBot } from "../../bindings/AgentBot";
+import { goalLabel } from "../../lib/goals";
+import type { GoalView } from "../../lib/goals";
+import GoalTag from "./GoalTag";
 
 interface PanelQueueProps {
   /** Task Da fare nell'ordine della coda. */
@@ -19,6 +22,8 @@ interface PanelQueueProps {
   allTasks: Task[];
   /** Bot disponibili: il nome di quello di ogni task. */
   bots: readonly AgentBot[];
+  /** Goal della board: il titolo di quello di ogni task. */
+  goals: readonly GoalView[];
   onOpen: (taskId: string) => void;
   /** Sposta `taskId` prima di `beforeId` (null = in fondo). */
   onMove: (taskId: string, beforeId: string | null) => void;
@@ -27,7 +32,7 @@ interface PanelQueueProps {
 const DRAG_TYPE = "text/plain";
 
 /** Coda numerata, riordinabile con il drag & drop HTML5 (linea di rilascio in primo piano). */
-export default function PanelQueue({ queue, allTasks, bots, onOpen, onMove }: PanelQueueProps) {
+export default function PanelQueue({ queue, allTasks, bots, goals, onOpen, onMove }: PanelQueueProps) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [slot, setSlot] = useState<number | null>(null);
 
@@ -96,7 +101,7 @@ export default function PanelQueue({ queue, allTasks, bots, onOpen, onMove }: Pa
           >
             <GripVertical className="h-3 w-3 flex-shrink-0 cursor-grab text-faint" aria-hidden="true" />
             <span className="w-3 flex-shrink-0 font-mono text-[11px] text-muted-foreground">{i + 1}</span>
-            <QueueRowButton task={t} allTasks={allTasks} bots={bots} onOpen={onOpen} />
+            <QueueRowButton task={t} allTasks={allTasks} bots={bots} goal={goalLabel(goals, t.goal)} onOpen={onOpen} />
           </div>
           {indicator === queue.length && i === queue.length - 1 && line("bottom")}
         </li>
@@ -109,10 +114,11 @@ interface QueueRowButtonProps {
   task: Task;
   allTasks: Task[];
   bots: readonly AgentBot[];
+  goal: string | null;
   onOpen: (id: string) => void;
 }
 
-function QueueRowButton({ task, allTasks, bots, onOpen }: QueueRowButtonProps) {
+function QueueRowButton({ task, allTasks, bots, goal, onOpen }: QueueRowButtonProps) {
   const waiting = queueHoldLabel(task, allTasks);
   const sub = queueSubtitle(task, waiting);
   return (
@@ -129,6 +135,7 @@ function QueueRowButton({ task, allTasks, bots, onOpen }: QueueRowButtonProps) {
         <BotBadge bots={bots} id={task.bot} className="text-[10px]" />
       </span>
       {sub && <span className="truncate text-[11px] text-muted-foreground">{sub}</span>}
+      {goal && <GoalTag title={goal} className="self-start text-[11px]" />}
     </button>
   );
 }

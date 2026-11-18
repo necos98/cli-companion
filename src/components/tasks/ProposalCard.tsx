@@ -9,6 +9,7 @@ import { isReview, proposalHeading } from "../../lib/review";
 import { dependencyLabels, dependsOnText, specExcerpt } from "../../lib/taskPanel";
 import { proposalAgentLabel } from "../../lib/taskAgent";
 import type { TaskAgents } from "../../lib/taskAgent";
+import GoalTag from "./GoalTag";
 
 /**
  * Props della card "Proposta da Task Intake" / "Proposta dal reviewer" (pannello Task e Tasks Manager):
@@ -24,6 +25,10 @@ export interface ProposalCardProps {
   /** Agenti del workspace: nome dell'agente proposto per ogni task. */
   agents: TaskAgents;
   onBoard: (board: BoardView) => void;
+  /** Titolo del goal a cui appartiene (o che nascerebbe); assente per i task sciolti. */
+  goal?: string | null;
+  /** Giro che la correzione aprirebbe; assente se non è una correzione. */
+  round?: number | null;
 }
 
 interface SpecMetaProps {
@@ -48,7 +53,15 @@ function SpecMeta({ spec, board, agents, siblings }: SpecMetaProps) {
   );
 }
 
-export default function ProposalCard({ workspaceId, proposal, board, agents, onBoard }: ProposalCardProps) {
+export default function ProposalCard({
+  workspaceId,
+  proposal,
+  board,
+  agents,
+  onBoard,
+  goal = null,
+  round = null,
+}: ProposalCardProps) {
   const [pending, setPending] = useState<"accept" | "discard" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const specs = proposal.tasks;
@@ -79,6 +92,17 @@ export default function ProposalCard({ workspaceId, proposal, board, agents, onB
       {heading.origin && (
         <p className="min-w-0 break-words text-[11px] text-muted-foreground">
           Review: <span className="text-text-secondary">{heading.origin}</span>
+        </p>
+      )}
+
+      {goal && (
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+          {proposal.goal ? (
+            <span className="break-words">Nuovo goal: {goal}</span>
+          ) : (
+            <GoalTag title={goal} className="text-[11px]" />
+          )}
+          {round !== null && <span>correzione · giro {round}</span>}
         </p>
       )}
 

@@ -24,10 +24,13 @@ interface Props {
   /** Mostra il repository anche se è la root (workspace multi-repo). */
   showRepo: boolean;
   onSelectTask: (taskId: string) => void;
+  /** Titolo del goal del task (null = sciolto) e apertura del suo dettaglio. */
+  goalTitle: string | null;
+  onOpenGoal: (goalId: string) => void;
 }
 
 /** Dipendenze (cliccabili), Bot, modello, effort, skill, repo, durata e tentativi. */
-export default function DetailFacts({ task, board, now, bots, showRepo, onSelectTask }: Props) {
+export default function DetailFacts({ task, board, now, bots, showRepo, onSelectTask, goalTitle, onOpenGoal }: Props) {
   const deps = task.depends_on;
   const duration = formatTaskDuration(task, now);
   return (
@@ -61,6 +64,18 @@ export default function DetailFacts({ task, board, now, bots, showRepo, onSelect
           </ul>
         )}
       </Fact>
+      {task.goal && goalTitle && (
+        <Fact label="Goal" wide>
+          <button
+            type="button"
+            onClick={() => task.goal && onOpenGoal(task.goal)}
+            title={`Apri il goal ${goalTitle}`}
+            className="max-w-full truncate rounded text-left text-xs underline underline-offset-2 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {goalTitle}
+          </button>
+        </Fact>
+      )}
       <Fact label="Bot">
         {task.bot ? <BotBadge bots={bots} id={task.bot} className="max-w-full text-xs" /> : NO_BOT_TEXT}
       </Fact>

@@ -4,6 +4,7 @@ import type { Edge, ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import TaskNode from "./TaskNode";
 import type { TaskFlowNode } from "./TaskNode";
+import { goalLabel } from "../../lib/goals";
 import { issueLabel, taskIdsKey } from "../../lib/board";
 import type { BoardView } from "../../lib/board";
 import { layoutBoard, layoutSignature } from "../../lib/boardLayout";
@@ -28,6 +29,7 @@ interface Props {
  */
 export default function DependencyGraph({ board, selectedId = null, onSelect }: Props) {
   const tasks = board.tasks;
+  const goals = board.goals;
 
   // Cambia l'insieme dei task (non il loro stato): riadatta la vista al nuovo grafo.
   const flowRef = useRef<ReactFlowInstance<TaskFlowNode, Edge> | null>(null);
@@ -57,11 +59,16 @@ export default function DependencyGraph({ board, selectedId = null, onSelect }: 
           id: n.id,
           type: "task" as const,
           position: n.position,
-          data: { task, selected: n.id === selectedId, issue: issueLabel(task, tasks) },
+          data: {
+            task,
+            selected: n.id === selectedId,
+            issue: issueLabel(task, tasks),
+            goal: goalLabel(goals, task.goal),
+          },
         },
       ];
     });
-  }, [layout, tasks, selectedId]);
+  }, [layout, tasks, goals, selectedId]);
 
   const edges = useMemo<Edge[]>(() => {
     const byId = new Map(tasks.map((t) => [t.id, t]));

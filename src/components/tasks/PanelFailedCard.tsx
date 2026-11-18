@@ -1,20 +1,25 @@
 import { useState } from "react";
 import { Loader2, XCircle } from "lucide-react";
 import type { Task } from "../../lib/board";
-import { failureReason } from "../../lib/taskPanel";
+import GoalTag from "./GoalTag";
 
 interface PanelFailedCardProps {
   task: Task;
+  /** Titolo del goal del task (null = sciolto). */
+  goal: string | null;
+  /** Motivo del fallimento su una riga ("" se non noto). */
+  reason: string;
+  /** Titoli dei task in coda che questo fallimento blocca. */
+  blocking: string[];
   /** Riprova: rimette il task in coda. Rigetta con l'errore del comando. */
   onRetry: (taskId: string) => Promise<void>;
   /** Apre il dettaglio del task nel Tasks Manager. */
   onOpen: (taskId: string) => void;
 }
 
-/** Card di un task fallito: motivo su una riga e "Riprova". */
-export default function PanelFailedCard({ task, onRetry, onOpen }: PanelFailedCardProps) {
+/** Card di un task fallito: motivo su una riga, goal, task bloccati e "Riprova". */
+export default function PanelFailedCard({ task, goal, reason, blocking, onRetry, onOpen }: PanelFailedCardProps) {
   const [retrying, setRetrying] = useState(false);
-  const reason = failureReason(task);
   const retry = async () => {
     setRetrying(true);
     try {
@@ -34,6 +39,10 @@ export default function PanelFailedCard({ task, onRetry, onOpen }: PanelFailedCa
       >
         <span className="line-clamp-2 break-words text-[13px] font-medium">{task.title}</span>
         {reason && <span className="truncate text-[11px] text-muted-foreground">{reason}</span>}
+        {blocking.length > 0 && (
+          <span className="truncate text-[11px] text-muted-foreground">Blocca: {blocking.join(", ")}</span>
+        )}
+        {goal && <GoalTag title={goal} className="self-start text-[11px]" />}
       </button>
       <button
         type="button"

@@ -2,17 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DependencyGraph from "./DependencyGraph";
 import KanbanView from "./KanbanView";
 import ListView from "./ListView";
+import GoalDetail from "./GoalDetail";
 import ManagerHeader from "./ManagerHeader";
 import ManagerProposals from "./ManagerProposals";
 import NewTaskDialog from "./NewTaskDialog";
 import TaskDetail from "./TaskDetail";
 import { useCommand } from "./useDetailCommand";
+import { useManagerSelection } from "./useManagerSelection";
 import { useManagerNow } from "./useManagerNow";
 import { useManagerPrefs } from "./useManagerPrefs";
 import { useWorkspaceRepos } from "./useWorkspaceRepos";
 import { useTaskAgents } from "../../hooks/useTaskAgents";
 import { clampToBounds, deliveryLabel } from "../../lib/board";
 import type { BoardView, Task } from "../../lib/board";
+import { NO_GOAL, effectiveGoalFilter, findGoal } from "../../lib/goals";
 import { repoOptions } from "../../lib/taskForm";
 import { isTypingTarget } from "../../lib/taskViews";
 import type { ManagerView } from "../../lib/taskViews";
@@ -30,6 +33,8 @@ export interface TasksManagerIntent {
   nonce: number;
   /** Seleziona il task e apre il dettaglio. */
   taskId?: string;
+  /** Apre il dettaglio del goal. */
+  goalId?: string;
   /** Apre il dialog "Nuovo task". */
   newTask?: boolean;
 }
@@ -78,9 +83,8 @@ export default function TasksManager({
   intent = null,
   isTabOpen,
 }: TasksManagerProps) {
-  const { prefs, setView, setList } = useManagerPrefs(workspace.id);
+  const { prefs, setView, setList, setGoal } = useManagerPrefs(workspace.id);
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(intent?.taskId ?? null);
   const [newTaskOpen, setNewTaskOpen] = useState(intent?.newTask === true);
   const now = useManagerNow();
   const detected = useWorkspaceRepos(workspace.id);
@@ -90,26 +94,24 @@ export default function TasksManager({
 
   const repoChoices = useMemo(() => repoOptions(board?.tasks ?? [], detected), [board?.tasks, detected]);
   const multiRepo = repoChoices.length > 1;
+  const {
+    taskId: selectedId,
+    goalId: selectedGoalId,
+    selectTask,
+    selectGoal,
+    clear,
+  } = useManagerSelection(board, intent, intent?.nonce);
   const selected = board?.tasks.find((t) => t.id === selectedId) ?? null;
+  const selectedGoal = board ? findGoal(board.goals, selectedGoalId) : null;
+  const goalFilter = board ? effectiveGoalFilter(prefs.goal, board.goals) : null;
+  // "Nuovo task" parte dal goal in vista (aperto o filtrato), se c'è.
+  const newTaskGoal = selectedGoalId ?? (goalFilter !== NO_GOAL ? goalFilter : null);
 
   // Richieste da fuori (pannello Task) anche a manager già aperto.
   useEffect(() => {
     if (!intent) return;
-    if (intent.taskId) setSelectedId(intent.taskId);
     if (intent.newTask) setNewTaskOpen(true);
   }, [intent?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Un task selezionato che sparisce dalla board (eliminato) chiude il dettaglio.
-  // Solo se lo si era già visto: una selezione arrivata prima della board che lo contiene resta in attesa.
-  const seenId = useRef<string | null>(null);
-  useEffect(() => {
-    if (!board || !selectedId) return;
-    if (board.tasks.some((t) => t.id === selectedId)) seenId.current = selectedId;
-    else if (seenId.current === selectedId) {
-      seenId.current = null;
-      setSelectedId(null);
-    }
-  }, [board, selectedId]);
 
   // `/` mette a fuoco la ricerca, se il fuoco non è in un campo di testo (né nel terminale).
   useEffect(() => {
@@ -130,9 +132,12 @@ export default function TasksManager({
     setQuery("");
   }, [prefs.list, setList, setView]);
 
-  const onCreated = useCallback((task: Task | null) => {
-    if (task) setSelectedId(task.id);
-  }, []);
+  const onCreated = useCallback(
+    (task: Task | null) => {
+      if (task) selectTask(task.id);
+    },
+    [selectTask],
+  );
 
   const changeView = (v: ManagerView) => setView(v);
 
@@ -146,6 +151,8 @@ export default function TasksManager({
         onView={changeView}
         query={query}
         onQuery={setQuery}
+        goalFilter={prefs.goal}
+        onGoalFilter={setGoal}
         searchRef={searchRef}
         busy={header.busy}
         onBackToTerminals={onBackToTerminals}
@@ -191,8 +198,9 @@ export default function TasksManager({
               board={board}
               agents={agents}
               query={query}
+              goalFilter={goalFilter}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={selectTask}
               onBoard={onBoard}
               showRepo={multiRepo}
               now={now}
@@ -206,14 +214,17 @@ export default function TasksManager({
               onQuery={setQuery}
               prefs={prefs.list}
               onPrefs={setList}
+              goalFilter={goalFilter}
+              onGoalFilter={setGoal}
               repoChoices={repoChoices}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={selectTask}
+              onOpenGoal={selectGoal}
               now={now}
               onNewTask={() => setNewTaskOpen(true)}
             />
           ) : (
-            <DependencyGraph board={board} selectedId={selectedId} onSelect={setSelectedId} />
+            <DependencyGraph board={board} selectedId={selectedId} onSelect={selectTask} />
           )}
         </main>
         {board && selected && (
@@ -224,13 +235,26 @@ export default function TasksManager({
             board={board}
             agents={agents}
             onBoard={onBoard}
-            onClose={() => setSelectedId(null)}
+            onClose={clear}
             onOpenTerminal={onOpenTerminal}
-            onSelectTask={setSelectedId}
+            onSelectTask={selectTask}
+            onOpenGoal={selectGoal}
             repos={detected}
             repoConfigs={workspace.repos}
             isTabOpen={isTabOpen}
             now={now}
+          />
+        )}
+        {board && selectedGoal && (
+          <GoalDetail
+            key={selectedGoal.id}
+            workspaceId={workspace.id}
+            goal={selectedGoal}
+            board={board}
+            now={now}
+            onBoard={onBoard}
+            onClose={clear}
+            onSelectTask={selectTask}
           />
         )}
       </div>
@@ -245,6 +269,7 @@ export default function TasksManager({
         onOpenIntake={onOpenIntake}
         repos={detected}
         onCreated={onCreated}
+        defaultGoal={newTaskGoal}
       />
     </div>
   );
