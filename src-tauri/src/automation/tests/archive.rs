@@ -34,9 +34,10 @@ fn archiving_comes_before_the_publication_of_the_trimmed_board() {
     let archive = position(&effects, |e| matches!(e, Effect::Archive { .. })).expect("Archive");
     let publish = position(&effects, |e| matches!(e, Effect::Publish(..))).expect("Publish");
     assert!(archive < publish, "{effects:?}");
-    let Effect::Archive { ws_id, tasks } = &effects[archive] else { unreachable!() };
+    let Effect::Archive { ws_id, tasks, goals } = &effects[archive] else { unreachable!() };
     let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
     assert_eq!((ws_id.as_str(), ids), ("ws-1", vec!["t0", "t1", "t2", "t3", "t4"]));
+    assert!(goals.is_empty());
     let Effect::Publish(board, view) = &effects[publish] else { unreachable!() };
     assert_eq!((board.tasks.len(), view.tasks.len()), (MAX_FINISHED_KEPT, MAX_FINISHED_KEPT));
     assert!(board.task("t4").is_none() && board.task("t5").is_some());

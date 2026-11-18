@@ -5,7 +5,7 @@
 //! resto del ciclo di vita e' quello di ogni worker; le regole pure sono in
 //! `crate::board::plan`.
 
-use super::boards::{list_tasks, propose_tasks, task_details, workspace_of};
+use super::boards::{get_goal, list_goals, list_tasks, propose_tasks, task_details, workspace_of};
 use super::rpc::misrouted;
 use super::worktrees::ensure_repos;
 use super::*;
@@ -70,7 +70,7 @@ pub fn create_plan_task<H: Host>(
     let now = now_millis();
     st.run(host, |r| {
         spec.id = r.free_id(ws_id, &spec.title);
-        let id = r.create_task(ws_id, spec, ctx, now)?;
+        let id = r.create_task(ws_id, spec, None, ctx, now)?;
         r.note_no_git(ws_id, &kinds);
         Ok(id)
     })
@@ -127,6 +127,8 @@ pub(super) fn rpc_planner<H: Host>(
         Method::ListTasks => list_tasks(st, host, &ws, params),
         Method::GetTaskDetails => task_details(st, host, &ws, params),
         Method::GetWorkspaceSettings => Ok(settings::get_settings(st, host, &ws)),
+        Method::ListGoals => list_goals(st, host, &ws, params),
+        Method::GetGoal => get_goal(st, host, &ws, params),
         other => Err(misrouted(other)),
     }
 }

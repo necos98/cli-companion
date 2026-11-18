@@ -223,7 +223,7 @@ fn old_boards_load_as_work_and_new_fields_roundtrip() {
         "p-1".into(),
         "tab-1",
         Some("rev".into()),
-        vec![spec("fix", TaskKind::Review, &["a"])],
+        vec![spec("fix", TaskKind::Review, &["a"])].into(),
         SpecContext::default(),
         3,
     )
@@ -250,7 +250,7 @@ fn review_dependencies_are_validated_on_every_entry_point() {
     let orphan = spec("rev", TaskKind::Review, &[]);
     assert!(b.create_task(orphan.clone(), SpecContext::default(), 1).unwrap_err().contains("at least one dependency"));
     assert!(b
-        .add_proposal("p-1".into(), "t", None, vec![orphan], SpecContext::default(), 1)
+        .add_proposal("p-1".into(), "t", None, vec![orphan].into(), SpecContext::default(), 1)
         .unwrap_err()
         .contains("at least one dependency"));
     b.create_task(spec("a", TaskKind::Work, &[]), SpecContext::default(), 1).unwrap();

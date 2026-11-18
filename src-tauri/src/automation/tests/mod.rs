@@ -23,6 +23,7 @@ mod e2e;
 mod e2e_cancel;
 mod e2e_manual;
 mod free_mode;
+mod goals;
 mod hub_hook;
 mod plan;
 mod questions;
@@ -89,6 +90,8 @@ struct FakeHost {
     deleted: Arc<Mutex<Vec<String>>>,
     /// Task archiviati (workspace, task) e l'errore forzato di `archive_tasks`.
     archive_log: Arc<Mutex<Vec<(String, Task)>>>,
+    /// Goal archiviati (workspace, goal); `archive_err` vale anche per loro.
+    goal_archive_log: Arc<Mutex<Vec<(String, Goal)>>>,
     archive_err: Arc<Mutex<Option<String>>>,
     excludes: Arc<Mutex<Vec<String>>>,
     notices: Arc<Mutex<Vec<Notice>>>,
@@ -458,6 +461,13 @@ impl Host for FakeHost {
             return Err(e);
         }
         self.archive_log.lock().unwrap().extend(tasks.iter().map(|t| (ws_id.to_string(), t.clone())));
+        Ok(())
+    }
+    fn archive_goals(&self, ws_id: &str, goals: &[Goal]) -> Result<(), String> {
+        if let Some(e) = self.archive_err.lock().unwrap().clone() {
+            return Err(e);
+        }
+        self.goal_archive_log.lock().unwrap().extend(goals.iter().map(|g| (ws_id.to_string(), g.clone())));
         Ok(())
     }
     fn emit_board(&self, view: &BoardView) {

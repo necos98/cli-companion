@@ -20,9 +20,9 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 #[test]
-fn the_current_schema_version_is_two() {
-    assert_eq!(board_store("ws-1.json".into()).schema_version(), 2);
-    assert_eq!(BOARD_FORMAT.schema_version(), 2);
+fn the_current_schema_version_is_three() {
+    assert_eq!(board_store("ws-1.json".into()).schema_version(), 3);
+    assert_eq!(BOARD_FORMAT.schema_version(), 3);
 }
 
 // --- il file reale di oggi (versione 0) ---
@@ -114,7 +114,7 @@ fn a_real_file_is_saved_inside_the_current_envelope_and_reloads_identically() {
     store.save(&dir, &board).unwrap();
     let saved = std::fs::read_to_string(dir.join("ws-1.json")).unwrap();
     let on_disk: Value = serde_json::from_str(&saved).unwrap();
-    assert_eq!(on_disk["schema_version"], 2);
+    assert_eq!(on_disk["schema_version"], 3);
     assert_eq!(on_disk["data"], serde_json::to_value(&board).unwrap());
     // La forma salvata si rilegge uguale, dal file e dal testo.
     let loaded = store.load(&dir);
@@ -173,7 +173,7 @@ fn a_v011_file_saved_in_the_envelope_has_no_removed_fields_and_is_stable() {
     store.save(&dir, &board).unwrap();
     let saved = std::fs::read_to_string(dir.join("ws-1.json")).unwrap();
     let on_disk: Value = serde_json::from_str(&saved).unwrap();
-    assert_eq!(on_disk["schema_version"], 2);
+    assert_eq!(on_disk["schema_version"], 3);
     for gone in [
         "owner",
         "requests",

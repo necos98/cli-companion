@@ -1,11 +1,12 @@
-//! Operazioni sulla coda: task nuovi e proposte, modifiche, cancellazioni e
-//! riordino. Ogni operazione verifica lo stato del task e non tocca il suo
+//! Operazioni sulla coda: task nuovi e proposte (con il loro goal, vedi
+//! `goal`), modifiche, cancellazioni e riordino. Ogni operazione verifica lo stato del task e non tocca il suo
 //! ciclo di vita (vedi `lifecycle`).
 
 use super::agent::{check_bot_kind, resolve_spec, SpecContext};
 use super::{
     check_plan_spec, check_review_deps, parse_spec, permits, valid_id, validate_graph, Board, LifecycleError, Op,
-    Proposal, Task, TaskAction, TaskSpec, TaskStatus, MAX_PENDING_PROPOSALS, MAX_TASKS_PER_BOARD,
+    Proposal, ProposalGoal, ProposalInput, Task, TaskAction, TaskSpec, TaskStatus, MAX_PENDING_PROPOSALS,
+    MAX_TASKS_PER_BOARD,
 };
 use crate::validate::clip_chars;
 use serde_json::Value;
@@ -33,15 +34,17 @@ impl Board {
         self.tasks.iter().filter(|t| matches!(t.status(), TaskStatus::Queued | TaskStatus::Running)).count()
     }
 
-    /// Verifica i task nuovi contro la board: id validi e unici (anche rispetto
-    /// a `reserved`, gli id delle altre proposte pendenti), dipendenze verso la
-    /// proposta o task esistenti, niente cicli, limiti, Bot e agente utilizzabili.
-    /// Ritorna le specifiche risolte (agente, modello, effort e skill del Bot
-    /// copiati): le proposte tengono le originali, i task nuovi queste.
+    /// Verifica i task nuovi, destinati al goal `goal` (`None` = sciolti),
+    /// contro la board: id validi e unici (anche rispetto a `reserved`, gli id
+    /// delle altre proposte pendenti), dipendenze verso la proposta o task
+    /// esistenti dello stesso goal, niente cicli, limiti, Bot e agente
+    /// utilizzabili. Ritorna le specifiche risolte (agente, modello, effort e
+    /// skill del Bot copiati): le proposte tengono le originali, i task nuovi queste.
     pub fn check_specs(
         &self,
         specs: &[TaskSpec],
         reserved: &HashSet<&str>,
+        goal: Option<&str>,
         ctx: SpecContext<'_>,
     ) -> Result<Vec<TaskSpec>, String> {
         if specs.is_empty() {
@@ -71,6 +74,7 @@ impl Board {
         let mut all = self.tasks.clone();
         all.extend(resolved.iter().cloned().map(|s| Task::from_spec(s, 0)));
         validate_graph(&all)?;
+        self.check_goal_deps(specs, goal)?;
         Ok(resolved)
     }
 
@@ -89,30 +93,51 @@ impl Board {
 
     /// Aggiunge in fondo alla coda le specifiche ritornate da `check_specs`: il
     /// task tiene agente, modello, effort e skill risolti e non cambia piu' al
-    /// variare dei predefiniti o del Bot.
-    pub(super) fn push_specs(&mut self, specs: Vec<TaskSpec>, now: i64) -> Vec<String> {
+    /// variare dei predefiniti o del Bot. `goal`: il goal e il giro in cui entrano.
+    pub(super) fn push_specs(&mut self, specs: Vec<TaskSpec>, goal: Option<(&str, u32)>, now: i64) -> Vec<String> {
         let ids = specs.iter().map(|s| s.id.clone()).collect();
-        self.tasks.extend(specs.into_iter().map(|s| Task::from_spec(s, now)));
+        self.tasks.extend(specs.into_iter().map(|s| {
+            let mut task = Task::from_spec(s, now);
+            if let Some((id, round)) = goal {
+                task.join_goal(id, round);
+            }
+            task
+        }));
         self.updated_at = now;
         ids
     }
 
-    /// Task creato a mano, senza proposta.
+    /// Task sciolto creato a mano, senza proposta.
     pub fn create_task(&mut self, spec: TaskSpec, ctx: SpecContext<'_>, now: i64) -> Result<String, String> {
-        let resolved = self.check_specs(std::slice::from_ref(&spec), &self.pending_ids(None), ctx)?;
-        Ok(self.push_specs(resolved, now).remove(0))
+        self.create_task_in(spec, None, ctx, now)
+    }
+
+    /// Task creato a mano, senza proposta, nel goal aperto `goal` (al suo giro
+    /// corrente) o sciolto.
+    pub fn create_task_in(
+        &mut self,
+        spec: TaskSpec,
+        goal: Option<&str>,
+        ctx: SpecContext<'_>,
+        now: i64,
+    ) -> Result<String, String> {
+        let membership = goal.map(|g| self.open_goal(g).map(|g| (g.id.clone(), g.round()))).transpose()?;
+        let resolved = self.check_specs(std::slice::from_ref(&spec), &self.pending_ids(None), goal, ctx)?;
+        Ok(self.push_specs(resolved, membership.as_ref().map(|(id, round)| (id.as_str(), *round)), now).remove(0))
     }
 
     /// Nuova proposta pendente (dell'Intake o di un revisore). Bot e agente si
     /// verificano ma la proposta tiene le specifiche com'erano: senza agente,
     /// vale quello del workspace al momento dell'accettazione, e il Bot si
-    /// copia nel task solo allora.
+    /// copia nel task solo allora. Il goal di `input` e' quello chiesto
+    /// dall'Intake; la proposta di un revisore eredita il goal della sua review
+    /// (`source_task`).
     pub fn add_proposal(
         &mut self,
         id: String,
         source_tab: &str,
         source_task: Option<String>,
-        specs: Vec<TaskSpec>,
+        input: ProposalInput,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<(), String> {
@@ -121,11 +146,23 @@ impl Board {
                 "too many pending proposals (max {MAX_PENDING_PROPOSALS}): wait for the user to accept or discard some"
             ));
         }
-        self.check_specs(&specs, &self.pending_ids(None), ctx)?;
+        let ProposalInput { tasks: specs, goal } = input;
+        let goal = self.proposal_goal(source_task.as_deref(), goal)?;
+        if let Some(g) = &goal {
+            self.check_goal_target(g, None)?;
+        }
+        self.check_specs(&specs, &self.pending_ids(None), goal.as_ref().map(ProposalGoal::id), ctx)?;
+        let (goal, goal_id) = match goal {
+            Some(ProposalGoal::New(spec)) => (Some(spec), None),
+            Some(ProposalGoal::Existing(id)) => (None, Some(id)),
+            None => (None, None),
+        };
         self.proposals.push(Proposal {
             id,
             source_tab: source_tab.to_string(),
             source_task,
+            goal,
+            goal_id,
             created_at: now,
             tasks: specs,
         });
@@ -138,13 +175,20 @@ impl Board {
     }
 
     /// Accetta una proposta: dopo una nuova validazione i task entrano in
-    /// coda, nell'ordine della proposta. Se la validazione fallisce la
-    /// proposta resta pendente.
+    /// coda, nell'ordine della proposta, e nel suo goal (creato adesso se
+    /// nuovo; una correzione fa avanzare il giro). Se la validazione fallisce
+    /// la proposta resta pendente.
     pub fn accept_proposal(&mut self, id: &str, ctx: SpecContext<'_>, now: i64) -> Result<Vec<String>, String> {
-        let specs = self.proposal(id)?.tasks.clone();
-        let specs = self.check_specs(&specs, &HashSet::new(), ctx)?;
+        let proposal = self.proposal(id)?;
+        let (goal, correction) = (proposal.target_goal(), proposal.is_correction());
+        let specs = proposal.tasks.clone();
+        if let Some(g) = &goal {
+            self.check_goal_target(g, Some(id))?;
+        }
+        let specs = self.check_specs(&specs, &HashSet::new(), goal.as_ref().map(ProposalGoal::id), ctx)?;
+        let membership = goal.map(|g| self.enter_goal(g, correction, now)).transpose()?;
         self.proposals.retain(|p| p.id != id);
-        Ok(self.push_specs(specs, now))
+        Ok(self.push_specs(specs, membership.as_ref().map(|(g, round)| (g.as_str(), *round)), now))
     }
 
     pub fn discard_proposal(&mut self, id: &str, now: i64) -> Result<(), String> {
@@ -185,6 +229,7 @@ impl Board {
         } else if patch_has(patch, KIND_KEY) {
             check_bot_kind(&spec, ctx.bots)?;
         }
+        self.check_goal_deps(std::slice::from_ref(&spec), t.goal())?;
         let mut all = self.tasks.clone();
         if let Some(slot) = all.iter_mut().find(|x| x.id == id) {
             slot.apply_spec(spec, now);
@@ -244,7 +289,7 @@ impl Board {
     }
 
     /// I task rimasti (anche `done`) non devono tenere un riferimento a un task sparito.
-    fn drop_references(&mut self, removed: &[&str]) {
+    pub(super) fn drop_references(&mut self, removed: &[&str]) {
         for x in &mut self.tasks {
             x.depends_on.retain(|d| !removed.contains(&d.as_str()));
         }

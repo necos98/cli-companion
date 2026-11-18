@@ -64,7 +64,8 @@ vecchi si ignorano (niente `deny_unknown_fields`).
   "paused": false,        // coda in pausa: nessun nuovo avvio
   "updated_at": 0,
   "tasks": [ /* Task, l'ordine dell'array È l'ordine della coda */ ],
-  "proposals": [ /* Proposal pendenti */ ]
+  "proposals": [ /* Proposal pendenti */ ],
+  "goals": [ /* Goal aperti e chiusi di recente, vedi "Goal" */ ]
 }
 ```
 
@@ -85,6 +86,8 @@ Task:
   "bot": "general",         // Bot che esegue il task (omesso nei task vecchi, che si comportano come prima); agent, model, effort e skill qui sotto sono lo snapshot preso all'accettazione
   "effort": null,           // sforzo del Bot, omesso se assente; all'avvio va in AutomationRequest.effort: un livello non supportato dall'agente è ignorato con una nota sul task
   "skill": null,            // SkillRef del Bot, omessa se assente; il worker la carica per prima (vedi get_task)
+  "goal": "export-ordini",  // id del goal del task, omesso = task sciolto; lo assegna l'ingresso in coda e non cambia più (vedi "Goal")
+  "round": 1,               // giro del goal in cui il task è entrato in coda; omesso senza goal
   "status": "queued",       // queued | running | done | failed
   "fail_reason": null,      // solo se failed, omesso se assente: worker_failed | worker_exited | stopped | interrupted | start_failed (scritto dalla transizione che porta il task a failed; si azzera con "Riprova"; i task falliti prima che esistesse restano senza: motivo sconosciuto, la UI non mostra nulla)
   "worker_status": null,    // starting | running | background | needs_input | idle | awaiting_answer | ... (come oggi)
@@ -160,6 +163,9 @@ Proposal:
   "created_at": 0,
   "source_task": "review-x", // opzionale: task di review o di pianificazione il cui worker l'ha proposta
                              // (omesso se assente); in quel caso source_tab è il tab di quel worker
+  "goal": { "id", "title", "request", "done_when", "decisions"? }, // opzionale: goal nuovo, creato all'accettazione
+  "goal_id": "export-ordini", // opzionale: goal aperto a cui vanno i task (dell'Intake o ereditato dalla review)
+                              // goal e goal_id si escludono; nessuno dei due = task sciolti
   "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, agent?, model, kind, e2e */ ]
 }
 ```
@@ -314,12 +320,15 @@ Il file `<app_data>/boards/<workspace_id>.json` usa la busta comune a tutti i fi
 (modulo `store`):
 
 ```jsonc
-{ "schema_version": 1, "data": { /* la board, come in "Modello dati" */ } }
+{ "schema_version": 3, "data": { /* la board, come in "Modello dati" */ } }
 ```
 
 La versione corrente è il numero dei passi di migrazione (`BOARD_MIGRATIONS` in
-`board/persist.rs`); oggi è **1**. Un file senza busta è la versione 0: il formato scritto
+`board/persist.rs`); oggi è **3**. Un file senza busta è la versione 0: il formato scritto
 dall'app fino alla v0.12 e quello della v0.11 (stessi campi, più stati e campi eliminati).
+Il passo 1 → 2 (`board/legacy_settings.rs`) sposta i campi dei worker delle proposte di impostazioni
+in `worker_agents`; il passo 2 → 3 (`v2_to_v3`, `board/legacy_goals.rs`) aggiunge `goals: []`
+senza ricostruire nessun goal dai task esistenti, che restano sciolti.
 
 **Migrazione (`v0_to_v1`, `board/legacy.rs`).** Funzione pura sul JSON del file, senza orologio e
 senza stato dell'app; sul formato della v0.12 non cambia nulla. Per i file della v0.11:
@@ -335,7 +344,9 @@ senza stato dell'app; sul formato della v0.12 non cambia nulla. Per i file della
 
 Un task `failed` per migrazione senza `finished_at` lo prende da `updated_at`. Dopo la migrazione
 si applicano le invarianti sui valori (`Board::sanitize`): `max_parallel` fra 1 e 16, un `agent`
-per ogni task (il predefinito se manca); `workspace_id` vuoto rende il file inutilizzabile.
+per ogni task (il predefinito se manca), `round` solo sui task di un goal (almeno 1), goal con
+`round` almeno 1 e con `outcome`/`review` solo se chiusi (un goal chiuso senza esito vale
+`abandoned`, senza review `none`); `workspace_id` vuoto rende il file inutilizzabile.
 
 **Recupero dopo il riavvio (`Board::recover_after_restart`, `board/recovery.rs`).** Distinto dalle
 migrazioni e applicato a ogni caricamento, anche di un file già alla versione corrente: nessun
@@ -356,8 +367,8 @@ errore nel log) finché non si riavvia l'app. Il vecchio `<id>.json.bak` non esi
 La board tiene al massimo `MAX_FINISHED_KEPT` = 200 task conclusi (`done` e `failed`): a ogni
 pubblicazione (`flush_one`) i più vecchi per `finished_at` oltre i 200 più recenti escono dalla
 board (`Board::take_archivable`, `board/archive.rs`). Restano, anche oltre il tetto, i task con
-un `worktree` (ancora da ripulire o da riusare con "Riprova") e quelli da cui dipende un task non `done` o una
-proposta pendente; i riferimenti ai task usciti spariscono dai `depends_on` di quelli rimasti.
+un `worktree` (ancora da ripulire o da riusare con "Riprova"), quelli da cui dipende un task non `done` o una
+proposta pendente e quelli di un goal **aperto**; i riferimenti ai task usciti spariscono dai `depends_on` di quelli rimasti.
 
 I task usciti finiscono in `<app_data>/boards/archive/<workspace_id>.jsonl`, una riga JSON per
 task in coda al file (la cartella e il file si creano alla prima volta):
@@ -374,6 +385,14 @@ board in memoria e nel file che il `Publish` successivo salva (la vista inviata 
 quella senza di loro), e la prossima modifica vera li archivia di nuovo
 (`Registry::restore_unarchived`). L'archivio non si legge più dall'app; si cancella insieme alla
 board (`delete_board`, rimozione del workspace).
+
+I **goal chiusi** seguono lo stesso meccanismo: la board ne tiene `MAX_CLOSED_GOALS_KEPT` = 100 (i chiusi
+più di recente, per `closed_at`; gli aperti restano sempre), i più vecchi escono
+(`Board::take_archivable_goals`, `board/goal/archive.rs`) e vanno in
+`<app_data>/boards/archive/<workspace_id>.goals.jsonl`, una riga `{"schema_version":1,"data":{ /* il goal */ }}`
+per goal (`Host::archive_goals`). Stesso `Effect::Archive` (con `tasks` e `goals`) prima del `Publish`, stessa
+garanzia: un goal rifiutato dall'archivio torna nella board (`Board::restore_archived`) e si riprova alla
+modifica successiva. Il file si cancella con la board.
 
 ## Consegna (impostazione del workspace)
 
@@ -687,7 +706,8 @@ automated sessions" (a un worker); un tab di un workspace archiviato risponde "w
 | `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | no |
 | `run_e2e`, `get_e2e_result` | sì | sì | no | no |
 | `propose_tasks`, `get_task_details` | no | sì | sì | sì |
-| `list_tasks` | no | no | sì | sì |
+| `list_tasks`, `list_goals` | no | no | sì | sì |
+| `get_goal` | no | sì | sì | sì |
 | `get_workspace_settings` | no | sì | sì | sì |
 | `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
 | `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
@@ -747,7 +767,11 @@ Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_ta
   `issues`, ammesso come suggerimenti con `passed`. Con `status: "failed"` `verdict` è un
   errore (`findings` ammessi).
 - `get_task_details { id }` e `propose_tasks { tasks }`: come per la sessione, ma la RPC li
-  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo.
+  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo. Lo schema di
+  `propose_tasks` del reviewer (e del planner) non ha `goal` né `goal_id`: passarli è un errore ("goal and goal_id
+  cannot be set by an automated session: …"); la proposta del reviewer **eredita** il goal della sua review
+  (vedi "Goal").
+- `get_goal { id }`: come per la sessione (il reviewer verifica l'obiettivo del goal).
 - `get_workspace_settings {}`: sola lettura, nel workspace del task (come per il planner, con la
   descrizione che non cita `propose_settings`): il reviewer sceglie da `bots` il Bot e da
   `agents[].models` l'eventuale `model` dei task di correzione e della nuova review.
@@ -841,13 +865,20 @@ Sessione (workspace = quello del tab):
   specifica com'è scritta; **all'accettazione** il Bot si risolve e agente, modello, effort e skill vengono
   **copiati nel task** (snapshot, con l'id del Bot per la UI): modificare o eliminare il Bot dopo non cambia i
   task già in coda.
-- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, kind? (solo
-  `review` e `plan`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
+- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, goal? (id del goal, se il task ne ha
+  uno), kind? (solo `review` e `plan`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
   waiting_on?, blocked_by? (id dei `failed` da cui dipende un `queued`), fail_reason? (solo se `failed` e noto), agent_unavailable? (`{ agent, reason }`, vedi “Agente e modello di un task”), summary? (300),
   note? (200) }` + `counts` + `proposals_pending`.
 - `get_task_details { id }` → task completo (testo, report, worktree, `agent`, `model`) con la sua vista (`agent_unavailable` compreso).
+- `list_goals { open_only?: bool }` → `{ goals: [{ id, title, phase, round, waiting, tasks: { done, total } }] }`,
+  nell'ordine della board (aperti e chiusi ancora sulla board; con `open_only: true` solo gli aperti).
+  Errore: "open_only must be a boolean".
+- `get_goal { id }` → `{ goal: { id, title, request, done_when, decisions, round, created_at, closed_at?, outcome?,
+  review?, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
+  "unknown goal: <id>".
 - `update_task { id, title?, task?, depends_on?, repo?, bot?, agent?, model?, kind?, e2e? }` — solo `queued` o
-  `failed`; `repo` solo senza worktree. Ritorna il task senza testo. L'agente si ricontrolla
+  `failed`; `repo` solo senza worktree; il goal non cambia mai ("the goal of a task cannot be changed") e i nuovi
+  `depends_on` rispettano le regole di appartenenza (vedi "Goal"). Ritorna il task senza testo. L'agente si ricontrolla
   solo se il patch contiene `agent`, `model` o `bot` (`agent: null` = quello del workspace o il
   predefinito globale, risolto adesso). Se il task ha un Bot, `agent` e `model` si azzerano salvo che il patch li
   contenga e il Bot si risolve di nuovo (nuovo snapshot); `bot: null` torna al comportamento senza Bot e azzera
@@ -1181,6 +1212,92 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
   `source_tab` (tab del reviewer); lo stesso per il pianificatore di un task `plan` (id del task
   `plan`, al massimo una proposta per worker); le proposte dell'Intake non hanno `source_task`.
 - Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool) -> BoardView`.
+- Una proposta con `goal` nuovo crea il goal **solo all'accettazione**; scartarla non crea nulla. Vedi "Goal".
+
+## Goal
+
+Il goal (obiettivo) è l'oggetto tracciato sopra i task: nasce da una proposta accettata, raggruppa i suoi task, ha
+una fase calcolata e una chiusura. Il progetto completo, con le tappe successive (branch del goal, consegna,
+correzione automatica, follow-up), è in [GOALS.MD](GOALS.MD); qui il contratto consegnato (tappa T2). Il codice è
+in `board/goal.rs` e `board/goal/` (puro, senza orologio).
+
+```jsonc
+{
+  "id": "export-ordini",      // ^[a-z0-9][a-z0-9-]{0,39}$, unico fra i goal della board
+  "title": "...",             // 1..=80
+  "request": "...",           // la richiesta dell'utente con le sue parole, 1..=4000
+  "done_when": ["..."],       // criteri di riuscita dell'obiettivo: 1..=20, 1..=300 caratteri ciascuno
+  "decisions": [              // registro delle decisioni: max 50, le più vecchie cadono
+    { "at": 0, "source": "intake", "text": "..." }   // source: intake | user | app; text 1..=500
+  ],
+  "round": 1,                 // 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata
+  "created_at": 0,
+  "closed_at": 0,             // presente = chiuso (omesso se aperto); un goal chiuso non si riapre
+  "outcome": "delivered",     // solo se chiuso: delivered | abandoned
+  "review": "passed"          // solo se chiuso: passed | issues | none (verdetto della review del goal conclusa per ultima)
+}
+```
+
+I campi delle tappe successive (`branches`, `auto_fix`, `auto_deliver`, `report`, `follow_ups`) non esistono
+ancora. Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
+tasks to an open goal with goal_id").
+
+**Nascita** (`propose_tasks`, poi l'accettazione dell'utente):
+
+| Origine | Goal dei task |
+|---|---|
+| proposta dell'Intake con `goal` | goal creato all'accettazione; i task ricevono `goal` e `round: 1`; le `decisions` entrano nel registro come voci `intake` con l'ora dell'accettazione |
+| proposta dell'Intake con `goal_id` | i task entrano nel goal aperto con il suo `round` corrente |
+| proposta del reviewer di una review con goal | **ereditato dall'app** (`goal_id` = goal della review, il reviewer non indica nulla); all'accettazione il goal passa al giro successivo e i task entrano con il nuovo `round` |
+| proposta del reviewer di una review sciolta, del planner | nessuno (un worker non può indicare `goal`/`goal_id`) |
+| task creato a mano (`task_create` con `goal`) | il goal aperto indicato, al giro corrente |
+| proposta senza `goal` né `goal_id` | nessuno: task sciolti, come prima dei goal |
+| task `plan` | mai ("a plan task cannot belong to a goal") |
+
+Una proposta di correzione è quella con `source_task` e `goal_id` (`Proposal::is_correction`). Errori (inglese, a
+proposta e di nuovo all'accettazione, che lascia la proposta pendente): "pass goal (a new goal) or goal_id (an open
+goal), not both", "unknown goal: <id>", "goal <id> is closed: propose a new goal", "goal id already in use: <id>"
+(un goal della board o il goal nuovo di un'altra proposta pendente), i limiti dei campi (`goal.title is too long
+(max 80 characters)`, `goal.done_when is empty: …`, …).
+
+**Appartenenza.** Un task sta al più in un goal e tutti i task di una proposta nello stesso goal. Un task di un goal
+dipende solo da task dello stesso goal ("task '<id>': depends on '<x>', which belongs to another goal", "… which is
+not part of goal '<g>'"); un task sciolto non dipende da task di un goal aperto ("… which belongs to the open goal
+'<g>'"). Le regole valgono a proposta, accettazione, creazione manuale e `update_task`. Il goal di un task non
+cambia mai.
+
+**Fase e attesa** (`GoalView`, derivate da `board/goal/phase.rs`, mai su disco né impostabili):
+
+| `phase` | Quando |
+|---|---|
+| `executing` | almeno un task `work` del goal non è `done` |
+| `verifying` | i `work` sono `done` e una review del goal non lo è (in coda, in corso o fallita) |
+| `deciding` | nessun task aperto, una proposta del goal è pendente |
+| `ready` | nessun task aperto né proposta pendente: in questa tappa non dura, il goal si chiude subito |
+| `closed` | `closed_at` presente |
+
+`waiting` (vuoto = il goal procede da solo), nell'ordine: `proposal` (una proposta del goal è pendente), `failed`
+(un task del goal è `failed`), `attention` (un task del goal ha il worker in attesa dell'utente). Un goal chiuso non
+aspetta nulla.
+
+**Chiusura** (l'unico stato del goal scritto su disco):
+
+- **da sola** (regola provvisoria fino alla consegna del goal): a ogni pubblicazione della board
+  (`Board::close_finished_goals`, prima della vista e dell'archivio) un goal aperto senza task aperti (tutti `done`)
+  né proposte pendenti si chiude `delivered`; un goal rimasto senza task (tutti eliminati) si chiude `abandoned`;
+- **"Chiudi goal"** (comando `goal_close`): elimina i task `queued` e `failed` del goal, con i task non `done` che ne
+  dipendono, scarta le sue proposte pendenti e lo chiude `abandoned`. Tutto o niente: se uno dei task da togliere è
+  `running` risponde "cannot close goal '<id>': <ids> are running, stop them first" senza toccare la board. I
+  worktree dei task tolti vengono ripuliti. I task `done` restano.
+
+In entrambi i casi `review` è il verdetto della review del goal conclusa per ultima (`none` se nessuna). Un goal
+chiuso rifiuta nuovi task e note.
+
+**Note dell'utente** (comando `goal_add_note`): una voce `user` nel registro delle decisioni di un goal aperto
+(1..=500 caratteri; oltre 50 voci cadono le più vecchie).
+
+**Vista.** `BoardView.goals: GoalView[]` (i campi del goal più `phase`, `waiting` e `tasks: { done, total }`), nell'ordine
+della board; ogni `TaskView` porta il suo `goal` e `round`; le proposte portano `goal`/`goal_id`.
 
 ### Proposte di impostazioni
 
@@ -1397,9 +1514,12 @@ scegliere il Bot; i testi sono **esclusivi**, così ogni richiesta ha un solo Bo
 Argomenti camelCase lato JS.
 - `board_get(workspace_id) -> BoardView`
 - `board_set(workspace_id, max_parallel?, paused?) -> BoardView`
-- `task_create(workspace_id, spec: { title, task, depends_on?, repo?, agent?, model?, kind? }) -> BoardView`
+- `task_create(workspace_id, spec: { title, task, depends_on?, repo?, agent?, model?, kind?, goal? }) -> BoardView`
   (id generato dal titolo: slug ASCII, max 40, suffisso `-2`, `-3`… se occupato; vuoto →
-  `task-<n>`). Manuale, senza proposta. `kind: "plan"` non è ammesso (vedi "Task di pianificazione").
+  `task-<n>`). Manuale, senza proposta. `kind: "plan"` non è ammesso (vedi "Task di pianificazione"). `goal`
+  (facoltativo, `NewTaskSpec.goal`) è un goal aperto: il task vi entra al giro corrente (vedi "Goal").
+- `goal_close(workspace_id, goal_id) -> BoardView`: "Chiudi goal" (vedi "Goal").
+- `goal_add_note(workspace_id, goal_id, text) -> BoardView`: nota dell'utente nel registro delle decisioni.
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` è un `TaskAction` (vedi "Azioni consentite"; una stringa sconosciuta è rifiutata in deserializzazione) ∈ `retry` (failed →
   queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i

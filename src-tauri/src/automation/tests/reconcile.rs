@@ -206,6 +206,7 @@ fn an_orphan_is_not_queued_if_a_task_with_its_id_appears_in_the_meantime() {
     reg.create_task(
         "ws-1",
         crate::board::TaskSpec { id: "x".into(), title: "X".into(), task: "t".into(), ..Default::default() },
+        None,
         crate::board::SpecContext::default(),
         1,
     )

@@ -51,6 +51,22 @@ impl Task {
         self.updated_at = now;
     }
 
+    /// Il task entra nel goal `goal` al giro `round` (solo all'ingresso in coda).
+    pub(super) fn join_goal(&mut self, goal: &str, round: u32) {
+        self.goal = Some(goal.to_string());
+        self.round = round;
+    }
+
+    /// Goal del task (`None` = task sciolto).
+    pub fn goal(&self) -> Option<&str> {
+        self.goal.as_deref()
+    }
+
+    /// Giro del goal in cui il task e' entrato in coda; 0 senza goal.
+    pub fn round(&self) -> u32 {
+        self.round
+    }
+
     pub fn state(&self) -> &TaskState {
         &self.state
     }

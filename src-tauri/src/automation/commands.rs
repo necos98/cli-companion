@@ -43,7 +43,7 @@ pub async fn board_set(
     .await
 }
 
-/// Nuovo task creato a mano (senza proposta): `{ title, task, depends_on?, repo?, model? }`.
+/// Nuovo task creato a mano (senza proposta): `NewTaskSpec`, con il goal aperto facoltativo.
 #[tauri::command]
 pub async fn task_create(app: AppHandle, workspace_id: String, spec: Value) -> Result<BoardView, String> {
     crate::blocking(move || {
@@ -97,6 +97,30 @@ pub async fn task_move(
             &task_id,
             before_id.as_deref(),
         )
+    })
+    .await
+}
+
+/// "Chiudi goal": elimina i task `queued` e `failed` del goal, scarta le sue
+/// proposte e lo chiude `abandoned` (errore se un suo task e' in corso).
+#[tauri::command]
+pub async fn goal_close(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_close(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id)
+    })
+    .await
+}
+
+/// Aggiunge una nota dell'utente al registro delle decisioni di un goal aperto.
+#[tauri::command]
+pub async fn goal_add_note(
+    app: AppHandle,
+    workspace_id: String,
+    goal_id: String,
+    text: String,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_add_note(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id, &text)
     })
     .await
 }

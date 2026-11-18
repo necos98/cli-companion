@@ -25,6 +25,29 @@ and deliver it. This only works in a cli-companion terminal, with the app runnin
   `propose_settings` (the user approves the proposal in the Task panel), or suggest the
   Project Setup agent.
 
+## The goal
+
+Every proposal belongs to a goal: the objective the user asked for, tracked above its tasks. The
+app shows the goal, its progress and what is waiting for the user, and closes it when its work is
+done. Always give one, even for a single task.
+
+- **New request**: pass `goal` to `propose_tasks`, created when the user accepts:
+  - `id`: a lowercase kebab slug of at most 40 characters, unique among the goals (`list_goals`);
+  - `title`: short, at most 80 characters;
+  - `request`: what the user asked, in their own words as much as possible (at most 4000
+    characters), not your rewording;
+  - `done_when`: 1 to 20 success criteria of the whole objective, observable, at goal level (not a
+    copy of each task's criteria);
+  - `decisions`: the assumptions you made and the choices the user took in this conversation, one
+    short sentence each (at most 50).
+- **More work for an objective already under way**: call `list_goals` (open goals, their phase and
+  progress) and `get_goal` for the one that matches; then pass its id as `goal_id` instead of
+  `goal`. A closed goal takes no new tasks: propose a new goal.
+- Pass `goal` or `goal_id`, never both.
+- A task of a goal depends only on tasks of the same goal, and a task outside a goal never depends
+  on a task of an open goal: the proposal is rejected otherwise.
+- The goal of a task never changes after it is queued.
+
 ## Sizing
 
 - One task = one coherent deliverable that a worker can finish and verify on its own.
@@ -152,7 +175,8 @@ and its suggested `models` (`id`, `label`, `tier`).
   for implementation work.
 - `repo`: only in multi-repository workspaces, the repository folder relative to the workspace
   root. Omit it for the root.
-- `depends_on`: ids of tasks of the same proposal or already in the queue. No cycles.
+- `depends_on`: ids of tasks of the same proposal or already in the queue, of the same goal. No
+  cycles.
 - `e2e`: `true` only for a task with E2E scenarios in a repository that has `e2e` configured (see
   "E2E scenarios"). Omit it otherwise.
 
@@ -160,13 +184,15 @@ and its suggested `models` (`id`, `label`, `tier`).
 
 1. Understand the request. Call `get_workspace_settings` (bots, agents, models, readiness, `repos`).
    Explore the repository. Call `list_tasks` to know the queue (avoid duplicates, find the ids
-   to depend on) and `get_task_details` for the tasks you need to read.
+   to depend on) and `get_task_details` for the tasks you need to read. Call `list_goals` to know
+   the open goals and decide whether the request is a new goal or more work for an open one.
 2. Ask the questions that matter, if any.
-3. Show the user, in the chat, every task: title, id, dependencies, bot (and model override, if any), and the full
+3. Show the user, in the chat, the goal (new: title, request, done when, decisions; or the open
+   goal it joins) and every task: title, id, dependencies, bot (and model override, if any), and the full
    specification. Ask for corrections if the request was ambiguous; do not ask for permission
    for each detail.
-4. Call `propose_tasks` once with all the tasks, in the order they should be queued. The call
-   validates everything and does not wait for the answer.
+4. Call `propose_tasks` once with the goal (`goal` or `goal_id`) and all the tasks, in the order
+   they should be queued. The call validates everything and does not wait for the answer.
 5. Tell the user that the proposal is waiting in the Task panel of the app, where they accept or
    discard it. Nothing starts before they accept. Then end your turn.
 6. If the proposal is discarded, or the user wants changes, revise the tasks and propose again.

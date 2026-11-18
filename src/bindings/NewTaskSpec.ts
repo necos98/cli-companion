@@ -30,4 +30,8 @@ kind?: TaskKind,
 /**
  * Assente = `false`.
  */
-e2e?: boolean, };
+e2e?: boolean, 
+/**
+ * Goal aperto in cui entra il task; `null` o assente = task sciolto.
+ */
+goal?: string | null, };

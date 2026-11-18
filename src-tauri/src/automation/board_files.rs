@@ -1,11 +1,12 @@
 //! Le board su disco (`<app data>/boards/<workspace>.json`) e il loro archivio
 //! (`boards/archive/<workspace>.jsonl`, una riga per task concluso e tolto dalla
-//! board). Ogni workspace ha un `JsonFile` che vive per tutta l'esecuzione: la
+//! board) con quello dei goal chiusi (`boards/archive/<workspace>.goals.jsonl`).
+//! Ogni workspace ha un `JsonFile` che vive per tutta l'esecuzione: la
 //! protezione contro la riscrittura di un file che non si e' potuto leggere
 //! (quarantena fallita, permessi) deve valere anche per i salvataggi successivi.
 
 use super::{lock, worktrees};
-use crate::board::{archive_line, board_store, Board, Task};
+use crate::board::{archive_goal_line, archive_line, board_store, Board, Goal, Task};
 use crate::store::JsonFile;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
@@ -14,6 +15,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const ARCHIVE_DIR: &str = "archive";
 const ARCHIVE_EXT: &str = "jsonl";
+/// Il file dei goal archiviati e' `<workspace>.goals.jsonl`, accanto a quello dei task.
+const GOAL_ARCHIVE_SUFFIX: &str = "goals";
 
 type Files = HashMap<String, Arc<JsonFile<Board>>>;
 
@@ -85,7 +88,7 @@ fn workspace_of(path: &Path) -> Option<&str> {
     path.file_stem()?.to_str()
 }
 
-/// Cancella il file della board e il suo archivio; il file sparito non ha piu'
+/// Cancella il file della board e i suoi archivi; il file sparito non ha piu'
 /// un blocco delle scritture da ricordare. Gli errori sono nel log.
 pub(super) fn delete(dir: &Path, ws_id: &str) {
     let file = match worktrees::board_file(dir, ws_id) {
@@ -96,7 +99,7 @@ pub(super) fn delete(dir: &Path, ws_id: &str) {
         }
     };
     lock(FILES.get_or_init(Mutex::default)).remove(ws_id);
-    for path in [file, archive_file(dir, ws_id)] {
+    for path in [file, archive_file(dir, ws_id), goal_archive_file(dir, ws_id)] {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
@@ -109,19 +112,36 @@ fn archive_file(dir: &Path, ws_id: &str) -> PathBuf {
     dir.join(ARCHIVE_DIR).join(format!("{ws_id}.{ARCHIVE_EXT}"))
 }
 
+fn goal_archive_file(dir: &Path, ws_id: &str) -> PathBuf {
+    dir.join(ARCHIVE_DIR).join(format!("{ws_id}.{GOAL_ARCHIVE_SUFFIX}.{ARCHIVE_EXT}"))
+}
+
 /// Aggiunge i task all'archivio del workspace, una riga ciascuno, con una sola
 /// `write` in coda al file.
 pub(super) fn append_archive(dir: &Path, ws_id: &str, tasks: &[Task]) -> Result<(), String> {
     worktrees::board_file(dir, ws_id)?;
+    let lines = tasks.iter().map(archive_line).collect::<Result<Vec<_>, _>>()?;
+    append_lines(dir, &archive_file(dir, ws_id), &lines)
+}
+
+/// Aggiunge i goal chiusi all'archivio dei goal del workspace
+/// (`<workspace>.goals.jsonl`), come `append_archive`.
+pub(super) fn append_goal_archive(dir: &Path, ws_id: &str, goals: &[Goal]) -> Result<(), String> {
+    worktrees::board_file(dir, ws_id)?;
+    let lines = goals.iter().map(archive_goal_line).collect::<Result<Vec<_>, _>>()?;
+    append_lines(dir, &goal_archive_file(dir, ws_id), &lines)
+}
+
+/// Scrive le righe in coda al file dell'archivio, con una sola `write`.
+fn append_lines(dir: &Path, path: &Path, lines: &[String]) -> Result<(), String> {
     let mut text = String::new();
-    for task in tasks {
-        text.push_str(&archive_line(task)?);
+    for line in lines {
+        text.push_str(line);
         text.push('\n');
     }
-    let path = archive_file(dir, ws_id);
     let fail = |e: std::io::Error| format!("archivio {}: {e}", path.display());
     std::fs::create_dir_all(dir.join(ARCHIVE_DIR)).map_err(fail)?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(fail)?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(fail)?;
     file.write_all(text.as_bytes()).map_err(fail)
 }
 

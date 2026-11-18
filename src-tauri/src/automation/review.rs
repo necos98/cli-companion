@@ -1,10 +1,11 @@
 //! Task di revisione lato automazione: cosa legge il revisore in `get_task` e i
-//! tool di sessione che gli sono concessi (`get_task_details`, `propose_tasks`;
+//! tool di sessione che gli sono concessi (`get_task_details`, `propose_tasks`,
+//! `get_goal`;
 //! quali sono lo dice la tabella di `roles`). Il resto del ciclo di vita e'
 //! quello di ogni worker; i tipi e la validazione del verdetto sono in
 //! `crate::board::review`.
 
-use super::boards::{propose_tasks, task_details};
+use super::boards::{get_goal, propose_tasks, task_details};
 use super::rpc::misrouted;
 use super::*;
 use crate::board::texts::{self, EnvInfo};
@@ -41,6 +42,7 @@ pub(super) fn rpc_reviewer<H: Host>(
         Method::ProposeTasks => propose_tasks(st, host, &ws, session, Some(task_id), params),
         Method::GetTaskDetails => task_details(st, host, &ws, params),
         Method::GetWorkspaceSettings => Ok(settings::get_settings(st, host, &ws)),
+        Method::GetGoal => get_goal(st, host, &ws, params),
         other => Err(misrouted(other)),
     }
 }

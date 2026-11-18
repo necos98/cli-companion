@@ -3,7 +3,7 @@
 
 use crate::automation::worktrees::{check_e2e_configured, check_e2e_needs_git, ensure_repos, FolderKinds};
 use crate::automation::*;
-use crate::board::{self, parse_spec, SpecContext, TaskAction, TaskSpec};
+use crate::board::{self, parse_new_task, parse_spec, SpecContext, TaskAction, TaskSpec};
 
 pub(in crate::automation) fn workspace_of<H: Host>(host: &H, ws_id: &str) -> Result<Workspace, String> {
     let ws = host.workspace(ws_id).ok_or_else(|| "workspace non trovato".to_string())?;
@@ -39,7 +39,7 @@ pub(in crate::automation) fn task_create<H: Host>(
     spec: &Value,
 ) -> Result<BoardView, String> {
     let ws = workspace_of(host, ws_id)?;
-    let mut spec = parse_spec(spec, None)?;
+    let (mut spec, goal) = parse_new_task(spec)?;
     let kinds = ensure_repos(host, &ws, [spec.repo.as_deref()])?;
     check_e2e_needs_git(&ws, std::slice::from_ref(&spec), &kinds)?;
     let now = now_millis();
@@ -50,7 +50,7 @@ pub(in crate::automation) fn task_create<H: Host>(
             spec.id = r.free_id(ws_id, &spec.title);
         }
         check_e2e_configured(&ws, std::slice::from_ref(&spec))?;
-        r.create_task(ws_id, spec, ctx, now)?;
+        r.create_task(ws_id, spec, goal.as_deref(), ctx, now)?;
         r.note_no_git(ws_id, &kinds);
         Ok::<(), String>(())
     })?;
@@ -138,6 +138,33 @@ pub(in crate::automation) fn task_move<H: Host>(
     workspace_of(host, ws_id)?;
     let now = now_millis();
     st.run(host, |r| r.move_task(ws_id, task_id, before, now))?;
+    st.view(host, ws_id)
+}
+
+/// "Chiudi goal" dell'utente.
+pub(in crate::automation) fn goal_close<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    goal_id: &str,
+) -> Result<BoardView, String> {
+    workspace_of(host, ws_id)?;
+    let now = now_millis();
+    st.run(host, |r| r.close_goal(ws_id, goal_id, now))?;
+    st.view(host, ws_id)
+}
+
+/// Nota dell'utente nel registro delle decisioni di un goal.
+pub(in crate::automation) fn goal_add_note<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    goal_id: &str,
+    text: &str,
+) -> Result<BoardView, String> {
+    workspace_of(host, ws_id)?;
+    let now = now_millis();
+    st.run(host, |r| r.add_goal_note(ws_id, goal_id, text, now))?;
     st.view(host, ws_id)
 }
 

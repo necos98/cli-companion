@@ -1,0 +1,165 @@
+//! Fase e attesa di un goal (docs/GOALS.MD, "Fase e attesa"): derivate dai
+//! suoi task e dalle sue proposte con una funzione pura, mai scritte su disco
+//! ne' impostabili da un tool. `GoalView` le espone con il goal.
+
+use super::Goal;
+use crate::board::{Board, Task, TaskKind, TaskStatus};
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use ts_rs::TS;
+
+/// Fase di un goal, lineare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum GoalPhase {
+    /// Almeno un task `work` del goal non e' `done`.
+    Executing,
+    /// I task `work` sono `done` e una review del goal non lo e' (in coda, in
+    /// corso o fallita: in quel caso `waiting` riporta `failed`).
+    Verifying,
+    /// Nessun task aperto, ma una proposta del goal e' pendente.
+    Deciding,
+    /// Nessun task aperto ne' proposta pendente. Fino alla consegna del goal
+    /// non dura: la board lo chiude subito (`Board::close_finished_goals`).
+    Ready,
+    Closed,
+}
+
+/// Cio' che di un goal aspetta l'utente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum GoalWaiting {
+    /// Una proposta del goal e' pendente.
+    Proposal,
+    /// Un task del goal e' `failed`.
+    Failed,
+    /// Un task del goal ha il worker in attesa dell'utente.
+    Attention,
+}
+
+/// Avanzamento di un goal: task `done` sul totale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct GoalProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Goal esposto: i suoi campi piu' fase, attesa e avanzamento.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct GoalView {
+    #[serde(flatten)]
+    pub goal: Goal,
+    pub phase: GoalPhase,
+    /// Vuoto = il goal procede da solo.
+    pub waiting: Vec<GoalWaiting>,
+    pub tasks: GoalProgress,
+}
+
+/// Fase del goal dai suoi task e dalla presenza di una sua proposta pendente.
+pub fn goal_phase(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalPhase {
+    let open = |kind: TaskKind| tasks.iter().any(|t| t.kind == kind && t.status() != TaskStatus::Done);
+    if !goal.is_open() {
+        GoalPhase::Closed
+    } else if open(TaskKind::Work) {
+        GoalPhase::Executing
+    } else if open(TaskKind::Review) {
+        GoalPhase::Verifying
+    } else if proposal_pending {
+        GoalPhase::Deciding
+    } else {
+        GoalPhase::Ready
+    }
+}
+
+/// Cio' che il goal aspetta dall'utente, nell'ordine di `GoalWaiting`. Un goal
+/// chiuso non aspetta nulla.
+pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> Vec<GoalWaiting> {
+    if !goal.is_open() {
+        return Vec::new();
+    }
+    let checks = [
+        (GoalWaiting::Proposal, proposal_pending),
+        (GoalWaiting::Failed, tasks.iter().any(|t| t.status() == TaskStatus::Failed)),
+        (GoalWaiting::Attention, tasks.iter().any(|t| t.needs_attention())),
+    ];
+    checks.into_iter().filter(|(_, on)| *on).map(|(w, _)| w).collect()
+}
+
+impl GoalView {
+    fn of(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalView {
+        GoalView {
+            goal: goal.clone(),
+            phase: goal_phase(goal, tasks, proposal_pending),
+            waiting: goal_waiting(goal, tasks, proposal_pending),
+            tasks: GoalProgress {
+                done: tasks.iter().filter(|t| t.status() == TaskStatus::Done).count(),
+                total: tasks.len(),
+            },
+        }
+    }
+
+    /// Riga di `list_goals`.
+    pub fn to_row_json(&self) -> Value {
+        json!({
+            "id": self.goal.id,
+            "title": self.goal.title,
+            "phase": self.phase,
+            "round": self.goal.round,
+            "waiting": self.waiting,
+            "tasks": self.tasks,
+        })
+    }
+}
+
+impl Board {
+    /// Le viste dei goal, nell'ordine della board: task e proposte si
+    /// raggruppano per goal in un solo passaggio.
+    pub fn goal_views(&self) -> Vec<GoalView> {
+        let mut by_goal: HashMap<&str, Vec<&Task>> = HashMap::new();
+        for t in &self.tasks {
+            if let Some(g) = t.goal() {
+                by_goal.entry(g).or_default().push(t);
+            }
+        }
+        let pending: HashSet<&str> = self.proposals.iter().filter_map(|p| p.goal_id.as_deref()).collect();
+        self.goals
+            .iter()
+            .map(|g| {
+                let tasks = by_goal.get(g.id.as_str()).map_or(&[][..], Vec::as_slice);
+                GoalView::of(g, tasks, pending.contains(g.id.as_str()))
+            })
+            .collect()
+    }
+
+    /// La vista del goal `id`.
+    pub fn goal_view(&self, id: &str) -> Option<GoalView> {
+        let goal = self.goal(id)?;
+        let tasks: Vec<&Task> = self.goal_tasks(id).collect();
+        let pending = self.proposals.iter().any(|p| p.goal_id.as_deref() == Some(id));
+        Some(GoalView::of(goal, &tasks, pending))
+    }
+}
+
+/// Riga di un task nel dettaglio di un goal (`get_goal`).
+fn goal_task_row(t: &Task) -> Value {
+    json!({ "id": t.id, "title": t.title, "status": t.status(), "kind": t.kind, "round": t.round() })
+}
+
+impl Board {
+    /// Il goal `id` per `get_goal`: i suoi campi con fase e attesa,
+    /// l'avanzamento (`progress`) e i suoi task in ordine di coda.
+    pub fn goal_detail_json(&self, id: &str) -> Option<Value> {
+        let view = self.goal_view(id)?;
+        let mut out = serde_json::to_value(&view.goal).unwrap_or(Value::Null);
+        out["phase"] = json!(view.phase);
+        out["waiting"] = json!(view.waiting);
+        out["progress"] = json!(view.tasks);
+        out["tasks"] = Value::Array(self.goal_tasks(id).map(goal_task_row).collect());
+        Some(out)
+    }
+}

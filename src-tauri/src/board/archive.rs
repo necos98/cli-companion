@@ -2,7 +2,7 @@
 //! task `done` e `failed`, i piu' vecchi escono (li scrive su disco chi
 //! possiede il file, vedi `persist::archive_line`). Qui solo la scelta, pura.
 
-use super::{Board, Task, TaskStatus};
+use super::{Board, Goal, Task, TaskStatus};
 use std::collections::HashSet;
 
 /// Task conclusi (`done` e `failed`) che restano sulla board.
@@ -11,8 +11,9 @@ pub const MAX_FINISHED_KEPT: usize = 200;
 impl Board {
     /// Toglie dalla board i task conclusi piu' vecchi (per `finished_at`)
     /// oltre i `MAX_FINISHED_KEPT` piu' recenti e li ritorna dal piu' vecchio.
-    /// Restano al loro posto i task con un worktree da pulire e quelli da cui
-    /// dipende un task non concluso o una proposta pendente. I riferimenti ai
+    /// Restano al loro posto i task con un worktree da pulire, quelli da cui
+    /// dipende un task non concluso o una proposta pendente e quelli di un goal
+    /// aperto (i goal chiusi si archiviano a parte: `goal`). I riferimenti ai
     /// task tolti spariscono dai `depends_on` degli altri.
     pub fn take_archivable(&mut self) -> Vec<Task> {
         let gone = self.archivable();
@@ -29,6 +30,21 @@ impl Board {
         archived
     }
 
+    /// Rimette in fondo i task e i goal che l'archivio ha rifiutato, se la
+    /// board non li ha gia': non si perdono e non si duplicano.
+    pub fn restore_archived(&mut self, tasks: Vec<Task>, goals: Vec<Goal>) {
+        for t in tasks {
+            if self.task(&t.id).is_none() {
+                self.tasks.push(t);
+            }
+        }
+        for g in goals {
+            if self.goal(&g.id).is_none() {
+                self.goals.push(g);
+            }
+        }
+    }
+
     /// Indici dei task da archiviare, dal piu' vecchio.
     fn archivable(&self) -> Vec<usize> {
         let mut finished: Vec<(i64, usize)> =
@@ -41,7 +57,9 @@ impl Board {
         finished[..surplus]
             .iter()
             .map(|&(_, i)| i)
-            .filter(|&i| self.tasks[i].worktree.is_none() && !needed.contains(self.tasks[i].id.as_str()))
+            .map(|i| (i, &self.tasks[i]))
+            .filter(|(_, t)| t.worktree.is_none() && !needed.contains(t.id.as_str()) && !self.in_open_goal(t))
+            .map(|(i, _)| i)
             .collect()
     }
 

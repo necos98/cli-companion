@@ -31,6 +31,8 @@ pub(super) struct TaskRecord {
     kind: TaskKind,
     e2e: bool,
     no_git: bool,
+    goal: Option<String>,
+    round: u32,
     status: TaskStatus,
     fail_reason: Option<FailReason>,
     worker_status: Option<WorkerStatus>,
@@ -97,6 +99,8 @@ impl From<TaskRecord> for Task {
             kind: r.kind,
             e2e: r.e2e,
             no_git: r.no_git,
+            goal: r.goal,
+            round: r.round,
             state,
             attempts: r.attempts,
             last_report: r.last_report,
@@ -137,6 +141,12 @@ struct TaskRecordRef<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     no_git: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<String>", optional)]
+    goal: &'a Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u32>", optional)]
+    round: u32,
     status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -165,6 +175,10 @@ struct TaskRecordRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     preparing: Option<&'a str>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Per ts-rs il task e' il suo record sul filo: lo stato e' privato e `status`,
@@ -209,6 +223,8 @@ impl Serialize for Task {
             kind: self.kind,
             e2e: self.e2e,
             no_git: self.no_git,
+            goal: &self.goal,
+            round: self.round,
             status: self.status(),
             fail_reason: self.fail_reason(),
             worker_status: self.worker_status(),

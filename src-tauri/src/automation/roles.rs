@@ -68,6 +68,8 @@ pub enum Method {
     ProposeSettings,
     /// Domanda bloccante all'utente: solo con l'Agents HUB acceso (vedi `requires_hub`).
     AskUser,
+    ListGoals,
+    GetGoal,
 }
 
 /// Tutti i ruoli.
@@ -78,8 +80,10 @@ const AUTOMATED: &[Role] = &[Role::Worker, Role::Reviewer, Role::Planner];
 const E2E_RUNNERS: &[Role] = &[Role::Worker, Role::Reviewer];
 /// Proposte e dettaglio dei task: il revisore e il pianificatore ne hanno bisogno.
 const PROPOSERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
-/// Lettura della coda: anche il pianificatore.
+/// Lettura della coda e dei goal: anche il pianificatore.
 const SESSION_AND_PLANNER: &[Role] = &[Role::Session, Role::Planner];
+/// Dettaglio di un goal: anche il revisore, che verifica l'obiettivo.
+const GOAL_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
 /// Lettura delle impostazioni (Bot, agenti, modelli): anche il revisore, che deve
 /// scegliere Bot e modello dei task di correzione e della nuova revisione. Sola lettura:
 /// `propose_settings` resta della sessione.
@@ -92,7 +96,7 @@ const SESSION_ONLY: &[Role] = &[Role::Session];
 const ASKERS: &[Role] = &[Role::Worker, Role::Planner];
 
 impl Method {
-    pub const ALL: [Method; 16] = [
+    pub const ALL: [Method; 18] = [
         Method::Whoami,
         Method::GetTask,
         Method::CompleteTask,
@@ -109,6 +113,8 @@ impl Method {
         Method::GetWorkspaceSettings,
         Method::ProposeSettings,
         Method::AskUser,
+        Method::ListGoals,
+        Method::GetGoal,
     ];
 
     /// Nome sul filo.
@@ -130,6 +136,8 @@ impl Method {
             Method::GetWorkspaceSettings => "get_workspace_settings",
             Method::ProposeSettings => "propose_settings",
             Method::AskUser => "ask_user",
+            Method::ListGoals => "list_goals",
+            Method::GetGoal => "get_goal",
         }
     }
 
@@ -145,7 +153,8 @@ impl Method {
             Method::AskUser => ASKERS,
             Method::RunE2e | Method::GetE2eResult => E2E_RUNNERS,
             Method::ProposeTasks | Method::GetTaskDetails => PROPOSERS,
-            Method::ListTasks => SESSION_AND_PLANNER,
+            Method::ListTasks | Method::ListGoals => SESSION_AND_PLANNER,
+            Method::GetGoal => GOAL_READERS,
             Method::GetWorkspaceSettings => SETTINGS_READERS,
             Method::UpdateTask
             | Method::DeleteTask
@@ -179,7 +188,9 @@ impl Method {
             | Method::ListSkills
             | Method::DeleteSkill
             | Method::GetWorkspaceSettings
-            | Method::ProposeSettings => false,
+            | Method::ProposeSettings
+            | Method::ListGoals
+            | Method::GetGoal => false,
         }
     }
 
@@ -201,7 +212,9 @@ impl Method {
             | Method::DeleteSkill
             | Method::GetWorkspaceSettings
             | Method::ProposeSettings
-            | Method::AskUser => false,
+            | Method::AskUser
+            | Method::ListGoals
+            | Method::GetGoal => false,
         }
     }
 }
@@ -278,6 +291,8 @@ mod tests {
             assert_eq!(who(m), vec![Role::Session, Role::Reviewer, Role::Planner], "{}", m.name());
         }
         assert_eq!(who(Method::ListTasks), vec![Role::Session, Role::Planner]);
+        assert_eq!(who(Method::ListGoals), vec![Role::Session, Role::Planner]);
+        assert_eq!(who(Method::GetGoal), vec![Role::Session, Role::Reviewer, Role::Planner]);
         assert_eq!(who(Method::GetWorkspaceSettings), vec![Role::Session, Role::Reviewer, Role::Planner]);
         for m in [
             Method::UpdateTask,

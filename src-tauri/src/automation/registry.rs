@@ -36,12 +36,13 @@ pub enum Effect {
     },
     /// Avviare un task di board (git + spawn) su un thread separato.
     StartTask(Box<StartJob>),
-    /// Task conclusi usciti dalla board (`Board::take_archivable`): da
-    /// aggiungere all'archivio. Sempre prima del `Publish` che salva la board
-    /// senza di loro.
+    /// Task conclusi e goal chiusi usciti dalla board (`Board::take_archivable`,
+    /// `Board::take_archivable_goals`): da aggiungere ai loro archivi. Sempre
+    /// prima del `Publish` che salva la board senza di loro.
     Archive {
         ws_id: String,
         tasks: Vec<Task>,
+        goals: Vec<Goal>,
     },
     /// Salvare su disco e notificare al frontend la board (`board-update`).
     Publish(Box<Board>, Box<BoardView>),

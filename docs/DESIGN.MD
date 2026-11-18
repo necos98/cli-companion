@@ -25,8 +25,9 @@ progetto, [CONTRIBUTING.md](../CONTRIBUTING.md).
   `launch_settings.json`, `bots.json`, `hub_settings.json`, `schedule.json`, `boards/<workspace_id>.json`,
   `threads/<workspace_id>.json`, `threads/general.json`) passano da `store/`
   (busta `{schema_version, data}`, migrazioni, backup datati, avvisi). Fanno eccezione `session.json` e
-  `scrollback/<tab_id>.txt` (blob del frontend, `session.rs`) e l'archivio dei task conclusi
-  (`boards/archive/<workspace_id>.jsonl`, una riga per task), scritti con `write_atomic` / in coda al file.
+  `scrollback/<tab_id>.txt` (blob del frontend, `session.rs`) e gli archivi dei task conclusi
+  (`boards/archive/<workspace_id>.jsonl`, una riga per task) e dei goal chiusi
+  (`boards/archive/<workspace_id>.goals.jsonl`), scritti con `write_atomic` / in coda al file.
 - Log: **tauri-plugin-log** (file nella cartella dei log dell'app, vedi `store/` più sotto)
 - Board dei task: **React Flow** (`@xyflow/react`) + **dagre** (`@dagrejs/dagre`) per il layout a grafo
 - Contratto Rust ↔ TypeScript: **ts-rs** (vedi "Tipi TypeScript generati")
@@ -258,7 +259,9 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
 2. **Accettazione.** L'utente sceglie dalla UI (`proposal_decide`): le specifiche vengono rivalidate ed entrano in
    coda come `queued`. Ogni specifica proposta nomina un Bot (`bot`, obbligatorio in `propose_tasks`): all'accettazione
    `Board::check_specs` lo risolve e copia agente, modello, effort e skill nel task (snapshot; cambiare il Bot dopo non
-   tocca i task in coda). I task senza `bot` si comportano come prima.
+   tocca i task in coda). I task senza `bot` si comportano come prima. Se la proposta ha un goal (`goal` nuovo,
+   `goal_id` aperto o il goal ereditato dalla review del revisore che propone), i task vi entrano con il suo giro
+   (BOARD.MD, "Goal").
 3. **Scheduler.** Dopo ogni modifica (e a ogni giro del timer) `board::schedule` (pura) sceglie i task avviabili:
    coda non in pausa, fascia aperta, dipendenze `done`, agente del task pronto (`AgentGate`), slot libero. Ogni scelto
    passa a `running` e il registro emette `Effect::StartTask`.
@@ -755,7 +758,7 @@ partono solo come Bot (`bot:<id>`, `bots/launches.rs`), che porta agente, modell
 ### `board/` — modello, ciclo di vita e scheduler della coda
 
 Parte **pura**: nessun I/O, nessun `AppHandle`, tempo iniettato. Ogni workspace ha una `Board` (coda di `Task` con
-dipendenze, proposte di task e di impostazioni pendenti); l'integrazione con worker, git e disco sta in `automation/`.
+dipendenze, proposte di task e di impostazioni pendenti, goal); l'integrazione con worker, git e disco sta in `automation/`.
 Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 
 | File | Contenuto |
@@ -763,7 +766,8 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `model.rs` | `Board`, `Task`, `Proposal`, `TaskStatus` (`queued|running|done|failed`), `WorktreeInfo`, costanti (limiti, note standard) |
 | `state.rs` | `TaskState`: `Queued`, `Running(Run)` con fase `Preparing` (l'app prepara worktree e setup, nessun worker) o `Live` (il tab del worker e la sua attività), `Done(Finished)`, `Failed { finished, cause }` |
 | `lifecycle.rs`, `lifecycle/` | **l'unico posto che scrive lo stato del task**: `TaskEvent` applicato con `Task::apply`; `actions.rs` ha la tabella `permits(stato, operazione)` e `TaskAction`; `ops.rs` i metodi di `Board` (ferma, riprova, segna come fatto, archiviazione del workspace) |
-| `queue.rs`, `cascade.rs` | specifiche, proposte (accetta/scarta), modifica, riordino, eliminazione anche a cascata (indice delle dipendenze inverse) |
+| `queue.rs`, `cascade.rs` | specifiche, proposte (accetta/scarta, con il loro goal), modifica, riordino, eliminazione anche a cascata (indice delle dipendenze inverse) |
+| `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", chiusura provvisoria), `phase.rs` (`GoalView`: fase e attesa derivate, pure), `archive.rs` (goal chiusi oltre il tetto) |
 | `spec.rs` | `TaskSpec`/`TaskPatch`, id (anche generati dal titolo), repository, grafo delle dipendenze, parsing di proposte e limiti |
 | `scheduler.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura) |
 | `agent.rs`, `agent_gate.rs` | `resolve_spec_agent` (l'agente e il modello di una specifica, via `registry::resolve_agent`) e `AgentGate`/`AgentUnavailableView` (i task in coda con l'agente non pronto, che lo scheduler salta e la vista spiega) |
@@ -773,7 +777,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `plan.rs` | regole dei task di pianificazione (`kind: "plan"`): tipo riservato all'app, niente `e2e`, report senza consegna, `TaskKind::isolated` |
 | `settings.rs` | proposte di impostazioni (`SettingsProposal`) |
 | `texts.rs`, `prompts/*.md` | istruzioni, ambiente e passi di consegna dati al worker; standard di ingegneria e istruzioni del reviewer e del pianificatore (inglese, `include_str!`) |
-| `persist.rs`, `legacy.rs`, `recovery.rs`, `archive.rs` | formato su disco (busta, migrazioni, riga dell'archivio), migrazione dei file v0.11, recupero dopo un riavvio, selezione dei task da archiviare |
+| `persist.rs`, `legacy.rs`, `legacy_settings.rs`, `legacy_goals.rs`, `recovery.rs`, `archive.rs` | formato su disco (busta, migrazioni, righe degli archivi), migrazioni dei file (v0.11, impostazioni per agente, goal), recupero dopo un riavvio, selezione dei task da archiviare (mai quelli di un goal aperto) |
 
 - **Scheduler.** `schedule` non fa nulla con la coda in pausa o con il gate chiuso (workspace archiviato, oppure con
   fasce attive e fuori fascia); sceglie i `queued` con tutte le dipendenze `done`, nell'ordine dell'array. In modalità
@@ -783,10 +787,15 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 - **Azioni.** `permits` è la sola tabella di cosa si può fare a un task per stato; la usano le guardie delle operazioni,
   i messaggi di errore e `allowed_actions` della vista (BOARD.MD, "Azioni consentite").
 - **Persistenza.** `<app_data>/boards/<workspace_id>.json` su `store/` (`board_store`, una `JsonFile` per workspace;
-  `BOARD_MIGRATIONS`, oggi un passo: `v0_to_v1`). Al caricamento `Board::from_json` migra, applica `sanitize` (limiti di
-  `max_parallel`, un agente per ogni task) e `recover_after_restart` (i `running` diventano `failed`). Archivio dei
-  conclusi: `MAX_FINISHED_KEPT` = 200, i più vecchi vanno in `boards/archive/<workspace_id>.jsonl`. Il tutto è
-  descritto in BOARD.MD ("File su disco" e "Archivio dei task conclusi").
+  `BOARD_MIGRATIONS`, oggi tre passi: `v0_to_v1`, `v1_to_v2`, `v2_to_v3` che aggiunge `goals`). Al caricamento
+  `Board::from_json` migra, applica `sanitize` (limiti di `max_parallel`, un agente per ogni task, invarianti dei goal)
+  e `recover_after_restart` (i `running` diventano `failed`). Archivio dei conclusi: `MAX_FINISHED_KEPT` = 200, i più
+  vecchi vanno in `boards/archive/<workspace_id>.jsonl`; dei goal chiusi `MAX_CLOSED_GOALS_KEPT` = 100, i più vecchi in
+  `boards/archive/<workspace_id>.goals.jsonl`. Il tutto è descritto in BOARD.MD ("File su disco" e "Archivio dei task
+  conclusi").
+- **Goal.** La fase e l'attesa di un goal sono derivate (`goal/phase.rs`), mai scritte; la board scrive solo nascita,
+  giro, note e chiusura. La chiusura provvisoria (`Board::close_finished_goals`) la chiama `automation` a ogni
+  pubblicazione, prima della vista e dell'archivio. Contratto in BOARD.MD, "Goal"; progetto in GOALS.MD.
 
 ### `automation/` — Task Manager: coda, scheduler e worker
 
@@ -847,7 +856,8 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   | `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | no |
   | `run_e2e`, `get_e2e_result` | sì | sì | no | no |
   | `propose_tasks`, `get_task_details` | no | sì | sì | sì |
-  | `list_tasks` | no | no | sì | sì |
+  | `list_tasks`, `list_goals` | no | no | sì | sì |
+  | `get_goal` | no | sì | sì | sì |
   | `get_workspace_settings` | no | sì | sì | sì |
   | `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
   | `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
@@ -938,7 +948,7 @@ si perde (crash, chiusura dell'app) la rifa il riallineamento delle worktree (BO
 Eventi Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`,
 `board-update`, `task-notify`, `schedule-state`. Comandi: `automation_tab_closed`,
 `automation_sessions`, `board_get`, `board_set`, `task_create`, `task_update`, `task_action`,
-`task_move`, `proposal_decide`, `settings_proposal_decide`, `workspace_detect_repos`, `e2e_run_repo`,
+`task_move`, `proposal_decide`, `goal_close`, `goal_add_note`, `settings_proposal_decide`, `workspace_detect_repos`, `e2e_run_repo`,
 `e2e_last_result`, `e2e_open_report`, `schedule_get`, `schedule_set`, `frontend_ready`. Comando di avvio del worker:
 `agents::automation_command`; permessi = `Workspace.worker_permission`, modello = `task.model`
 poi `worker_agents[<agente del task>].model`, poi il predefinito dell'agente.

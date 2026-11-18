@@ -69,12 +69,17 @@ pub fn dispatch<H: Host>(
         Method::CompleteTask => complete_task(st, host, session, params),
         Method::RunE2e => e2e::tools::run_e2e(st, host, session),
         Method::GetE2eResult => e2e::tools::get_e2e_result(st, session, params),
-        Method::ProposeTasks | Method::GetTaskDetails | Method::ListTasks | Method::GetWorkspaceSettings
+        Method::ProposeTasks
+        | Method::GetTaskDetails
+        | Method::ListTasks
+        | Method::GetWorkspaceSettings
+        | Method::ListGoals
+        | Method::GetGoal
             if role == Role::Planner =>
         {
             planner::rpc_planner(st, host, session, method, params)
         }
-        Method::GetWorkspaceSettings if role == Role::Reviewer => {
+        Method::GetWorkspaceSettings | Method::GetGoal if role == Role::Reviewer => {
             review::rpc_reviewer(st, host, session, method, params)
         }
         Method::ProposeTasks | Method::GetTaskDetails => match role {
@@ -82,7 +87,7 @@ pub fn dispatch<H: Host>(
             Role::Reviewer => review::rpc_reviewer(st, host, session, method, params),
             Role::Worker | Role::Planner => Err(denied(method, role)),
         },
-        Method::ListTasks | Method::UpdateTask | Method::DeleteTask => {
+        Method::ListTasks | Method::UpdateTask | Method::DeleteTask | Method::ListGoals | Method::GetGoal => {
             boards::rpc_session(st, host, session, method.name(), params)
         }
         Method::SaveSkill | Method::ListSkills | Method::DeleteSkill => skills::rpc(host, method, params),

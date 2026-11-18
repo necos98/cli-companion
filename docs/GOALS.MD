@@ -1,8 +1,8 @@
 # Goal (proposta di design)
 
-> **Stato: proposta.** Niente di ciò che segue è implementato. Descrive come aggiungere al Tasks Manager il
-> **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e una consegna sua. Fa fede
-> [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi.
+> **Stato: in corso.** Le tappe T1 e T2 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
+> come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
+> una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
 
 Documenti collegati: [BOARD.MD](BOARD.MD) (task, proposte, scheduler, consegna, tool MCP, review),
 [DESIGN.MD](DESIGN.MD) (mappa dei moduli).
@@ -400,7 +400,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | Tappa | Contenuto | Dipende da |
 |---|---|---|
 | T1 | `fail_reason` e `blocked_by` (modello, vista, badge, `list_tasks`) — **consegnata** | — |
-| T2 | Goal: modello, `propose_tasks` con `goal`/`goal_id`, eredità dalle review, fase, chiusura a mano, archivio, `list_goals`/`get_goal`, skill `task-intake` | — |
+| T2 | Goal: modello, `propose_tasks` con `goal`/`goal_id`, eredità dalle review, fase, chiusura a mano, archivio, `list_goals`/`get_goal`, skill `task-intake` — **consegnata** | — |
 | T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal | T1, T2 |
 | T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia | T2 |
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` | T3, T4 |
@@ -409,7 +409,18 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T8 | Follow-up alla chiusura | T3 |
 
 Fra T2 e T5 un goal si chiude solo a mano, o da solo quando tutti i suoi task sono `done` (regola provvisoria,
-sostituita in T5 dalla chiusura alla consegna). T4 e T5 conviene rilasciarle insieme: con il branch ma senza la
+sostituita in T5 dalla chiusura alla consegna).
+
+Note sulla consegna di T2 (il contratto è in BOARD.MD, "Goal"):
+
+- lo schema del file della board passa alla versione 3 (il passo `v2_to_v3` aggiunge `goals: []`; la "v1 → v2"
+  di "Migrazione" è il primo passo dei goal nella numerazione dei goal, non in quella del file);
+- nella fase, una review del goal `failed` lascia il goal in `verifying` (con `failed` in `waiting`), non in
+  `ready`; `ready` esiste nel tipo ma in T2 non dura, perché la chiusura provvisoria scatta subito;
+- un goal rimasto senza task (tutti eliminati) e senza proposte si chiude da solo `abandoned`;
+- la proposta di un worker (reviewer o planner) non può indicare `goal` né `goal_id`: il goal del reviewer lo
+  eredita l'app, i task `plan` non ne hanno;
+- un goal chiuso non accetta note dell'utente. T4 e T5 conviene rilasciarle insieme: con il branch ma senza la
 consegna, il lotto resterebbe sul branch del goal.
 
 ## 17. Punti aperti

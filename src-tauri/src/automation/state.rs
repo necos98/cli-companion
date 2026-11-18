@@ -219,11 +219,12 @@ impl AutomationState {
         self.run(host, |r| r.remove_board(ws));
     }
 
-    /// Applica gli effetti nell'ordine. I task che l'archivio ha rifiutato non
-    /// vanno persi: tornano nel registro e vengono rimessi nella board che il
-    /// `Publish` successivo dello stesso workspace salva (la vista resta com'e').
+    /// Applica gli effetti nell'ordine. I task e i goal che l'archivio ha
+    /// rifiutato non vanno persi: tornano nel registro e vengono rimessi nella
+    /// board che il `Publish` successivo dello stesso workspace salva (la vista
+    /// resta com'e').
     fn apply_effects<H: Host>(&self, host: &H, effects: Vec<Effect>) {
-        let mut unarchived: HashMap<String, Vec<Task>> = HashMap::new();
+        let mut unarchived: HashMap<String, (Vec<Task>, Vec<Goal>)> = HashMap::new();
         for e in effects {
             match e {
                 Effect::StartTask(job) => {
@@ -239,20 +240,20 @@ impl AutomationState {
                     let (st, h) = (self.clone(), host.clone());
                     host.defer(CLEANUP_DELAY, Box::new(move || worktrees::run_cleanup(&st, &h, *target)));
                 }
-                Effect::Archive { ws_id, tasks } => {
-                    if let Err(e) = host.archive_tasks(&ws_id, &tasks) {
-                        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-                        log::error!("board {ws_id}: archivio dei task {ids:?} non scritto: {e}");
+                Effect::Archive { ws_id, tasks, goals } => {
+                    let tasks = archive_or_keep(&ws_id, "task", tasks, |t| &t.id, |t| host.archive_tasks(&ws_id, t));
+                    let goals = archive_or_keep(&ws_id, "goal", goals, |g| &g.id, |g| host.archive_goals(&ws_id, g));
+                    if !tasks.is_empty() || !goals.is_empty() {
                         // Registro (senza segnarlo modificato) e board da salvare.
-                        self.registry().restore_unarchived(&ws_id, tasks.clone());
-                        unarchived.entry(ws_id).or_default().extend(tasks);
+                        self.registry().restore_unarchived(&ws_id, tasks.clone(), goals.clone());
+                        let entry = unarchived.entry(ws_id).or_default();
+                        entry.0.extend(tasks);
+                        entry.1.extend(goals);
                     }
                 }
                 Effect::Publish(mut board, view) => {
-                    for t in unarchived.get(&board.workspace_id).into_iter().flatten() {
-                        if board.task(&t.id).is_none() {
-                            board.tasks.push(t.clone());
-                        }
+                    if let Some((tasks, goals)) = unarchived.get(&board.workspace_id) {
+                        board.restore_archived(tasks.clone(), goals.clone());
                     }
                     self.publish(host, &board, &view);
                 }
@@ -285,6 +286,28 @@ impl AutomationState {
                 Effect::Schedule(state) => host.emit_schedule(&state),
                 Effect::CancelE2e { ws_id, task_id } => self.cancel_e2e(&ws_id, task_id.as_deref()),
             }
+        }
+    }
+}
+
+/// Scrive `items` nel loro archivio con `write` (niente se vuoto). Tutto o
+/// niente: ritorna gli elementi rifiutati, da rimettere nella board.
+fn archive_or_keep<T>(
+    ws_id: &str,
+    what: &str,
+    items: Vec<T>,
+    id: impl Fn(&T) -> &String,
+    write: impl FnOnce(&[T]) -> Result<(), String>,
+) -> Vec<T> {
+    if items.is_empty() {
+        return items;
+    }
+    match write(&items) {
+        Ok(()) => Vec::new(),
+        Err(e) => {
+            let ids: Vec<&String> = items.iter().map(id).collect();
+            log::error!("board {ws_id}: archivio dei {what} {ids:?} non scritto: {e}");
+            items
         }
     }
 }

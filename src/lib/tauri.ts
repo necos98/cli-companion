@@ -512,6 +512,13 @@ export const api = {
   proposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
     invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept }),
 
+  /** "Chiudi goal": elimina i task in coda e falliti del goal, scarta le sue proposte e lo chiude. */
+  goalClose: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_close", { workspaceId, goalId }),
+
+  /** Nota dell'utente nel registro delle decisioni di un goal aperto. */
+  goalAddNote: (workspaceId: string, goalId: string, text: string) =>
+    invoke<BoardView>("goal_add_note", { workspaceId, goalId, text }),
+
   /** Applica o scarta una proposta di modifica alle impostazioni. */
   settingsProposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
     invoke<SettingsDecision>("settings_proposal_decide", { workspaceId, proposalId, accept }),

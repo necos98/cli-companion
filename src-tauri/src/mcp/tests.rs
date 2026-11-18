@@ -27,7 +27,9 @@ use std::time::Instant;
 /// 9_800 = 9_700 plus the longer generic model pattern (`MODEL_SHAPE_PATTERN`, twice; measured 9_748).
 /// 10_100 = 9_800 plus the `bot` field of the tasks (propose_tasks, update_task), the model/agent overrides and the Bots
 /// in get_workspace_settings (measured 10_038).
-const SESSION_TOOLS_CEILING: usize = 10_100;
+/// 11_400 = 10_100 plus list_goals, get_goal and the `goal`/`goal_id` fields of propose_tasks with their limits
+/// (measured 11_352 after trimming every description that was not needed).
+const SESSION_TOOLS_CEILING: usize = 11_400;
 /// 3_050 = 2_600 plus run_e2e and get_e2e_result (measured 3_002).
 const WORKER_TOOLS_CEILING: usize = 3_050;
 /// The reviewer set (measured 4_005, with the `e2e` flag of propose_tasks): its own get_task and complete_task (verdict, findings, tests) plus the shared
@@ -35,7 +37,8 @@ const WORKER_TOOLS_CEILING: usize = 3_050;
 /// 5_200 = 4_050 plus run_e2e and get_e2e_result (measured 5_163).
 /// 5_300 = 5_200 plus the `bot` field and the model/agent override descriptions of propose_tasks (measured 5_244).
 /// The read-only get_workspace_settings joined the set under the same ceiling: other descriptions were shortened.
-const REVIEWER_TOOLS_CEILING: usize = 5_300;
+/// 5_550 = 5_300 plus get_goal (measured 5_519).
+const REVIEWER_TOOLS_CEILING: usize = 5_550;
 /// The worker set with the Agents HUB on: the hub-off set plus ask_user (measured 3_698).
 const WORKER_HUB_TOOLS_CEILING: usize = 3_750;
 const SESSION_INSTRUCTIONS_CEILING: usize = 700;
@@ -235,6 +238,8 @@ fn tools_list_depends_on_role() {
             "propose_tasks",
             "list_tasks",
             "get_task_details",
+            "list_goals",
+            "get_goal",
             "update_task",
             "delete_task",
             "save_skill",
@@ -257,6 +262,7 @@ fn tools_list_depends_on_role() {
             "get_task_details",
             "propose_tasks",
             "get_workspace_settings",
+            "get_goal",
             "run_e2e",
             "get_e2e_result"
         ]
@@ -269,7 +275,16 @@ fn tools_list_depends_on_role() {
     let r = send(&s, &Fake::new("planner"), json!({"jsonrpc":"2.0","id":4,"method":"tools/list"})).unwrap();
     assert_eq!(
         names(&r),
-        ["get_task", "complete_task", "propose_tasks", "list_tasks", "get_task_details", "get_workspace_settings"]
+        [
+            "get_task",
+            "complete_task",
+            "propose_tasks",
+            "list_tasks",
+            "get_task_details",
+            "get_workspace_settings",
+            "list_goals",
+            "get_goal"
+        ]
     );
     let r = send(&s, &Fake::new("planner"), json!({"jsonrpc":"2.0","id":5,"method":"initialize"})).unwrap();
     assert!(r["result"]["instructions"].as_str().unwrap().contains("automated planner"));
@@ -629,12 +644,17 @@ fn reviewer_complete_task_schema_has_verdict_and_findings() {
     assert_eq!(props["findings"]["items"]["maxLength"], 2000);
     // I `tests` sono gli stessi del worker.
     assert_eq!(props["tests"], worker_tools()[1]["inputSchema"]["properties"]["tests"]);
-    // propose_tasks e get_task_details sono le definizioni della sessione.
+    // get_task_details e get_goal sono le definizioni della sessione; propose_tasks anche, ma
+    // senza goal ne' goal_id: la proposta del revisore eredita il goal della review.
     let session = session_tools();
-    for name in ["propose_tasks", "get_task_details"] {
-        let of = |tools: &[Value]| tools.iter().find(|t| t["name"] == name).unwrap().clone();
-        assert_eq!(of(&tools), of(&session), "{name}");
+    let of = |tools: &[Value], name: &str| tools.iter().find(|t| t["name"] == name).unwrap().clone();
+    for name in ["get_task_details", "get_goal"] {
+        assert_eq!(of(&tools, name), of(&session, name), "{name}");
     }
+    let (mine, theirs) = (of(&tools, "propose_tasks"), of(&session, "propose_tasks"));
+    assert_eq!(keys(&mine["inputSchema"]["properties"]), ["tasks"]);
+    assert_eq!(keys(&theirs["inputSchema"]["properties"]), ["goal", "goal_id", "tasks"]);
+    assert_eq!(mine["inputSchema"]["properties"]["tasks"], theirs["inputSchema"]["properties"]["tasks"]);
     // Il worker non ha ne' verdetto ne' findings.
     let worker = &worker_tools()[1]["inputSchema"]["properties"];
     assert!(worker.get("verdict").is_none() && worker.get("findings").is_none());
@@ -794,7 +814,9 @@ fn ask_user_is_listed_only_with_the_hub_and_only_for_worker_and_planner() {
             "propose_tasks",
             "list_tasks",
             "get_task_details",
-            "get_workspace_settings"
+            "get_workspace_settings",
+            "list_goals",
+            "get_goal"
         ]
     );
     for role in ["reviewer", "session"] {

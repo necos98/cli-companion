@@ -212,6 +212,8 @@ pub fn run() {
             automation::task_action,
             automation::task_move,
             automation::proposal_decide,
+            automation::goal_close,
+            automation::goal_add_note,
             automation::settings_proposal_decide,
             automation::workspace_detect_repos,
             automation::e2e_run_repo,

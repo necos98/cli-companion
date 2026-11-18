@@ -15,6 +15,7 @@
 //! schema del file, riga dell'archivio), `legacy` (migrazioni dello schema),
 //! `recovery` (recupero dopo un riavvio), `archive` (task conclusi da archiviare),
 //! `review` e `plan` (regole dei task di revisione e di pianificazione),
+//! `goal` (obiettivi: appartenenza dei task, fase, chiusura e archivio),
 //! `relocation` (task che impediscono di cambiare la cartella del workspace).
 
 mod agent;
@@ -22,7 +23,9 @@ mod agent_gate;
 mod archive;
 mod cascade;
 mod e2e;
+mod goal;
 mod legacy;
+mod legacy_goals;
 mod legacy_settings;
 mod lifecycle;
 mod model;
@@ -55,13 +58,18 @@ pub use e2e::{
     check_gate, strip_ansi, CodeFingerprint, E2eFailure, E2eOutcome, E2eRun, E2eStatus, E2eTotals, GateOutcome,
     E2E_ERROR_MAX, E2E_GATE_SKIPPED_NOTE, E2E_OUTPUT_TAIL_MAX,
 };
+pub use goal::{
+    parse_goal_id, parse_goal_spec, DecisionSource, Goal, GoalDecision, GoalOutcome, GoalPhase, GoalProgress,
+    GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX, DONE_WHEN_ITEM_MAX,
+    DONE_WHEN_MAX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT, MAX_OPEN_GOALS,
+};
 pub use lifecycle::{permits, LifecycleError, Op, Outcome, TaskAction, TaskEvent};
 pub use model::{
     Board, PreviousAttempt, Proposal, Task, TaskStatus, WorktreeInfo, ARCHIVED_NOTE, DEFAULT_MAX_PARALLEL,
     INTERRUPTED_NOTE, MAX_PARALLEL_LIMIT, MAX_PENDING_PROPOSALS, MAX_TASKS_PER_BOARD, MIN_PARALLEL_LIMIT, NOTE_MAX,
     STOPPED_NOTE, SUMMARY_MAX, TASK_MAX, TITLE_MAX,
 };
-pub use persist::{archive_line, board_store};
+pub use persist::{archive_goal_line, archive_line, board_store};
 pub use plan::{check_kind_input, check_plan_report, check_plan_spec, PLAN_KIND_RESERVED};
 pub use question::{parse_question, TaskQuestion, ANSWER_MAX, OPTIONS_MAX, OPTION_MAX, QUESTIONS_KEPT, QUESTION_MAX};
 pub use relocation::{relocation_blockers, relocation_refusal};
@@ -70,8 +78,8 @@ pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Ver
 pub use scheduler::{schedule, SchedCtx};
 pub use settings::{SettingsProposal, SettingsProposalView};
 pub use spec::{
-    id_from_title, parse_max_parallel, parse_proposal, parse_spec, repo_key, valid_id, validate_graph, NewTaskSpec,
-    TaskPatch, TaskSpec, BOT_ID_MAX, ID_MAX, MAX_DEPENDS,
+    id_from_title, parse_max_parallel, parse_new_task, parse_proposal, parse_spec, repo_key, valid_id, validate_graph,
+    NewTaskSpec, ProposalInput, TaskPatch, TaskSpec, BOT_ID_MAX, ID_MAX, MAX_DEPENDS,
 };
 pub use state::{FailCause, FailReason, Failure, Finished, Run, RunPhase, TaskState};
 pub use view::{compact_row, BoardLimits, BoardView, Bounds, TaskView};
