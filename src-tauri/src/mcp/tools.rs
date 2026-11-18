@@ -500,7 +500,8 @@ pub fn worker_tools() -> Vec<Value> {
         tool(
             "get_task",
             "FIRST call of every automated session: returns your task, the working instructions, the environment, the delivery \
-             steps and, after a retry, `previous_attempt`.",
+             steps and, after a retry, `previous_attempt`. Also `dependencies` (reports of the tasks you \
+             depend on) and `goal` (title, request, done_when, decisions), when present.",
             json!({}),
             &[],
         ),
@@ -551,7 +552,7 @@ pub fn reviewer_tools() -> Vec<Value> {
         tool(
             "get_task",
             "FIRST call of every automated session: returns your review task, the reviewer instructions, the environment and \
-             `reviewed_tasks` (the reports of the tasks under review).",
+             `reviewed_tasks` (the reports of the tasks under review) and `goal`, if any.",
             json!({}),
             &[],
         ),

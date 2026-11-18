@@ -253,6 +253,10 @@ impl Registry {
         let unassigned = || TASK_UNASSIGNED.to_string();
         let b = self.boards.get(&ws_id).ok_or_else(unassigned)?;
         let t = b.task(&tid).filter(|t| t.is_live_for(session)).ok_or_else(unassigned)?;
+        let handoff = match t.kind {
+            TaskKind::Work => board::Handoff::of_worker(b, t),
+            TaskKind::Review | TaskKind::Plan => board::Handoff::default(),
+        };
         let info = board::texts::EnvInfo {
             delivery: &env.delivery,
             root: &ws.path,
@@ -264,6 +268,7 @@ impl Registry {
             repo_cfg: ws.repos.get(&board::repo_key(t.repo.as_deref())),
             root_repos: env.root_plan.as_ref().map(|p| p.repos.as_slice()),
             free: env.free,
+            handoff: !handoff.is_empty(),
         };
         let mut out = match t.kind {
             TaskKind::Review => review::get_task_json(&info, &ws.worker.rules, b),
@@ -276,6 +281,7 @@ impl Registry {
                 "delivery": board::texts::delivery_steps(&info),
             }),
         };
+        handoff.add_to(&mut out);
         task_skill::add_to_task_json(&mut out, t);
         if let Some(p) = t.previous_attempt() {
             out["previous_attempt"] = serde_json::to_value(p).unwrap_or(Value::Null);

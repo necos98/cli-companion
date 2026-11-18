@@ -29,6 +29,11 @@ const ASK_IN_TEXT: &str = "If you need a decision from the user, ask the questio
 /// Lo stesso con `ask_user` (Agents HUB acceso): la risposta arriva nel terminale come messaggio dell'utente.
 pub const ASK_WITH_TOOL: &str = "If a doubt really blocks you and the code cannot settle it, call ask_user with one clear question (with options when possible), then end your turn: the answer arrives as the user's next message in your terminal. Use it only for blocking doubts; never ask in plain text and never guess.";
 
+/// Riga delle istruzioni comuni quando `get_task` porta `dependencies` o `goal`.
+pub const HANDOFF_NOTE: &str =
+    "Read `dependencies` and `goal` before starting. The tasks you depend on are delivered and already in your base: \
+build on what they did, do not redo it. The decisions listed in `goal` are final.";
+
 /// Regole sui cambiamenti e sulla chiusura nei task con git.
 const GIT_CHANGES: &str =
     "- Commit only the files you changed. Never stash, reset or discard changes you did not make.\n\
@@ -78,6 +83,8 @@ pub struct EnvInfo<'a> {
     pub root_repos: Option<&'a [String]>,
     /// Modalita' libera: la cartella del task non e' un repository git.
     pub free: bool,
+    /// `get_task` porta `dependencies` o `goal`: le istruzioni lo dicono al worker.
+    pub handoff: bool,
 }
 
 impl EnvInfo<'_> {
@@ -100,11 +107,13 @@ impl EnvInfo<'_> {
 pub fn instructions(e: &EnvInfo, workspace_rules: &str, ask_user: bool) -> String {
     let ask = if ask_user { ASK_WITH_TOOL } else { ASK_IN_TEXT };
     let (changes, done) = if e.free { (FREE_CHANGES, FREE_DONE) } else { (GIT_CHANGES, GIT_DONE) };
+    let handoff = if e.handoff { format!("- {HANDOFF_NOTE}\n") } else { String::new() };
     let mut s = format!(
         "You are an automated cli-companion worker. The app does not deliver anything for you: you deliver the work yourself, \
          following the delivery steps returned with the task.\n\
          - Work only inside {dir}; never touch other folders.\n\
          {changes}\
+         {handoff}\
          - Run the verification the task asks for before delivering.\n\
          {done}\
          - If you cannot complete or deliver (a conflict you cannot resolve, failing tests, a missing tool or authentication), \

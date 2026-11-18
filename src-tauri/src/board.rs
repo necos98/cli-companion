@@ -24,6 +24,7 @@ mod archive;
 mod cascade;
 mod e2e;
 mod goal;
+mod handoff;
 mod legacy;
 mod legacy_goals;
 mod legacy_settings;
@@ -63,6 +64,7 @@ pub use goal::{
     GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX, DONE_WHEN_ITEM_MAX,
     DONE_WHEN_MAX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT, MAX_OPEN_GOALS,
 };
+pub use handoff::Handoff;
 pub use lifecycle::{permits, LifecycleError, Op, Outcome, TaskAction, TaskEvent};
 pub use model::{
     Board, PreviousAttempt, Proposal, Task, TaskStatus, WorktreeInfo, ARCHIVED_NOTE, DEFAULT_MAX_PARALLEL,

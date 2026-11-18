@@ -840,6 +840,7 @@ fn env<'a>(d: &'a Delivery, task: &'a Task, cfg: Option<&'a RepoConfig>) -> EnvI
         repo_cfg: cfg,
         root_repos: None,
         free: false,
+        handoff: false,
     }
 }
 
@@ -1387,6 +1388,18 @@ fn the_generic_model_shape_leaves_the_agent_rule_to_the_resolved_agent() {
     let mut b = board_with(vec![spec("a", &[])]);
     let err = b.update_task("a", &json!({"model":"prov/model"}), SpecContext::default(), 2).unwrap_err();
     assert!(err.contains("invalid model for"), "{err}");
+}
+
+#[test]
+fn the_handoff_line_is_added_to_the_common_instructions_only_when_there_is_a_handoff() {
+    let d = delivery(DeliveryMode::Commit, false);
+    let t = worktree_task(&d);
+    let plain = texts::instructions(&env(&d, &t, None), "rules", false);
+    assert!(!plain.contains("`dependencies`"));
+    let with = texts::instructions(&EnvInfo { handoff: true, ..env(&d, &t, None) }, "rules", false);
+    assert_eq!(with.matches(texts::HANDOFF_NOTE).count(), 1);
+    assert!(texts::HANDOFF_NOTE.is_ascii());
+    assert_eq!(with.replace(&format!("- {}\n", texts::HANDOFF_NOTE), ""), plain);
 }
 
 #[test]

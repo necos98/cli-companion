@@ -115,7 +115,7 @@ fn clipped(s: &str, max: usize, cut: &mut bool) -> String {
     clip_with_ellipsis(s, max)
 }
 
-fn reviewed_entry(t: &Task) -> Value {
+pub(super) fn reviewed_entry(t: &Task) -> Value {
     let mut cut = false;
     let mut o = json!({ "id": t.id, "title": t.title, "status": t.status().as_str() });
     let r = t.report();

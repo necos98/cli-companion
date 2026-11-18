@@ -478,7 +478,7 @@ istruzioni. In `pr`/`local_merge` seriali il worker crea il branch
 `get_task` restituisce `instructions` (comuni) + `environment` (cartella, branch, base,
 modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalità:
 
-- **Comuni**: work only inside `<dir>`; never touch other folders; commit only files you
+- **Comuni** (con `dependencies` o `goal` in `get_task`, anche la riga che li cita): work only inside `<dir>`; never touch other folders; commit only files you
   changed, never stash/reset/discard changes you did not make; do not push or merge unless
   the delivery steps say so; run the verification the task asks for before delivering; when
   delivery succeeded call `complete_task` with `status: "completed"` (with `commit`, and
@@ -730,7 +730,11 @@ queue with propose_tasks and read and propose changes to the workspace settings 
 get_workspace_settings and propose_settings; the user approves them in the app; never wait for workers.
 
 Worker:
-- `get_task` → `{ task, title, instructions, environment, delivery, previous_attempt?, skill? }`. Se il task ha
+- `get_task` → `{ task, title, instructions, environment, delivery, dependencies?, goal?, previous_attempt?, skill? }`.
+  `dependencies` (omesso se vuoto): per ogni dipendenza diretta `done`, la stessa forma e gli stessi limiti di
+  `reviewed_tasks`. `goal` (omesso per un task sciolto): `{ title, request, done_when, decisions }`, con `decisions`
+  come `{ source, text }`. Se c'è almeno uno dei due, le istruzioni comuni guadagnano la riga "Read `dependencies`
+  and `goal` before starting..." (vedi docs/GOALS.MD, "Passaggio di consegne"); altrimenti nulla cambia. Se il task ha
   una skill (snapshot del Bot), `skill` è il nome da caricare con lo strumento skill dell'agente e `instructions`
   inizia con "Before starting, load the skill <skill> with your skill tool; the instructions of this task take
   precedence over the skill where they conflict." (stesso per i task `review` e `plan`). Senza skill l'output non cambia.

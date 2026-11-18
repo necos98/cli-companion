@@ -404,7 +404,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal | T1, T2 |
 | T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia | T2 |
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` | T3, T4 |
-| T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni | T2 |
+| T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |
 | T7 | Correzione automatica con tetto di giri | T3, T4 |
 | T8 | Follow-up alla chiusura | T3 |
 

@@ -24,6 +24,7 @@ mod e2e_cancel;
 mod e2e_manual;
 mod free_mode;
 mod goals;
+mod handoff;
 mod hub_hook;
 mod plan;
 mod questions;
