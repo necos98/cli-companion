@@ -7,6 +7,7 @@ import { statusWord, truncateReport } from "./automation.ts";
 import type { BoardView } from "../bindings/BoardView.ts";
 import type { Bounds } from "../bindings/Bounds.ts";
 import type { Delivery } from "../bindings/Delivery.ts";
+import type { FailReason } from "../bindings/FailReason.ts";
 import type { DeliveryMode } from "../bindings/DeliveryMode.ts";
 import type { MergeMethod } from "../bindings/MergeMethod.ts";
 import type { TaskAction } from "../bindings/TaskAction.ts";
@@ -286,6 +287,51 @@ export function waitingOnLabel(
     return `attende ${title ?? w[0]}`;
   }
   return `attende ${w.length} task`;
+}
+
+/** "bloccato da X" (un solo task: il suo titolo) o "bloccato da N task"; null se non è bloccato. */
+export function blockedByLabel(
+  task: Pick<Task, "blocked_by" | "status">,
+  tasks: Pick<Task, "id" | "title">[],
+): string | null {
+  const b = task.blocked_by;
+  if (task.status !== "queued" || b.length === 0) return null;
+  if (b.length === 1) {
+    const title = tasks.find((t) => t.id === b[0])?.title;
+    return `bloccato da ${title ?? b[0]}`;
+  }
+  return `bloccato da ${b.length} task`;
+}
+
+/** Perché un task è in coda e non parte: "bloccato da …" ha la precedenza su "attende …". */
+export function queueHoldLabel(
+  task: Pick<Task, "waiting_on" | "blocked_by" | "status">,
+  tasks: Pick<Task, "id" | "title">[],
+): string | null {
+  return blockedByLabel(task, tasks) ?? waitingOnLabel(task, tasks);
+}
+
+/** Il motivo del fallimento in italiano, nelle parole dell'utente. */
+export const FAIL_REASON_LABELS: Record<FailReason, string> = {
+  worker_failed: "Il worker ha rinunciato",
+  worker_exited: "Worker uscito senza esito",
+  stopped: "Fermato dall'utente",
+  interrupted: "App riavviata",
+  start_failed: "Avvio fallito",
+};
+
+/** Motivo di un task fallito; null se non è fallito o il motivo non è noto (task vecchi). */
+export function failReasonLabel(task: Pick<Task, "status" | "fail_reason">): string | null {
+  if (task.status !== "failed" || !task.fail_reason) return null;
+  return FAIL_REASON_LABELS[task.fail_reason] ?? null;
+}
+
+/** Cosa fermare in evidenza di un task: perché è fallito o da chi è bloccato; null altrimenti. */
+export function issueLabel(
+  task: Pick<Task, "status" | "fail_reason" | "blocked_by">,
+  tasks: Pick<Task, "id" | "title">[],
+): string | null {
+  return failReasonLabel(task) ?? blockedByLabel(task, tasks);
 }
 
 /** Spiegazione della modalità libera (cartella senza git), per il tooltip. */

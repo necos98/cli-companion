@@ -50,7 +50,10 @@ fn other_states_are_left_alone() {
     let mut b = board(vec![
         task_in("q", TaskState::default()),
         task_in("d", TaskState::Done(done.clone())),
-        task_in("f", TaskState::Failed { finished: done, cause: FailCause::SessionEnded { session: "w9".into() } }),
+        task_in(
+            "f",
+            TaskState::Failed { finished: done, cause: FailCause::SessionEnded { session: "w9".into() }, reason: None },
+        ),
     ]);
     let before = b.clone();
     assert_eq!(b.recover_after_restart(NOW), 0);
@@ -79,6 +82,7 @@ fn running_e2e_runs_are_interrupted_in_every_state() {
     let failed_state = TaskState::Failed {
         finished: Finished { started_at: None, finished_at: 9, report: Some(report) },
         cause: FailCause::Other,
+        reason: None,
     };
     let mut failed = task_in("f", failed_state);
     failed.e2e_run = Some(running_e2e());

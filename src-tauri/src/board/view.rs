@@ -3,7 +3,7 @@
 //! `list_tasks`.
 
 use super::agent_gate::{AgentGate, AgentUnavailableView};
-use super::cascade::{CascadeDelete, Waiters};
+use super::cascade::{Blockers, CascadeDelete, Waiters};
 use super::{
     permits, Board, Op, Proposal, SettingsProposalView, Task, TaskAction, TaskKind, TaskQuestion, TaskStatus,
     MAX_PARALLEL_LIMIT, MIN_PARALLEL_LIMIT,
@@ -26,6 +26,9 @@ pub struct TaskView {
     pub task: Task,
     /// Dipendenze non `done` (solo per `queued`).
     pub waiting_on: Vec<String>,
+    /// I task `failed` da cui il task dipende, direttamente o no (solo per
+    /// `queued`): non partira' finche' non si risolvono.
+    pub blocked_by: Vec<String>,
     /// Il worker aspetta l'utente (`needs_input` o `idle`).
     pub attention: bool,
     /// Le azioni di `task_action` che riuscirebbero adesso: la tabella degli stati
@@ -135,6 +138,12 @@ pub fn compact_row(v: &TaskView) -> Value {
     if !v.waiting_on.is_empty() {
         o["waiting_on"] = json!(v.waiting_on);
     }
+    if !v.blocked_by.is_empty() {
+        o["blocked_by"] = json!(v.blocked_by);
+    }
+    if let Some(r) = t.fail_reason() {
+        o["fail_reason"] = json!(r);
+    }
     if t.kind != TaskKind::Work {
         o["kind"] = Value::from(t.kind.as_str());
     }
@@ -176,7 +185,7 @@ impl TaskView {
 }
 
 impl Board {
-    fn view_of(&self, t: &Task, waiters: &Waiters, gate: &AgentGate) -> TaskView {
+    fn view_of(&self, t: &Task, waiters: &Waiters, blockers: &Blockers, gate: &AgentGate) -> TaskView {
         let status = t.status();
         let waiting_on = if status == TaskStatus::Queued {
             t.depends_on
@@ -204,6 +213,7 @@ impl Board {
         TaskView {
             task: t.clone(),
             waiting_on,
+            blocked_by: blockers.get(t.id.as_str()).cloned().unwrap_or_default(),
             attention: t.needs_attention(),
             allowed_actions,
             can_edit: permits(status, Op::Edit),
@@ -215,7 +225,8 @@ impl Board {
     }
 
     pub fn task_view(&self, id: &str, gate: &AgentGate) -> Option<TaskView> {
-        self.task(id).map(|t| self.view_of(t, &self.waiters(), gate))
+        let waiters = self.waiters();
+        self.task(id).map(|t| self.view_of(t, &waiters, &waiters.blockers(), gate))
     }
 
     /// Vista per il frontend; consegna e valori attuali delle impostazioni
@@ -224,6 +235,7 @@ impl Board {
     /// delle fasce e `gate` dagli agenti non pronti.
     pub fn view_with(&self, ws: Option<&Workspace>, schedule_blocked: bool, gate: &AgentGate) -> BoardView {
         let waiters = self.waiters();
+        let blockers = waiters.blockers();
         BoardView {
             workspace_id: self.workspace_id.clone(),
             rev: self.rev,
@@ -231,7 +243,7 @@ impl Board {
             limits: BoardLimits::CURRENT,
             paused: self.paused,
             updated_at: self.updated_at,
-            tasks: self.tasks.iter().map(|t| self.view_of(t, &waiters, gate)).collect(),
+            tasks: self.tasks.iter().map(|t| self.view_of(t, &waiters, &blockers, gate)).collect(),
             proposals: self.proposals.clone(),
             settings_proposals: self.settings_proposals.iter().map(|p| p.view(ws)).collect(),
             schedule_blocked,

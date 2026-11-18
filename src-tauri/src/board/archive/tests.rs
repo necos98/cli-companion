@@ -16,7 +16,7 @@ fn finished(id: &str, at: i64, failed: bool) -> Task {
     let mut t = Task::from_spec(spec(id, &[]), 1);
     let finished = Finished { started_at: None, finished_at: at, report: None };
     t.set_state(if failed {
-        TaskState::Failed { finished, cause: FailCause::Other }
+        TaskState::Failed { finished, cause: FailCause::Other, reason: None }
     } else {
         TaskState::Done(finished)
     });

@@ -321,7 +321,11 @@ impl Registry {
         let (ws, tid) = (w.workspace_id.clone(), w.task_id.clone());
         w.ended = Some(if completed { WorkerEnd::Completed } else { WorkerEnd::Failed });
         w.last_report = Some(clip_chars(&summary, 200));
-        let outcome = if completed { Outcome::Done } else { Outcome::Failed(FailCause::Other) };
+        let outcome = if completed {
+            Outcome::Done
+        } else {
+            Outcome::Failed(Failure { cause: FailCause::Other, reason: FailReason::WorkerFailed })
+        };
         let mut report =
             build_report(if completed { "completed" } else { "failed" }, &summary, extra.fields, extra.diffstat);
         report.e2e = self.last_e2e_run(&ws, &tid);
@@ -354,10 +358,10 @@ impl Registry {
         tid: &str,
         session: Option<&str>,
         note: &str,
-        cause: FailCause,
+        failure: Failure,
         now: i64,
     ) -> bool {
-        let outcome = Outcome::Failed(cause);
+        let outcome = Outcome::Failed(failure);
         let done = self
             .boards
             .get_mut(ws)

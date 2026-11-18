@@ -9,6 +9,7 @@ import {
   WORKER_RULES_MAX,
   activeCount,
   attentionCount,
+  blockedByLabel,
   canOpenTerminal,
   clampToBounds,
   deliveryHelp,
@@ -17,6 +18,7 @@ import {
   displayStatus,
   doneTasks,
   effectiveDelivery,
+  failReasonLabel,
   failedTasks,
   hasPendingQuestion,
   filterTasks,
@@ -28,12 +30,14 @@ import {
   isNoGit,
   NO_GIT_HELP,
   isParallel,
+  issueLabel,
   matchesQuery,
   mergeBoard,
   mergeMethodLabel,
   normalizeDelivery,
   prUrl,
   progress,
+  queueHoldLabel,
   queuedTasks,
   runningTasks,
   sanitizeWorkerRules,
@@ -69,6 +73,7 @@ const task = (extra = {}) => ({
   status: "queued",
   depends_on: [],
   waiting_on: [],
+  blocked_by: [],
   attention: false,
   attempts: 0,
   created_at: NOW - DAY,
@@ -272,6 +277,39 @@ describe("board: testi", () => {
     assert.equal(waitingOnLabel({ status: "queued", waiting_on: ["x"] }, all), "attende x");
     assert.equal(waitingOnLabel({ status: "queued", waiting_on: [] }, all), null);
     assert.equal(waitingOnLabel({ status: "running", waiting_on: ["a"] }, all), null);
+  });
+  it("bloccato da X / bloccato da N task", () => {
+    assert.equal(blockedByLabel({ status: "queued", blocked_by: ["b"] }, all), "bloccato da Vista Kanban");
+    assert.equal(blockedByLabel({ status: "queued", blocked_by: ["a", "b"] }, all), "bloccato da 2 task");
+    assert.equal(blockedByLabel({ status: "queued", blocked_by: ["x"] }, all), "bloccato da x");
+    assert.equal(blockedByLabel({ status: "queued", blocked_by: [] }, all), null);
+    assert.equal(blockedByLabel({ status: "failed", blocked_by: ["a"] }, all), null);
+  });
+  it("in coda 'bloccato da' ha la precedenza su 'attende'", () => {
+    const blocked = { status: "queued", waiting_on: ["a", "b"], blocked_by: ["a"] };
+    assert.equal(queueHoldLabel(blocked, all), "bloccato da Schema");
+    assert.equal(queueHoldLabel({ ...blocked, blocked_by: [] }, all), "attende 2 task");
+    assert.equal(queueHoldLabel({ status: "queued", waiting_on: [], blocked_by: [] }, all), null);
+  });
+  it("il motivo del fallimento in italiano, solo per i falliti con motivo noto", () => {
+    const labels = {
+      worker_failed: "Il worker ha rinunciato",
+      worker_exited: "Worker uscito senza esito",
+      stopped: "Fermato dall'utente",
+      interrupted: "App riavviata",
+      start_failed: "Avvio fallito",
+    };
+    for (const [reason, label] of Object.entries(labels)) {
+      assert.equal(failReasonLabel({ status: "failed", fail_reason: reason }), label);
+    }
+    assert.equal(failReasonLabel({ status: "failed" }), null, "motivo ignoto: niente");
+    assert.equal(failReasonLabel({ status: "failed", fail_reason: "nuovo" }), null, "valore non riconosciuto");
+    assert.equal(failReasonLabel({ status: "queued", fail_reason: "stopped" }), null);
+  });
+  it("issueLabel: motivo se fallito, blocco se in coda", () => {
+    assert.equal(issueLabel({ status: "failed", fail_reason: "stopped", blocked_by: [] }, all), "Fermato dall'utente");
+    assert.equal(issueLabel({ status: "queued", blocked_by: ["a"] }, all), "bloccato da Schema");
+    assert.equal(issueLabel({ status: "running", blocked_by: [] }, all), null);
   });
   it("durata compatta", () => {
     assert.equal(formatDuration(0), "0s");

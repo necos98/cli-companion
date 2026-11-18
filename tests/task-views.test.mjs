@@ -45,6 +45,7 @@ const task = (id, over = {}) => ({
   created_at: 1,
   updated_at: 1,
   waiting_on: [],
+  blocked_by: [],
   attention: false,
   ...over,
 });
@@ -212,6 +213,13 @@ describe("lista", () => {
     const pos = queuePositions(all);
     assert.equal(listSubtitle(all[0], all, pos), "Prossimo in coda");
     assert.equal(listSubtitle(all[1], all, pos), "attende Task x");
+    assert.equal(listSubtitle({ ...all[1], blocked_by: ["x"] }, all, pos), "bloccato da Task x");
+    const failed = task("f", {
+      status: "failed",
+      fail_reason: "interrupted",
+      note: "interrupted: the app was restarted",
+    });
+    assert.equal(listSubtitle(failed, all, pos), "App riavviata · interrupted: the app was restarted");
     assert.equal(listSubtitle(all[2], all, pos), "In coda, posizione 3");
     assert.equal(
       listSubtitle(task("d", { status: "done", report: { status: "completed", summary: "ok" } }), all, pos),

@@ -115,7 +115,17 @@ impl Registry {
             .get(ws)
             .and_then(|b| b.task(tid))
             .is_some_and(|t| t.attempts() == attempt && t.session().is_none());
-        if current && self.fail_task(ws, tid, None, &clip_chars(msg, NOTE_MAX), FailCause::Other, now) {
+        let note = clip_chars(msg, NOTE_MAX);
+        if current
+            && self.fail_task(
+                ws,
+                tid,
+                None,
+                &note,
+                Failure { cause: FailCause::Other, reason: FailReason::StartFailed },
+                now,
+            )
+        {
             self.notify(ws, tid, None, "failed");
         }
     }
@@ -158,7 +168,8 @@ impl Registry {
             if let Some(w) = self.workers.get_mut(&s) {
                 w.tab_open = false;
             }
-            self.close_worker(&s, "the worker never called get_task: the agent did not start", FailCause::Other, now);
+            let note = "the worker never called get_task: the agent did not start";
+            self.close_worker(&s, note, FailCause::Other, now);
             self.queue_read_only_check(&s);
             self.effects.push(Effect::Close { tab_id: s, delay: Duration::ZERO });
         }

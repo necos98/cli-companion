@@ -6,6 +6,7 @@ import DetailActions from "./DetailActions";
 import DetailAgentUnavailable from "./DetailAgentUnavailable";
 import DetailE2e from "./DetailE2e";
 import DetailFacts from "./DetailFacts";
+import DetailIssue from "./DetailIssue";
 import DetailQuestion from "./DetailQuestion";
 import DetailResult from "./DetailResult";
 import DetailSection from "./DetailSection";
@@ -174,6 +175,7 @@ export default function TaskDetail({
             <DetailQuestion workspaceId={workspaceId} task={task} now={clock} />
             <DetailResult task={task} />
             <DetailE2e workspaceId={workspaceId} task={task} />
+            <DetailIssue task={task} tasks={board.tasks} />
             {task.note && (
               <DetailSection title="Nota">
                 <p

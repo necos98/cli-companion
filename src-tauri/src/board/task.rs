@@ -2,8 +2,8 @@
 //! scritture dello stato sono tutte in `lifecycle`.
 
 use super::{
-    PreviousAttempt, Run, RunPhase, Task, TaskQuestion, TaskReport, TaskSpec, TaskState, TaskStatus, WorkerActivity,
-    WorkerStatus,
+    FailReason, PreviousAttempt, Run, RunPhase, Task, TaskQuestion, TaskReport, TaskSpec, TaskState, TaskStatus,
+    WorkerActivity, WorkerStatus,
 };
 use crate::agents::registry;
 
@@ -141,6 +141,14 @@ impl Task {
         match &self.state {
             TaskState::Done(f) | TaskState::Failed { finished: f, .. } => f.report.as_ref(),
             TaskState::Queued { .. } | TaskState::Running(_) => None,
+        }
+    }
+
+    /// Perche' il task e' fallito (`None` se non e' `failed` o il motivo non e' noto).
+    pub fn fail_reason(&self) -> Option<FailReason> {
+        match &self.state {
+            TaskState::Failed { reason, .. } => *reason,
+            _ => None,
         }
     }
 

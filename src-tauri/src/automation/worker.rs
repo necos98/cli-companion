@@ -246,7 +246,7 @@ impl Registry {
         w.ended.get_or_insert(WorkerEnd::Closed);
         let (ws, tid) = (w.workspace_id.clone(), w.task_id.clone());
         self.touch(session, now);
-        if self.fail_task(&ws, &tid, Some(session), note, cause, now) {
+        if self.fail_task(&ws, &tid, Some(session), note, Failure { cause, reason: FailReason::WorkerExited }, now) {
             self.notify(&ws, &tid, Some(session), "failed");
         }
     }

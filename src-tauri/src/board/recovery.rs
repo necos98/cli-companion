@@ -2,7 +2,7 @@
 //! (quelle riguardano il formato del file, questo lo stato dei task) e
 //! applicato a ogni caricamento, anche di un file gia' attuale.
 
-use super::{Board, FailCause, Outcome, TaskEvent, TaskStatus, INTERRUPTED_NOTE};
+use super::{Board, FailCause, FailReason, Failure, Outcome, TaskEvent, TaskStatus, INTERRUPTED_NOTE};
 
 impl Board {
     /// Dopo un riavvio nessun worker e' piu' vivo ne' nessuna esecuzione E2E e'
@@ -15,7 +15,7 @@ impl Board {
             if task.status() == TaskStatus::Running {
                 let interrupted = TaskEvent::Finish {
                     session: None,
-                    outcome: Outcome::Failed(FailCause::Other),
+                    outcome: Outcome::Failed(Failure { cause: FailCause::Other, reason: FailReason::Interrupted }),
                     report: None,
                     note: Some(INTERRUPTED_NOTE.to_string()),
                 };

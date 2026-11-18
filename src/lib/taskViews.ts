@@ -6,13 +6,14 @@
 import {
   STATUSES,
   doneTasks,
+  failReasonLabel,
   filterTasks,
   formatRelative,
   formatTaskDuration,
   matchesQuery,
+  queueHoldLabel,
   taskDuration,
   updatedLabel,
-  waitingOnLabel,
 } from "./board.ts";
 import type { Task, TaskFilter, TaskStatus } from "./board.ts";
 import { canDo } from "./taskActions.ts";
@@ -178,11 +179,11 @@ export function listSubtitle(task: Task, tasks: Pick<Task, "id" | "title">[], po
     case "done":
       return task.report?.summary || task.last_report || "";
     case "failed":
-      return task.note || task.report?.summary || task.last_report || "";
+      return [failReasonLabel(task), task.note || task.report?.summary || task.last_report].filter(Boolean).join(" · ");
     case "running":
       return task.preparing || task.last_report || "";
     default: {
-      const waiting = waitingOnLabel(task, tasks);
+      const waiting = queueHoldLabel(task, tasks);
       if (waiting) return waiting;
       const pos = positions.get(task.id);
       return pos === 1 ? "Prossimo in coda" : pos ? `In coda, posizione ${pos}` : "";

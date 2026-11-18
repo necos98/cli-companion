@@ -214,7 +214,14 @@ impl Registry {
             self.touch(&tab, now);
             self.effects.push(Effect::Close { tab_id: tab, delay: Duration::ZERO });
         }
-        self.fail_task(ws, id, None, board::STOPPED_NOTE, FailCause::Other, now);
+        self.fail_task(
+            ws,
+            id,
+            None,
+            board::STOPPED_NOTE,
+            Failure { cause: FailCause::Other, reason: FailReason::Stopped },
+            now,
+        );
         Ok(())
     }
 

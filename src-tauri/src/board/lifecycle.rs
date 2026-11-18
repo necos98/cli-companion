@@ -4,7 +4,7 @@
 //! metodi di `Board` che trovano il task e applicano l'evento.
 
 use super::{
-    E2eRun, FailCause, Finished, PreviousAttempt, Run, RunPhase, Task, TaskReport, TaskState, TaskStatus,
+    E2eRun, FailCause, Failure, Finished, PreviousAttempt, Run, RunPhase, Task, TaskReport, TaskState, TaskStatus,
     WorkerActivity, WorktreeInfo, NOTE_MAX,
 };
 use crate::validate::clip_chars;
@@ -22,7 +22,7 @@ const LAST_REPORT_MAX: usize = 200;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Done,
-    Failed(FailCause),
+    Failed(Failure),
 }
 
 /// Una transizione del ciclo di vita.
@@ -229,7 +229,7 @@ impl Task {
         }
         self.state = match outcome {
             Outcome::Done => TaskState::Done(finished),
-            Outcome::Failed(cause) => TaskState::Failed { finished, cause },
+            Outcome::Failed(Failure { cause, reason }) => TaskState::Failed { finished, cause, reason: Some(reason) },
         };
         self.updated_at = now;
         Ok(())
@@ -269,7 +269,7 @@ impl Task {
     }
 
     fn reopen(&mut self, session: String, attempt: u32, note: String, now: i64) -> Result<(), LifecycleError> {
-        let TaskState::Failed { finished, cause: FailCause::SessionEnded { session: ended } } = &self.state else {
+        let TaskState::Failed { finished, cause: FailCause::SessionEnded { session: ended }, .. } = &self.state else {
             return Err(LifecycleError::Stale);
         };
         if *ended != session || self.attempts != attempt {

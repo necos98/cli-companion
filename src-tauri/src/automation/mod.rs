@@ -36,8 +36,8 @@
 
 use crate::agents::{Readiness, WaitKind};
 use crate::board::{
-    self, build_report, AgentGate, Board, BoardView, FailCause, Outcome, ReportFields, Task, TaskKind, TaskStatus,
-    WorkerActivity, WorkerEnd, WorkerSignal, WorktreeInfo, SUMMARY_MAX,
+    self, build_report, AgentGate, Board, BoardView, FailCause, FailReason, Failure, Outcome, ReportFields, Task,
+    TaskKind, TaskStatus, WorkerActivity, WorkerEnd, WorkerSignal, WorktreeInfo, SUMMARY_MAX,
 };
 use crate::ipc::{is_valid_tab_id, NotifyPayload, RpcRequest, RpcResponse};
 pub(crate) use crate::validate::{clip_chars, req_text};

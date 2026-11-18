@@ -4,7 +4,7 @@ import type { Edge, ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import TaskNode from "./TaskNode";
 import type { TaskFlowNode } from "./TaskNode";
-import { taskIdsKey } from "../../lib/board";
+import { issueLabel, taskIdsKey } from "../../lib/board";
 import type { BoardView } from "../../lib/board";
 import { layoutBoard, layoutSignature } from "../../lib/boardLayout";
 
@@ -57,7 +57,7 @@ export default function DependencyGraph({ board, selectedId = null, onSelect }: 
           id: n.id,
           type: "task" as const,
           position: n.position,
-          data: { task, selected: n.id === selectedId },
+          data: { task, selected: n.id === selectedId, issue: issueLabel(task, tasks) },
         },
       ];
     });

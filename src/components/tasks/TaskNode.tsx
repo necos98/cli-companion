@@ -21,12 +21,17 @@ import {
 import type { Task } from "../../lib/board";
 import { NODE_HEIGHT, NODE_WIDTH } from "../../lib/boardLayout";
 
-export type TaskNodeData = { task: Task; selected: boolean } & Record<string, unknown>;
+export type TaskNodeData = {
+  task: Task;
+  selected: boolean;
+  /** Perché è fallito o da chi è bloccato (vedi `issueLabel`). */
+  issue: string | null;
+} & Record<string, unknown>;
 export type TaskFlowNode = Node<TaskNodeData, "task">;
 
 /** Nodo del grafo: un task con stato (anche "Richiede attenzione"), branch e ultimo report. */
 function TaskNode({ data }: NodeProps<TaskFlowNode>) {
-  const { task, selected } = data;
+  const { task, selected, issue } = data;
   const status = displayStatus(task);
   const sub = status === "attention" ? null : workerSubStatus(task);
   const report = shortReport(task);
@@ -63,6 +68,11 @@ function TaskNode({ data }: NodeProps<TaskFlowNode>) {
         {sub && (
           <span className={cn("text-[11px]", sub.className)} title={task.preparing}>
             · {sub.text}
+          </span>
+        )}
+        {issue && (
+          <span className="min-w-0 truncate text-[11px] text-destructive" title={issue}>
+            · {issue}
           </span>
         )}
         {isReview(task) && <ReviewBadge className="ml-1 text-[10px]" />}

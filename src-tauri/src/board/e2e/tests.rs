@@ -117,7 +117,7 @@ fn loading_turns_a_running_run_into_an_interrupted_error() {
         ..serde_json::from_value(json!({"status": "failed", "summary": "s"})).unwrap()
     };
     let finished = Finished { started_at: None, finished_at: 0, report: Some(report) };
-    t.set_state(TaskState::Failed { finished, cause: FailCause::Other });
+    t.set_state(TaskState::Failed { finished, cause: FailCause::Other, reason: None });
     b.tasks.push(t);
     b.tasks.push(flagged(Some(passed_run(None))));
     b.tasks[1].id = "b".into();

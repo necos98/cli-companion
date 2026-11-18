@@ -158,7 +158,7 @@ fn cases() -> Vec<(&'static str, Task, OldTask)> {
     for cause in [FailCause::Other, FailCause::SessionEnded { session: "w1".into() }] {
         add(
             "failed",
-            TaskState::Failed { finished: finished(), cause },
+            TaskState::Failed { finished: finished(), cause, reason: None },
             OldTask {
                 status: TaskStatus::Failed,
                 report: Some(report()),
@@ -184,9 +184,13 @@ fn every_state_reads_back_equal_except_the_failure_cause() {
     for (name, task, _) in cases() {
         let back: Task = serde_json::from_str(&serde_json::to_string(&task).unwrap()).unwrap();
         let mut expected = task.clone();
-        // La causa non va su file: un fallito riletto e' `Other`.
-        if let TaskState::Failed { finished, .. } = task.state() {
-            expected.set_state(TaskState::Failed { finished: finished.clone(), cause: FailCause::Other });
+        // La causa non va su file (il motivo si): un fallito riletto e' `Other`.
+        if let TaskState::Failed { finished, reason, .. } = task.state() {
+            expected.set_state(TaskState::Failed {
+                finished: finished.clone(),
+                cause: FailCause::Other,
+                reason: *reason,
+            });
         }
         // La fase di preparazione riparte dall'inizio: niente passo, battito = avvio.
         if let TaskState::Running(run @ Run { phase: RunPhase::Preparing { .. }, .. }) = task.state() {
@@ -327,6 +331,7 @@ fn the_view_json_is_the_task_json_plus_the_new_fields() {
         let view = serde_json::to_value(&b.view_with(None, false, &AgentGate::default()).tasks[0]).unwrap();
         let mut wire = serde_json::to_value(&task).unwrap();
         wire["waiting_on"] = json!([]);
+        wire["blocked_by"] = json!([]);
         wire["attention"] = json!(task.needs_attention());
         for added in ADDED {
             assert!(view.get(added).is_some(), "{name}: {added}");
@@ -365,4 +370,25 @@ fn the_copy_of_the_bot_is_written_after_the_model_and_read_back() {
     let back: Task = serde_json::from_str(&text).unwrap();
     assert_eq!(back, t);
     assert_eq!(TaskSpec::from_task(&back).skill, t.skill);
+}
+
+#[test]
+fn the_fail_reason_is_written_for_failed_tasks_and_read_back() {
+    let spec = TaskSpec { id: "a".into(), title: "T".into(), task: "x".into(), ..TaskSpec::default() };
+    let mut t = Task::from_spec(spec, 1);
+    let state =
+        TaskState::Failed { finished: finished(), cause: FailCause::Other, reason: Some(FailReason::StartFailed) };
+    t.set_state(state);
+    let json: Value = serde_json::to_value(&t).unwrap();
+    assert_eq!(json["fail_reason"], "start_failed");
+    let back: Task = serde_json::from_value(json).unwrap();
+    assert_eq!(back.fail_reason(), Some(FailReason::StartFailed));
+}
+
+#[test]
+fn a_failed_record_without_a_reason_is_unknown_and_other_states_ignore_it() {
+    assert_eq!(read(json!({"status": "failed"})).fail_reason(), None);
+    assert_eq!(read(json!({"status": "failed", "fail_reason": "stopped"})).fail_reason(), Some(FailReason::Stopped));
+    assert_eq!(read(json!({"status": "queued", "fail_reason": "stopped"})).fail_reason(), None);
+    assert!(serde_json::to_value(read(json!({"status": "failed"}))).unwrap().get("fail_reason").is_none());
 }

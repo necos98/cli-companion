@@ -2,7 +2,14 @@
 // Globale: estratti, etichette, riordino per drag & drop, raggruppamento per
 // workspace. Zero dipendenze di UI, importabili anche dai test `node --test`.
 
-import { displayStatus, formatDuration, pendingProposals, queuedTasks, runningTasks } from "./board.ts";
+import {
+  displayStatus,
+  failReasonLabel,
+  formatDuration,
+  pendingProposals,
+  queuedTasks,
+  runningTasks,
+} from "./board.ts";
 import type { BoardView, Task, TaskSpec } from "./board.ts";
 
 // ---------------------------------------------------------------- testi
@@ -38,10 +45,10 @@ export function dependsOnText(labels: string[]): string | null {
   return labels.length === 0 ? null : `Dipende da ${labels.join(", ")}`;
 }
 
-/** Motivo del fallimento su una riga: nota dell'app, altrimenti il riassunto del report. */
-export function failureReason(task: Pick<Task, "note" | "report">): string {
+/** Motivo del fallimento su una riga: quello strutturato, poi la nota dell'app o il riassunto del report. */
+export function failureReason(task: Pick<Task, "status" | "fail_reason" | "note" | "report">): string {
   const raw = task.note?.trim() || task.report?.summary?.trim() || "";
-  return raw.replace(/\s+/g, " ");
+  return [failReasonLabel(task), raw.replace(/\s+/g, " ")].filter(Boolean).join(" · ");
 }
 
 /** Meta di un task in corso: "modello · tempo trascorso" (le parti assenti si omettono). */

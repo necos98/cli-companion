@@ -2,7 +2,10 @@
 
 use super::*;
 use crate::agents::Readiness;
-use crate::board::{parse_max_parallel, AgentGate, AgentUnavailableView, TaskEvent, TaskSpec, WorkerActivity};
+use crate::board::{
+    parse_max_parallel, AgentGate, AgentUnavailableView, FailCause, FailReason, Finished, TaskEvent, TaskSpec,
+    TaskState, WorkerActivity,
+};
 use serde_json::json;
 use TaskAction::{Delete, DeleteCascade, MarkDone, Retry, Stop, ToTop};
 
@@ -256,4 +259,57 @@ fn an_answered_question_leaves_the_view() {
     assert_eq!(v.to_json(true)["questions"][0]["answered_at"], 9);
     let list = b.view_with(None, false, &AgentGate::default()).to_list_json(None);
     assert!(list["tasks"][0].get("question").is_none());
+}
+
+fn blocked_by(b: &Board, id: &str) -> Vec<String> {
+    view(b, id).blocked_by
+}
+
+#[test]
+fn a_queued_task_is_blocked_by_failed_dependencies_direct_and_indirect() {
+    let b = board(&[
+        ("f", &[], Failed),
+        ("g", &[], Failed),
+        ("direct", &["f"], Queued),
+        ("indirect", &["direct"], Queued),
+        ("both", &["g", "indirect"], Queued),
+    ]);
+    assert_eq!(blocked_by(&b, "direct"), ["f"]);
+    assert_eq!(blocked_by(&b, "indirect"), ["f"]);
+    assert_eq!(blocked_by(&b, "both"), ["f", "g"], "in ordine di coda, senza doppioni");
+    assert_eq!(view(&b, "direct").waiting_on, ["f"], "waiting_on non cambia");
+}
+
+#[test]
+fn a_task_is_not_blocked_while_its_dependencies_are_only_queued_or_running() {
+    let b = board(&[("q", &[], Queued), ("r", &[], Running), ("a", &["q"], Queued), ("b", &["r"], Queued)]);
+    assert!(blocked_by(&b, "a").is_empty());
+    assert!(blocked_by(&b, "b").is_empty());
+    assert!(!compact_row(&view(&b, "a")).as_object().unwrap().contains_key("blocked_by"));
+}
+
+#[test]
+fn a_done_task_breaks_the_chain_and_only_queued_tasks_are_blocked() {
+    let b = board(&[("f", &[], Failed), ("ok", &["f"], Done), ("after", &["ok"], Queued), ("other", &["f"], Failed)]);
+    assert!(blocked_by(&b, "after").is_empty(), "il done in mezzo e' soddisfatto");
+    assert!(blocked_by(&b, "other").is_empty(), "un failed non e' bloccato, e' fallito");
+    assert!(blocked_by(&b, "f").is_empty());
+}
+
+#[test]
+fn list_rows_report_blocked_by_and_fail_reason_only_when_present() {
+    let mut b = board(&[("f", &[], Failed), ("q", &["f"], Queued), ("u", &[], Failed)]);
+    b.task_mut("f").unwrap().set_state(TaskState::Failed {
+        finished: Finished { started_at: None, finished_at: 0, report: None },
+        cause: FailCause::Other,
+        reason: Some(FailReason::Stopped),
+    });
+    let blocked = compact_row(&view(&b, "q"));
+    assert_eq!(blocked["blocked_by"], json!(["f"]));
+    assert!(blocked.get("fail_reason").is_none());
+    let failed = compact_row(&view(&b, "f"));
+    assert_eq!(failed["fail_reason"], "stopped");
+    assert!(failed.get("blocked_by").is_none());
+    let unknown = compact_row(&view(&b, "u"));
+    assert!(unknown.get("fail_reason").is_none(), "motivo ignoto: assente");
 }

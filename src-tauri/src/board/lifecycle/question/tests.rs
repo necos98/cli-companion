@@ -1,7 +1,7 @@
 //! Le domande del worker: ciclo domanda -> risposta, rifiuti e cronologia.
 
 use super::*;
-use crate::board::{FailCause, Outcome, TaskEvent, TaskSpec, TaskStatus};
+use crate::board::{FailCause, FailReason, Failure, Outcome, TaskEvent, TaskSpec, TaskStatus};
 
 const W1: &str = "w1";
 
@@ -166,7 +166,7 @@ fn a_new_attempt_does_not_inherit_the_pending_question() {
     ask(&mut t, W1, "q", 10).unwrap();
     let failed = TaskEvent::Finish {
         session: Some(W1.into()),
-        outcome: Outcome::Failed(FailCause::Other),
+        outcome: Outcome::Failed(Failure { cause: FailCause::Other, reason: FailReason::WorkerFailed }),
         report: None,
         note: None,
     };

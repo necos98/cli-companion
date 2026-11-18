@@ -179,7 +179,9 @@ fn list_tasks_tool() -> Value {
     tool(
         "list_tasks",
         "List the task queue: counts per status, pending proposals and one \
-         compact row per task (id, title, status, kind unless work, verdict for reviews, attention, waiting_on, summary, note).",
+         compact row per task (id, title, status, kind unless work, verdict for reviews, attention, waiting_on, summary, note, fail_reason, blocked_by). \
+         fail_reason: worker_failed|worker_exited|stopped|interrupted|start_failed. \
+         blocked_by: failed tasks it depends on.",
         json!({
             "status": {
                 "type": "array",

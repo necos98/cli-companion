@@ -27,6 +27,7 @@ const task = (id, status, extra = {}) => ({
   created_at: 0,
   updated_at: 0,
   waiting_on: [],
+  blocked_by: [],
   attention: false,
   ...extra,
 });
@@ -60,6 +61,14 @@ describe("failureReason / runningMeta / queueSubtitle", () => {
     assert.equal(failureReason({ note: " stopped\nby the user ", report: { summary: "x" } }), "stopped by the user");
     assert.equal(failureReason({ note: null, report: { status: "failed", summary: "Test falliti" } }), "Test falliti");
     assert.equal(failureReason({ note: null, report: null }), "");
+    assert.equal(
+      failureReason({ status: "failed", fail_reason: "stopped", note: null, report: null }),
+      "Fermato dall'utente",
+    );
+    assert.equal(
+      failureReason({ status: "failed", fail_reason: "start_failed", note: "git: boom", report: null }),
+      "Avvio fallito · git: boom",
+    );
   });
   it("runningMeta: modello e tempo", () => {
     assert.equal(runningMeta({ model: "sonnet", started_at: 1000 }, 1000 + 12 * 60_000), "sonnet · 12m");

@@ -1,5 +1,6 @@
 //! Chi aspetta chi: le dipendenze inverse dei task non `done`, per la
-//! cancellazione a cascata (`delete_with_dependents` e `TaskView::cascade`).
+//! cancellazione a cascata (`delete_with_dependents` e `TaskView::cascade`) e
+//! per i task bloccati da un fallito (`TaskView::blocked_by`).
 
 use super::{Board, Task, TaskStatus};
 use serde::Serialize;
@@ -23,6 +24,9 @@ pub(super) struct Waiters<'a> {
     /// Id di un task -> posizioni in coda dei task non `done` che lo aspettano.
     by_dep: HashMap<&'a str, Vec<usize>>,
 }
+
+/// Id di un task `queued` -> i task `failed` che lo bloccano.
+pub(super) type Blockers<'a> = HashMap<&'a str, Vec<String>>;
 
 impl Board {
     pub(super) fn waiters(&self) -> Waiters<'_> {
@@ -50,6 +54,18 @@ impl<'a> Waiters<'a> {
             }
         }
         seen.into_iter().filter_map(|i| self.tasks.get(i)).filter(|t| t.id != id).collect()
+    }
+
+    /// Per ogni task `queued` bloccato, i task `failed` da cui dipende (anche
+    /// indirettamente), in ordine di coda. Un task `done` nel mezzo spezza la catena.
+    pub(super) fn blockers(&self) -> Blockers<'a> {
+        let mut blocked = Blockers::new();
+        for failed in self.tasks.iter().filter(|t| t.status() == TaskStatus::Failed) {
+            for waiting in self.dependents_of(&failed.id).into_iter().filter(|t| t.status() == TaskStatus::Queued) {
+                blocked.entry(waiting.id.as_str()).or_default().push(failed.id.clone());
+            }
+        }
+        blocked
     }
 
     /// Cosa toglierebbe la cascata partita da `task`.

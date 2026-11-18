@@ -2,7 +2,7 @@
 //! consegna, retry, stop, eliminazione, comandi della UI.
 
 use super::*;
-use crate::board::{Run, RunPhase, Task, TaskAction, TaskSpec, TaskState};
+use crate::board::{FailReason, Run, RunPhase, Task, TaskAction, TaskSpec, TaskState};
 use crate::platform::TargetKind;
 
 fn pr_parallel() -> (AutomationState, FakeHost) {
@@ -372,6 +372,7 @@ fn start_failure_fails_the_task_notifies_and_retry_reuses_the_worktree() {
         let t = task(&st, &h, id);
         assert_eq!(t["status"], "failed", "{id}");
         assert!(t["note"].as_str().unwrap().contains("already exists"));
+        assert_eq!(t["fail_reason"], "start_failed", "{id}");
         assert!(t["session"].is_null() && t["worker_status"].is_null());
     }
     assert!(h.spawns().is_empty());
@@ -469,6 +470,7 @@ fn stop_fails_the_task_closes_the_tab_and_is_quiet() {
     let v = boards::task_action(&st, &h, "ws-1", "a", TaskAction::Stop).unwrap();
     let a = v.tasks.iter().find(|t| t.task.id == "a").unwrap();
     assert_eq!((a.task.status(), a.task.note()), (TaskStatus::Failed, Some("stopped by the user")));
+    assert_eq!(a.task.fail_reason(), Some(FailReason::Stopped));
     assert!(h.log().contains(&format!("close:{w}")));
     assert!(h.notices().is_empty(), "l'utente lo ha chiesto lui");
     // Il tab si chiude: nessun secondo fallimento. Il dipendente non parte.
@@ -753,6 +755,7 @@ fn watchdog_fails_a_start_that_never_finished() {
     let a = task(&st, &h, "a");
     assert_eq!(a["status"], "failed");
     assert!(a["note"].as_str().unwrap().contains("did not start in time"));
+    assert_eq!(a["fail_reason"], "start_failed");
     assert_eq!(h.notices().len(), 1);
     // Un passo di setup in corso allunga il tempo: conta dall'ultimo battito.
     let (st, h) = pr_parallel();
@@ -805,6 +808,7 @@ fn loaded_boards_resume_on_the_first_tick_and_running_tasks_are_failed() {
         (a["status"].as_str(), a["note"].as_str()),
         (Some("failed"), Some("interrupted: the app was restarted"))
     );
+    assert_eq!(a["fail_reason"], "interrupted");
     assert_eq!(status_of(&st, &h, "next"), "queued", "nothing starts before the first tick");
     assert!(h.spawns().is_empty());
     st.tick(&h, now_millis());

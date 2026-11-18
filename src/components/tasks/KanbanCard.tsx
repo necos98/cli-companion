@@ -9,7 +9,7 @@ import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import { isPlan } from "../../lib/plan";
 import { PlanBadge } from "./PlanBadge";
-import { displayStatus, waitingOnLabel, workerSubStatus } from "../../lib/board";
+import { blockedByLabel, displayStatus, failReasonLabel, queueHoldLabel, workerSubStatus } from "../../lib/board";
 import type { Task } from "../../lib/board";
 import { agentBadge, unavailableText } from "../../lib/taskAgent";
 import type { TaskAgents } from "../../lib/taskAgent";
@@ -58,7 +58,9 @@ function KanbanCard({
 }: Props) {
   const status = displayStatus(task);
   const attention = status === "attention";
-  const waiting = waitingOnLabel(task, tasks);
+  const waiting = queueHoldLabel(task, tasks);
+  const blocked = blockedByLabel(task, tasks) !== null;
+  const failReason = failReasonLabel(task);
   const sub = attention ? null : workerSubStatus(task);
   const unavailable = unavailableText(agents, task.agent_unavailable);
   const draggable = dragIntent(task) !== null;
@@ -95,7 +97,19 @@ function KanbanCard({
         <BotBadge bots={agents.bots} id={task.bot} />
         <AgentBadge name={agentBadge(agents, task.agent)} />
         {waiting && (
-          <span className="max-w-full truncate rounded border border-border-strong px-1.5 py-px">{waiting}</span>
+          <span
+            className={cn(
+              "max-w-full truncate rounded border px-1.5 py-px",
+              blocked ? "border-destructive/40 text-destructive" : "border-border-strong",
+            )}
+          >
+            {waiting}
+          </span>
+        )}
+        {failReason && (
+          <span className="max-w-full truncate rounded border border-destructive/40 px-1.5 py-px text-destructive">
+            {failReason}
+          </span>
         )}
         {unavailable && <span className="max-w-full truncate font-medium text-status-running">{unavailable}</span>}
         {showRepo && (

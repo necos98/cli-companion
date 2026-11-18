@@ -382,7 +382,7 @@ fn retry_requeues_at_the_bottom_and_keeps_the_previous_outcome() {
         let t = b.task_mut("a").unwrap();
         let report = build_report("failed", "two tests red", ReportFields::default(), None);
         let finished = Finished { started_at: None, finished_at: 0, report: Some(report) };
-        t.set_state(TaskState::Failed { finished, cause: FailCause::Other });
+        t.set_state(TaskState::Failed { finished, cause: FailCause::Other, reason: None });
         t.set_attempts(1);
         t.set_note(Some("tests failed"));
         t.set_last_report(Some("two tests red"));
@@ -420,7 +420,11 @@ fn mark_done_closes_a_failed_task_keeping_the_report_and_unblocking_dependents()
         let t = b.task_mut("a").unwrap();
         let report = build_report("completed", "all delivered", ReportFields::default(), None);
         let finished = Finished { started_at: None, finished_at: 1, report: Some(report) };
-        t.set_state(TaskState::Failed { finished, cause: FailCause::SessionEnded { session: "w1".into() } });
+        t.set_state(TaskState::Failed {
+            finished,
+            cause: FailCause::SessionEnded { session: "w1".into() },
+            reason: None,
+        });
         t.set_note(Some("the session ended without a complete_task report"));
         t.set_last_report(Some("all delivered"));
         t.worktree =
@@ -445,7 +449,12 @@ fn mark_done_closes_a_failed_task_keeping_the_report_and_unblocking_dependents()
 
 #[test]
 fn reopen_failed_only_resumes_the_same_failure() {
-    let ended = |session: &str| Outcome::Failed(FailCause::SessionEnded { session: session.into() });
+    let ended = |session: &str| {
+        Outcome::Failed(Failure {
+            cause: FailCause::SessionEnded { session: session.into() },
+            reason: FailReason::WorkerExited,
+        })
+    };
     let mut b = board_with(vec![spec("a", &[])]);
     b.start_task("a", 1).unwrap();
     assert!(b.worker_spawned("a", 1, "w1".into(), None, None, 1));
@@ -466,7 +475,7 @@ fn reopen_failed_only_resumes_the_same_failure() {
     let mut b = board_with(vec![spec("a", &[])]);
     b.start_task("a", 1).unwrap();
     assert!(b.worker_spawned("a", 1, "w1".into(), None, None, 1));
-    let other = Outcome::Failed(FailCause::Other);
+    let other = Outcome::Failed(Failure { cause: FailCause::Other, reason: FailReason::WorkerExited });
     assert!(b.finish_running("a", Some("w1"), other, None, Some("tab closed".into()), 2));
     assert!(!b.reopen_failed("a", "w1", 1, "reopened", 3));
     // Ripreso da un retry: non si riapre piu'.

@@ -294,11 +294,13 @@ fn session_end_or_closed_tab_without_report_fails_the_task() {
     let a = task(&st, &h, "a");
     assert_eq!(a["status"], "failed");
     assert!(a["note"].as_str().unwrap().contains("closed"), "{a}");
+    assert_eq!(a["fail_reason"], "worker_exited");
     // session-end dell'agente.
     hook(&st, &h, &wb, "session-end");
     let b = task(&st, &h, "b");
     assert_eq!(b["status"], "failed");
     assert!(b["note"].as_str().unwrap().contains("session ended"), "{b}");
+    assert_eq!(b["fail_reason"], "worker_exited");
     // Il tab chiuso dopo non cambia nulla e non notifica di nuovo.
     tab_closed(&st, &h, &wb);
     assert_eq!(task(&st, &h, "b")["status"], "failed");
@@ -328,7 +330,9 @@ fn retry_hands_the_previous_outcome_to_the_new_worker() {
     assert!(call(&st, &h, &w, "get_task", json!({})).unwrap().get("previous_attempt").is_none());
     call(&st, &h, &w, "complete_task", json!({"status": "failed", "summary": "two tests are red"})).unwrap();
     tab_closed(&st, &h, &w);
+    assert_eq!(task(&st, &h, "a")["fail_reason"], "worker_failed");
     boards::task_action(&st, &h, "ws-1", "a", TaskAction::Retry).unwrap();
+    assert!(task(&st, &h, "a").get("fail_reason").is_none(), "Riprova azzera il motivo");
     // Subito riparte (nessun altro in corso): nuovo worker, tentativo 2.
     let a = task(&st, &h, "a");
     assert_eq!((a["status"].as_str(), a["attempts"].as_u64()), (Some("running"), Some(2)));
@@ -349,6 +353,7 @@ fn silent_worker_is_failed_by_the_watchdog() {
     st.run(&h, |r| r.watchdog(late));
     assert_eq!(task(&st, &h, "a")["status"], "failed", "never called get_task");
     assert!(task(&st, &h, "a")["note"].as_str().unwrap().contains("never called get_task"));
+    assert_eq!(task(&st, &h, "a")["fail_reason"], "worker_exited");
     assert!(h.log().contains(&format!("close:{w}")));
     assert_eq!(h.notices().len(), 1);
     // Con get_task fatto il guardiano non scatta.

@@ -2,6 +2,8 @@
 //! stato. Si cambia solo con `Task::apply` (vedi `lifecycle`).
 
 use super::{PreviousAttempt, TaskReport, TaskStatus, WorkerActivity};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Stato del ciclo di vita con i dati che esistono solo in quello stato.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +17,8 @@ pub enum TaskState {
     Failed {
         finished: Finished,
         cause: FailCause,
+        /// Perche' e' fallito; `None` per un task fallito prima che si registrasse.
+        reason: Option<FailReason>,
     },
 }
 
@@ -78,6 +82,31 @@ pub enum FailCause {
     Other,
 }
 
+/// Come e perche' un task e' fallito: la causa per la riapertura, il motivo per chi legge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub cause: FailCause,
+    pub reason: FailReason,
+}
+
+/// Il motivo del fallimento mostrato a utente e agenti: dice se ha senso
+/// riprovare. Scritto dalla transizione che porta il task a `failed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum FailReason {
+    /// Il worker ha chiuso con `complete_task` `failed`.
+    WorkerFailed,
+    /// Tab chiuso o agente uscito senza report.
+    WorkerExited,
+    /// Fermato dall'utente.
+    Stopped,
+    /// L'app si e' riavviata con il task in corso.
+    Interrupted,
+    /// L'avvio non e' riuscito (git, setup, precondizione, skill).
+    StartFailed,
+}
+
 #[cfg(test)]
 impl TaskState {
     /// Uno stato qualunque in `status`, con i dati vuoti (per costruire i dati di prova).
@@ -91,7 +120,7 @@ impl TaskState {
                 phase: RunPhase::Preparing { step: None, heartbeat: 0 },
             }),
             TaskStatus::Done => TaskState::Done(finished()),
-            TaskStatus::Failed => TaskState::Failed { finished: finished(), cause: FailCause::Other },
+            TaskStatus::Failed => TaskState::Failed { finished: finished(), cause: FailCause::Other, reason: None },
         }
     }
 }

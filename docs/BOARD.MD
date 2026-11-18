@@ -86,6 +86,7 @@ Task:
   "effort": null,           // sforzo del Bot, omesso se assente; all'avvio va in AutomationRequest.effort: un livello non supportato dall'agente è ignorato con una nota sul task
   "skill": null,            // SkillRef del Bot, omessa se assente; il worker la carica per prima (vedi get_task)
   "status": "queued",       // queued | running | done | failed
+  "fail_reason": null,      // solo se failed, omesso se assente: worker_failed | worker_exited | stopped | interrupted | start_failed (scritto dalla transizione che porta il task a failed; si azzera con "Riprova"; i task falliti prima che esistesse restano senza: motivo sconosciuto, la UI non mostra nulla)
   "worker_status": null,    // starting | running | background | needs_input | idle | awaiting_answer | ... (come oggi)
   "session": null,          // tab del worker corrente
   "questions": [],          // TaskQuestion: storico delle domande del worker all'utente (ask_user), omesso se vuoto; ultime 20 (le più vecchie cadono), non si azzera con i tentativi
@@ -219,10 +220,25 @@ Limiti: 200 task per board, 20 task per proposta, 20 proposte pendenti per board
 
 | status | UI | note |
 |---|---|---|
-| `queued` | **Da fare** | parte quando: coda non in pausa, fascia aperta (se il workspace la usa), tutte le dipendenze `done`, slot libero. Con dipendenze non `done` la vista espone `waiting_on`. |
+| `queued` | **Da fare** | parte quando: coda non in pausa, fascia aperta (se il workspace la usa), tutte le dipendenze `done`, slot libero. Con dipendenze non `done` la vista espone `waiting_on`; se una di esse (anche indirettamente) è `failed` espone anche `blocked_by`. |
 | `running` | **In corso** | con `worker_status` `needs_input` o `idle` la vista espone `attention: true` → badge "Richiede attenzione". Con `worker_status` `awaiting_answer` il worker aspetta la risposta a una sua domanda: è "in attesa dell'utente" ma **non** `attention` (nessun badge, il Task panel e il Tasks Manager lo mostrano "In attesa di risposta"). |
 | `done` | **Fatto** | consegnato. Terminale. Sblocca i dipendenti. |
-| `failed` | **Fallito** | `note`/`report.summary` dicono perché. "Riprova" lo rimette in coda. |
+| `failed` | **Fallito** | `fail_reason` dice perché in modo strutturato (vedi sotto), `note`/`report.summary` il dettaglio. "Riprova" lo rimette in coda e azzera `fail_reason`. |
+
+Il `fail_reason` lo scrive la transizione che porta il task a `failed` (`Outcome::Failed` di `TaskEvent::Finish`):
+
+| `fail_reason` | Transizione | UI |
+|---|---|---|
+| `worker_failed` | `complete_task` con `status: "failed"` (o `blocked`) | "Il worker ha rinunciato" |
+| `worker_exited` | tab chiuso o agente uscito senza report (anche: il worker non ha mai chiamato `get_task`) | "Worker uscito senza esito" |
+| `stopped` | l'utente preme Ferma | "Fermato dall'utente" |
+| `interrupted` | riavvio dell'app con il task in corso | "App riavviata" |
+| `start_failed` | git, setup, precondizione, skill non più esistente, avvio che non finisce in tempo | "Avvio fallito" |
+
+Serve a chi legge la coda (utente e agenti) per capire se ha senso riprovare. È indipendente da `FailCause`
+(che governa solo la riapertura di un task la cui sessione è finita, `Reopen`). Sul filo è `snake_case`,
+nel file della board è un campo piatto omesso se assente; un `Reopen` lo toglie, perché il task torna `running`.
+Nessuna migrazione lo deduce dalle note dei task già falliti.
 
 Gli stati stanno in un'enum (`TaskState`, `board/state.rs`) che porta i dati validi solo in quello
 stato, e si cambiano soltanto con una transizione (`TaskEvent` applicato da `Task::apply`,
@@ -233,7 +249,7 @@ e nessuna `session`; un battito di vita lo tiene d'occhio il guardiano degli avv
 che non sono più quelli del task è rifiutato (`Stale`) e non cambia niente.
 
 `BoardView` = board + per task: `waiting_on: string[]` (dipendenze non `done`, solo per
-`queued`), `attention: bool`, `question?: TaskQuestion` (la domanda in attesa di risposta, se c'è; la UI la mostra nel dettaglio del task, "Domanda del worker"), `allowed_actions`, `can_edit`, `can_reorder` e `cascade` (vedi "Azioni consentite"); + `rev` monotona (come oggi), `schedule_blocked: bool` (fascia
+`queued`), `blocked_by: string[]` (solo per `queued`: i task `failed` da cui dipende, direttamente o no; mai su disco; vuoto se non è bloccato), `attention: bool`, `question?: TaskQuestion` (la domanda in attesa di risposta, se c'è; la UI la mostra nel dettaglio del task, "Domanda del worker"), `allowed_actions`, `can_edit`, `can_reorder` e `cascade` (vedi "Azioni consentite"); + `rev` monotona (come oggi), `schedule_blocked: bool` (fascia
 chiusa per un workspace che usa le fasce), `delivery` del workspace (comodità per la UI) e `limits: { max_parallel: { min, max } }`
 (gli estremi di `max_parallel`, gli stessi che validano `board_set` e `set_board`: la UI li legge da qui).
 
@@ -253,6 +269,8 @@ worker o cosa si può scegliere. Compaiono in `KanbanCard`, `ListRow`, `TaskDeta
 | **Agente** | `agent` del task (snapshot dal Bot, o dal workspace nei task senza Bot) | Agente che lancia il worker; con un Bot non si sceglie a parte |
 | **Richiede attenzione** | `attention` della vista (task `running`) | Il worker aspetta l'utente: è uno stato, non un tipo |
 | **attende X** / **attende N task** | `waiting_on` della vista (dipendenze non `done`) | Il task `queued` parte quando sono tutte `done` |
+| **bloccato da X** / **bloccato da N task** | `blocked_by` della vista (task `failed` da cui dipende, anche indirettamente) | Il task `queued` non partirà finché non si riprova o si segna come fatto il fallito; sostituisce "attende …" (pannello Task, Kanban, Lista, nodo del grafo; il dettaglio ha la sezione "Bloccato") |
+| **Motivo** del fallimento | `fail_reason` del task `failed` | "Fermato dall'utente", "App riavviata", "Avvio fallito", "Il worker ha rinunciato", "Worker uscito senza esito"; assente nei task falliti prima del campo |
 | Repository | `repo` del task | Repository in cui lavora (assente = root) |
 
 Tipo e Bot: `work` → `General` (o un Bot con `work`), `review` → `Reviewer`, `plan` → `Planner`. Nei form,
@@ -284,7 +302,11 @@ Ogni task della vista porta, dopo i campi del task, `waiting_on` e `attention` p
   `dependents` sono i task non `done` che dipendono dal task, direttamente o no (il task escluso);
   `running` i `running` fra il task e i suoi dipendenti. Vuoto per gli stati che non si possono
   eliminare. Lo stesso calcolo (`board/cascade.rs`, un indice delle dipendenze inverse costruito
-  una volta per vista) serve a `delete_cascade`, quindi vista e azione non possono divergere.
+  una volta per vista) serve a `delete_cascade`, quindi vista e azione non possono divergere;
+- `blocked_by: string[]`: per un task `queued`, i task `failed` da cui dipende, direttamente o no (in ordine di
+  coda, mai su disco). Lo calcola lo stesso indice delle dipendenze inverse: per ogni `failed`, i suoi
+  dipendenti `queued`. Un task `done` nel mezzo spezza la catena (resta com'è). Diverso da `waiting_on`, che
+  resta l'elenco delle dipendenze non `done`; un task con la dipendenza solo `queued` o `running` non è bloccato.
 
 ### File su disco: schema, migrazione e recupero
 
@@ -821,7 +843,7 @@ Sessione (workspace = quello del tab):
   task già in coda.
 - `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, kind? (solo
   `review` e `plan`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
-  waiting_on?, agent_unavailable? (`{ agent, reason }`, vedi “Agente e modello di un task”), summary? (300),
+  waiting_on?, blocked_by? (id dei `failed` da cui dipende un `queued`), fail_reason? (solo se `failed` e noto), agent_unavailable? (`{ agent, reason }`, vedi “Agente e modello di un task”), summary? (300),
   note? (200) }` + `counts` + `proposals_pending`.
 - `get_task_details { id }` → task completo (testo, report, worktree, `agent`, `model`) con la sua vista (`agent_unavailable` compreso).
 - `update_task { id, title?, task?, depends_on?, repo?, bot?, agent?, model?, kind?, e2e? }` — solo `queued` o
@@ -1454,8 +1476,8 @@ Testi in italiano.
 - Sezioni: **Proposte** (card Accetta/Scarta e card "Proposta di impostazioni" Applica/Scarta,
   vedi "Proposte di impostazioni"), **In corso N/M** (card: titolo, modello · tempo
   trascorso oppure "Richiede attenzione"; clic → mette a fuoco il tab del worker nella griglia),
-  **In coda N** (numerata, trascinabile per riordinare, "attende X" se aspetta dipendenze; clic
-  → dettaglio), **Falliti** (solo se non vuota, con Riprova). Piede: "+ Nuovo task" e "Task
+  **In coda N** (numerata, trascinabile per riordinare, "attende X" se aspetta dipendenze, "bloccato da X" se una è fallita; clic
+  → dettaglio), **Falliti** (solo se non vuota, con il motivo e Riprova). Piede: "+ Nuovo task" e "Task
   Intake" (apre il primo Bot abilitato con la skill `task-intake`).
 - Da vuoto: "Nessun task" + pulsante "Apri Task Intake".
 - I tab dei worker restano nella griglia dei terminali come oggi (badge AUTO).
@@ -1478,7 +1500,7 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
 
 - **Kanban**: colonne Da fare (ordine di partenza), In corso, Fatto (ultimi 7 giorni + "Vedi
   tutti i fatti nella Lista"), Fallito (solo se non vuota). Card: titolo (2 righe), meta (repo
-  se multi-repo, modello, tempo/esito), "attende X", "Richiede attenzione". Drag: riordino in
+  se multi-repo, modello, tempo/esito), "attende X" o "bloccato da X", motivo del fallimento, "Richiede attenzione". Drag: riordino in
   Da fare (`task_move`), Fallito → Da fare = Riprova; durante il drag In corso e Fatto si
   attenuano (non accettano drop). Ricerca filtra le card.
 - **Lista**: ricerca full-text (titolo, specifica, esito, id), chip di stato a selezione

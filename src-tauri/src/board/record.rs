@@ -6,8 +6,8 @@
 //! appartengono allo stato cadono.
 
 use super::{
-    E2eRun, FailCause, Finished, PreviousAttempt, Run, RunPhase, Task, TaskKind, TaskQuestion, TaskReport, TaskState,
-    TaskStatus, WorkerActivity, WorkerStatus, WorktreeInfo,
+    E2eRun, FailCause, FailReason, Finished, PreviousAttempt, Run, RunPhase, Task, TaskKind, TaskQuestion, TaskReport,
+    TaskState, TaskStatus, WorkerActivity, WorkerStatus, WorktreeInfo,
 };
 use crate::agents::Effort;
 use crate::bots::SkillRef;
@@ -32,6 +32,7 @@ pub(super) struct TaskRecord {
     e2e: bool,
     no_git: bool,
     status: TaskStatus,
+    fail_reason: Option<FailReason>,
     worker_status: Option<WorkerStatus>,
     session: Option<String>,
     attempts: u32,
@@ -72,7 +73,9 @@ impl TaskRecord {
                 TaskState::Running(Run { started_at, previous_attempt: self.previous_attempt.take(), phase })
             }
             TaskStatus::Done => TaskState::Done(self.finished()),
-            TaskStatus::Failed => TaskState::Failed { finished: self.finished(), cause: FailCause::Other },
+            TaskStatus::Failed => {
+                TaskState::Failed { finished: self.finished(), cause: FailCause::Other, reason: self.fail_reason }
+            }
         }
     }
 }
@@ -135,6 +138,9 @@ struct TaskRecordRef<'a> {
     #[ts(as = "Option<bool>", optional)]
     no_git: bool,
     status: TaskStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    fail_reason: Option<FailReason>,
     worker_status: Option<WorkerStatus>,
     session: Option<&'a str>,
     attempts: u32,
@@ -204,6 +210,7 @@ impl Serialize for Task {
             e2e: self.e2e,
             no_git: self.no_git,
             status: self.status(),
+            fail_reason: self.fail_reason(),
             worker_status: self.worker_status(),
             session: self.session(),
             attempts: self.attempts,

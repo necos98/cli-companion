@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import { GripVertical } from "lucide-react";
-import { waitingOnLabel } from "../../lib/board";
+import { queueHoldLabel } from "../../lib/board";
 import type { Task } from "../../lib/board";
 import { dropSlot, moveBeforeId, queueSubtitle } from "../../lib/taskPanel";
 import { cn } from "@/lib/utils";
@@ -113,7 +113,7 @@ interface QueueRowButtonProps {
 }
 
 function QueueRowButton({ task, allTasks, bots, onOpen }: QueueRowButtonProps) {
-  const waiting = waitingOnLabel(task, allTasks);
+  const waiting = queueHoldLabel(task, allTasks);
   const sub = queueSubtitle(task, waiting);
   return (
     <button

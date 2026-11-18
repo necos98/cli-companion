@@ -2,7 +2,7 @@
 //! e i rifiuti (che lasciano il task com'era).
 
 use super::*;
-use crate::board::{build_report, E2eRun, ReportFields, TaskSpec, WorkerStatus};
+use crate::board::{build_report, E2eRun, FailReason, ReportFields, TaskSpec, WorkerStatus};
 
 const W1: &str = "w1";
 
@@ -47,9 +47,16 @@ fn states() -> Vec<(&'static str, Task)> {
         ("done", at(1, None, TaskState::Done(finished(Some(report("delivered")))))),
         (
             "failed_ended",
-            at(1, Some("ended"), TaskState::Failed { finished: finished(Some(report("partial"))), cause: ended }),
+            at(
+                1,
+                Some("ended"),
+                TaskState::Failed { finished: finished(Some(report("partial"))), cause: ended, reason: None },
+            ),
         ),
-        ("failed_other", at(1, Some("boom"), TaskState::Failed { finished: finished(None), cause: FailCause::Other })),
+        (
+            "failed_other",
+            at(1, Some("boom"), TaskState::Failed { finished: finished(None), cause: FailCause::Other, reason: None }),
+        ),
     ]
 }
 
@@ -206,12 +213,15 @@ fn finish_records_the_outcome_the_report_and_the_note() {
     let mut t = state_named("preparing");
     let event = TaskEvent::Finish {
         session: None,
-        outcome: Outcome::Failed(cause.clone()),
+        outcome: Outcome::Failed(Failure { cause: cause.clone(), reason: FailReason::WorkerExited }),
         report: None,
         note: Some("n".into()),
     };
     t.apply(event, 91).unwrap();
-    assert_eq!(t.state(), &TaskState::Failed { finished: finished_at(91), cause });
+    assert_eq!(
+        t.state(),
+        &TaskState::Failed { finished: finished_at(91), cause, reason: Some(FailReason::WorkerExited) }
+    );
     assert_eq!((t.note(), t.last_report()), (Some("n"), None));
 }
 
@@ -293,6 +303,7 @@ fn reopen_needs_the_same_session_attempt_and_a_session_end() {
     t.set_state(TaskState::Failed {
         finished: Finished { started_at: None, finished_at: 30, report: None },
         cause: FailCause::SessionEnded { session: W1.into() },
+        reason: None,
     });
     t.apply(reopen(W1, 1), 46).unwrap();
     assert_eq!(t.started_at(), Some(46));
@@ -328,4 +339,34 @@ fn lifecycle_errors_read_like_the_old_messages() {
         LifecycleError::NotAllowed { task: "a".into(), status: TaskStatus::Done, op: Op::Action(TaskAction::Retry) };
     assert_eq!(String::from(e), "task 'a' is done: only failed tasks can be retried");
     assert!(!LifecycleError::Stale.to_string().is_empty());
+}
+
+#[test]
+fn every_failure_records_its_reason_and_retry_clears_it() {
+    for reason in [
+        FailReason::WorkerFailed,
+        FailReason::WorkerExited,
+        FailReason::Stopped,
+        FailReason::Interrupted,
+        FailReason::StartFailed,
+    ] {
+        let mut t = state_named("live");
+        let outcome = Outcome::Failed(Failure { cause: FailCause::Other, reason });
+        t.apply(TaskEvent::Finish { session: None, outcome, report: None, note: None }, 50).unwrap();
+        assert_eq!(t.fail_reason(), Some(reason));
+        t.apply(TaskEvent::Retry, 51).unwrap();
+        assert_eq!(t.fail_reason(), None, "{reason:?}: Riprova azzera il motivo");
+    }
+}
+
+#[test]
+fn a_failure_without_a_recorded_reason_is_unknown_and_reopening_drops_it() {
+    assert_eq!(state_named("failed_other").fail_reason(), None);
+    let mut t = state_named("live");
+    let ended = FailCause::SessionEnded { session: W1.into() };
+    let outcome = Outcome::Failed(Failure { cause: ended, reason: FailReason::WorkerExited });
+    t.apply(TaskEvent::Finish { session: None, outcome, report: None, note: None }, 50).unwrap();
+    let reopen = TaskEvent::Reopen { session: W1.into(), attempt: 1, note: "r".into() };
+    t.apply(reopen, 51).unwrap();
+    assert_eq!(t.fail_reason(), None);
 }
