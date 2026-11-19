@@ -2,11 +2,11 @@
 //! suoi task e dalle sue proposte con una funzione pura, mai scritte su disco
 //! ne' impostabili da un tool. `GoalView` le espone con il goal.
 
-use super::{Goal, GoalReview};
+use super::{auto_fix_decision, AutoFixDecision, Goal, GoalReview};
 use crate::board::{Board, Task, TaskKind, TaskStatus};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use ts_rs::TS;
 
 /// Fase di un goal, lineare.
@@ -49,8 +49,10 @@ impl GoalPhase {
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum GoalWaiting {
-    /// Una proposta del goal e' pendente.
+    /// Una proposta del goal e' pendente e non sara' accettata in automatico.
     Proposal,
+    /// Una proposta di correzione del goal e' pendente e i giri automatici sono finiti.
+    RoundLimit,
     /// Il goal e' `ready` e la consegna non parte da sola: l'utente preme "Consegna".
     Deliver,
     /// Un task del goal e' `failed`.
@@ -116,20 +118,49 @@ pub(super) fn delivers_by_itself(goal: &Goal, last_review: GoalReview) -> bool {
     goal.auto_deliver && last_review != GoalReview::Issues
 }
 
+/// Le proposte pendenti di un goal, secondo cosa ne fara' l'app.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PendingProposals {
+    /// Almeno una proposta del goal e' pendente.
+    pub any: bool,
+    /// Almeno una la decide l'utente (non sara' accettata in automatico).
+    pub for_user: bool,
+    /// Almeno una e' una correzione ferma al tetto dei giri automatici.
+    pub round_limit: bool,
+}
+
+impl PendingProposals {
+    /// Aggiunge una proposta pendente con la sua decisione.
+    pub fn add(&mut self, decision: &AutoFixDecision) {
+        self.any = true;
+        match decision {
+            AutoFixDecision::Accept => {}
+            AutoFixDecision::RoundLimit => self.round_limit = true,
+            AutoFixDecision::Manual | AutoFixDecision::Hold(_) => self.for_user = true,
+        }
+    }
+}
+
 /// Cio' che il goal aspetta dall'utente, nell'ordine di `GoalWaiting`. Un goal
 /// chiuso non aspetta nulla.
-pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool, last_review: GoalReview) -> Vec<GoalWaiting> {
+pub fn goal_waiting(
+    goal: &Goal,
+    tasks: &[&Task],
+    proposals: PendingProposals,
+    last_review: GoalReview,
+) -> Vec<GoalWaiting> {
     if !goal.is_open() {
         return Vec::new();
     }
     // Pronto, con qualcosa da consegnare (senza branch il goal si chiude da solo),
     // senza un task di consegna e senza che parta da solo.
-    let deliver = goal_phase(goal, tasks, proposal_pending) == GoalPhase::Ready
+    let deliver = goal_phase(goal, tasks, proposals.any) == GoalPhase::Ready
         && !goal.branches.is_empty()
         && tasks.iter().all(|t| t.kind != TaskKind::Deliver)
         && !delivers_by_itself(goal, last_review);
     let checks = [
-        (GoalWaiting::Proposal, proposal_pending),
+        (GoalWaiting::Proposal, proposals.for_user),
+        (GoalWaiting::RoundLimit, proposals.round_limit),
         (GoalWaiting::Deliver, deliver),
         (GoalWaiting::Failed, tasks.iter().any(|t| t.status() == TaskStatus::Failed)),
         (GoalWaiting::Attention, tasks.iter().any(|t| t.needs_attention())),
@@ -138,12 +169,12 @@ pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool, last_r
 }
 
 impl GoalView {
-    fn of(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalView {
+    fn of(goal: &Goal, tasks: &[&Task], proposals: PendingProposals) -> GoalView {
         let last_review = last_review_of(tasks);
         GoalView {
             goal: goal.clone(),
-            phase: goal_phase(goal, tasks, proposal_pending),
-            waiting: goal_waiting(goal, tasks, proposal_pending, last_review),
+            phase: goal_phase(goal, tasks, proposals.any),
+            waiting: goal_waiting(goal, tasks, proposals, last_review),
             tasks: GoalProgress {
                 done: tasks.iter().filter(|t| t.status() == TaskStatus::Done).count(),
                 total: tasks.len(),
@@ -175,12 +206,17 @@ impl Board {
                 by_goal.entry(g).or_default().push(t);
             }
         }
-        let pending: HashSet<&str> = self.proposals.iter().filter_map(|p| p.goal_id.as_deref()).collect();
+        let mut pending: HashMap<&str, PendingProposals> = HashMap::new();
+        for p in &self.proposals {
+            if let Some(g) = p.goal_id.as_deref() {
+                pending.entry(g).or_default().add(&auto_fix_decision(self, p));
+            }
+        }
         self.goals
             .iter()
             .map(|g| {
                 let tasks = by_goal.get(g.id.as_str()).map_or(&[][..], Vec::as_slice);
-                GoalView::of(g, tasks, pending.contains(g.id.as_str()))
+                GoalView::of(g, tasks, pending.get(g.id.as_str()).copied().unwrap_or_default())
             })
             .collect()
     }
@@ -189,7 +225,10 @@ impl Board {
     pub fn goal_view(&self, id: &str) -> Option<GoalView> {
         let goal = self.goal(id)?;
         let tasks: Vec<&Task> = self.goal_tasks(id).collect();
-        let pending = self.proposals.iter().any(|p| p.goal_id.as_deref() == Some(id));
+        let mut pending = PendingProposals::default();
+        for p in self.proposals.iter().filter(|p| p.goal_id.as_deref() == Some(id)) {
+            pending.add(&auto_fix_decision(self, p));
+        }
         Some(GoalView::of(goal, &tasks, pending))
     }
 }

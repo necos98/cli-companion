@@ -14,6 +14,7 @@ use serde_json::json;
 mod agent_ready;
 mod archive;
 mod auth;
+mod auto_fix;
 mod board_flow;
 mod bot_kinds;
 mod bot_settings;

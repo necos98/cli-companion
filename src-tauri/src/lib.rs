@@ -215,6 +215,7 @@ pub fn run() {
             automation::goal_close,
             automation::goal_deliver,
             automation::goal_set_delivery,
+            automation::goal_set_auto_fix,
             automation::goal_delete_branches,
             automation::goal_add_note,
             automation::settings_proposal_decide,

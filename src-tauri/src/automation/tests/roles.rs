@@ -86,3 +86,29 @@ fn params_are_checked_before_the_method() {
         }
     }
 }
+
+/// La correzione automatica di un goal la cambia solo l'utente (docs/GOALS.MD,
+/// "Giri e correzione automatica"): nessun metodo, per nessun ruolo, la scrive,
+/// nemmeno con i suoi campi nei parametri.
+#[test]
+fn no_role_can_change_the_automatic_correction_of_a_goal() {
+    let (st, h, callers) = callers();
+    let auto_fix = json!({ "max_rounds": crate::board::MAX_AUTO_FIX_ROUNDS });
+    let params = json!({
+        "id": "dg", "goal_id": "dg", "auto_fix": auto_fix, "max_rounds": crate::board::MAX_AUTO_FIX_ROUNDS,
+        "settings": { "auto_fix": auto_fix }, "tasks": [spec("sneaky", &[])],
+    });
+    for (role, tab) in &callers {
+        for method in Method::ALL {
+            // L'esito non conta (molti rifiutano i parametri): conta che nulla cambi.
+            let _ = call(&st, &h, tab, method.name(), params.clone());
+            let goal = view(&st, &h).goals.into_iter().find(|g| g.goal.id == "dg").expect("goal dg");
+            assert_eq!(goal.goal.auto_fix().max_rounds, 0, "{} / {}", role.as_str(), method.name());
+        }
+    }
+    // Neanche come campo di un goal nuovo proposto dall'Intake.
+    let mut goal = super::deliver::goal_json("new-goal");
+    goal["auto_fix"] = auto_fix;
+    let err = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("x", &[])], "goal": goal })).unwrap_err();
+    assert!(err.contains("unknown field 'auto_fix'"), "{err}");
+}

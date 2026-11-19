@@ -7,10 +7,11 @@
 
 use super::worktrees::{CleanupTarget, DeliveryCleanup, FolderKinds, StartJob};
 use super::*;
-use crate::board::{self, GoalView, ProposalInput, SchedCtx, SpecContext, Task, TaskSpec, TaskView};
+use crate::board::{self, Acceptance, GoalView, ProposalInput, SchedCtx, SpecContext, Task, TaskSpec, TaskView};
 use serde_json::json;
 
 mod agents;
+mod auto_fix;
 mod commands;
 mod delivery;
 mod goal_branches;
@@ -18,6 +19,7 @@ mod lifecycle;
 mod session;
 
 pub(super) use agents::ReadinessLookup;
+pub(super) use auto_fix::{goal_set_auto_fix, run_auto_fix};
 pub(super) use commands::{
     board_set, goal_add_note, goal_close, proposal_decide, proposal_decide_with, task_action, task_create, task_move,
     task_update, task_update_check, workspace_of,
@@ -147,13 +149,13 @@ impl Registry {
         ws: &str,
         id: &str,
         accept: bool,
-        auto_deliver: Option<bool>,
+        acceptance: Acceptance,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<(), String> {
         self.edit(ws, |b| {
             if accept {
-                b.accept_proposal_with(id, auto_deliver, ctx, now).map(|_| ())
+                b.accept_proposal_with(id, acceptance, ctx, now).map(|_| ())
             } else {
                 b.discard_proposal(id, now)
             }

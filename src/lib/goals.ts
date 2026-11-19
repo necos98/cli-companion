@@ -25,6 +25,7 @@ export const GOAL_PHASE_LABELS: Record<GoalPhase, string> = {
 /** Cosa aspetta l'utente, in italiano. */
 export const GOAL_WAITING_LABELS: Record<GoalWaiting, string> = {
   proposal: "Una proposta da decidere",
+  round_limit: "Giri automatici finiti: una correzione da decidere",
   failed: "Un task è fallito",
   attention: "Un task richiede attenzione",
   deliver: "Da consegnare",

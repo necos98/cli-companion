@@ -3,7 +3,7 @@
 
 use crate::automation::worktrees::{check_e2e_configured, check_e2e_needs_git, ensure_repos, FolderKinds};
 use crate::automation::*;
-use crate::board::{self, parse_new_task, parse_spec, SpecContext, TaskAction, TaskSpec};
+use crate::board::{self, parse_new_task, parse_spec, Acceptance, SpecContext, TaskAction, TaskSpec};
 
 pub(in crate::automation) fn workspace_of<H: Host>(host: &H, ws_id: &str) -> Result<Workspace, String> {
     let ws = host.workspace(ws_id).ok_or_else(|| "workspace non trovato".to_string())?;
@@ -175,18 +175,19 @@ pub(in crate::automation) fn proposal_decide<H: Host>(
     proposal_id: &str,
     accept: bool,
 ) -> Result<BoardView, String> {
-    proposal_decide_with(st, host, ws_id, proposal_id, accept, None)
+    proposal_decide_with(st, host, ws_id, proposal_id, accept, Acceptance::default())
 }
 
-/// Come `proposal_decide`; `auto_deliver` e' la scelta dell'utente per il goal
-/// nuovo della proposta accettata.
+/// Come `proposal_decide`; `acceptance` porta le scelte dell'utente per il goal
+/// nuovo della proposta accettata (consegna e correzione automatiche) o dice che
+/// ad accettarla e' l'app (correzione automatica): stessa validazione.
 pub(in crate::automation) fn proposal_decide_with<H: Host>(
     st: &AutomationState,
     host: &H,
     ws_id: &str,
     proposal_id: &str,
     accept: bool,
-    auto_deliver: Option<bool>,
+    acceptance: Acceptance,
 ) -> Result<BoardView, String> {
     let ws = workspace_of(host, ws_id)?;
     let mut kinds = FolderKinds::new();
@@ -201,7 +202,7 @@ pub(in crate::automation) fn proposal_decide_with<H: Host>(
     let bots = host.agent_bots();
     let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
     st.run(host, |r| {
-        r.decide_proposal(ws_id, proposal_id, accept, auto_deliver, ctx, now)?;
+        r.decide_proposal(ws_id, proposal_id, accept, acceptance, ctx, now)?;
         r.note_no_git(ws_id, &kinds);
         Ok::<(), String>(())
     })?;

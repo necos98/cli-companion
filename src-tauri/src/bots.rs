@@ -43,6 +43,7 @@ pub(crate) use image::validate_image;
 pub use launches::{bot_launch_id, BOT_LAUNCH_PREFIX};
 #[cfg(test)]
 pub(crate) use presets::default_bots as default_agent_bots;
+pub(crate) use presets::off_by_default as bot_off_by_default;
 pub use secretary_names::rename_bots_named_like_secretaries;
 
 use crate::store::{adopt_envelope, data_dir, Decoded, JsonFile, JsonStore};

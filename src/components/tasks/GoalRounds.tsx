@@ -2,17 +2,33 @@ import DetailSection from "./DetailSection";
 import { VerdictBadge } from "./ReviewBadges";
 import { displayStatus, statusDotClass, statusLabel } from "../../lib/board";
 import type { Task } from "../../lib/board";
+import { roundAcceptanceLabel } from "../../lib/autoFix";
 import { groupByRound } from "../../lib/goals";
+import type { GoalView } from "../../lib/goals";
 import { cn } from "../../lib/utils";
 
 interface Props {
+  goal: Pick<GoalView, "auto_rounds">;
   /** Task del goal, nell'ordine della board. */
   tasks: Task[];
   onSelectTask: (taskId: string) => void;
 }
 
-/** Task del goal per giro: "Giro N", poi titolo, stato e verdetto di ognuno; il clic apre il task. */
-export default function GoalRounds({ tasks, onSelectTask }: Props) {
+/** "Giro N", con chi l'ha accettato se è un giro di correzione. */
+function RoundHeading({ round, accepted }: { round: number; accepted: string | null }) {
+  return (
+    <h4 className="text-xs font-medium text-text-secondary">
+      Giro {round}
+      {accepted && <span className="font-normal text-muted-foreground"> · {accepted}</span>}
+    </h4>
+  );
+}
+
+/**
+ * Task del goal per giro: "Giro N" (dal secondo, chi l'ha accettato: l'app o l'utente), poi titolo, stato e verdetto
+ * di ognuno; il clic apre il task.
+ */
+export default function GoalRounds({ goal, tasks, onSelectTask }: Props) {
   return (
     <DetailSection title="Task">
       {tasks.length === 0 ? (
@@ -20,7 +36,7 @@ export default function GoalRounds({ tasks, onSelectTask }: Props) {
       ) : (
         groupByRound(tasks).map((group) => (
           <div key={group.round} className="flex flex-col gap-1">
-            <h4 className="text-xs font-medium text-text-secondary">Giro {group.round}</h4>
+            <RoundHeading round={group.round} accepted={roundAcceptanceLabel(goal, group.round)} />
             <ul className="flex flex-col gap-1">
               {group.tasks.map((t) => {
                 const status = displayStatus(t);

@@ -926,7 +926,7 @@ Sessione (workspace = quello del tab):
   nell'ordine della board (aperti e chiusi ancora sulla board; con `open_only: true` solo gli aperti).
   Errore: "open_only must be a boolean".
 - `get_goal { id }` → `{ goal: { id, title, request, done_when, decisions, round, created_at, closed_at?, outcome?,
-  review?, auto_deliver?, deliver_bot?, report?, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
+  review?, auto_deliver?, deliver_bot?, auto_fix, auto_rounds, report?, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
   "unknown goal: <id>".
 - `update_task { id, title?, task?, depends_on?, repo?, bot?, agent?, model?, kind?, e2e? }` — solo `queued` o
   `failed`; `repo` solo senza worktree; il goal non cambia mai ("the goal of a task cannot be changed") e i nuovi
@@ -1133,8 +1133,10 @@ tutti `done` (nessuna modifica allo scheduler).
   dei task) più una nuova `review` che dipende dalle correzioni e riafferma l'obiettivo, poi
   `complete_task` con `verdict: "issues"`. Non attende la decisione sulla proposta, che porta
   `source_task`.
-- **Nessun ciclo automatico**: le correzioni le decide l'utente accettando o scartando la
-  proposta.
+- **Ciclo automatico solo su richiesta, con un tetto**: di serie le correzioni le decide l'utente
+  accettando o scartando la proposta. Per un goal con `auto_fix.max_rounds > 0` (scelto dall'utente)
+  l'app accetta da sola le proposte di correzione ammissibili, fino al tetto dei giri; oltre, il goal
+  aspetta l'utente (vedi "Correzione automatica del goal").
 
 ## Task di pianificazione
 
@@ -1267,8 +1269,12 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
 - Una proposta fatta dal reviewer di una review registra `source_task` (id della review) e
   `source_tab` (tab del reviewer); lo stesso per il pianificatore di un task `plan` (id del task
   `plan`, al massimo una proposta per worker); le proposte dell'Intake non hanno `source_task`.
-- Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool) -> BoardView`.
+- Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool, auto_deliver?, auto_fix?) -> BoardView`
+  (le due scelte valgono solo per una proposta con goal nuovo, vedi "Comandi ed eventi Tauri").
 - Una proposta con `goal` nuovo crea il goal **solo all'accettazione**; scartarla non crea nulla. Vedi "Goal".
+- Una proposta di correzione di un goal con correzione automatica può essere accettata **dall'app**, con lo stesso
+  percorso e la stessa validazione del pulsante; se resta pendente pur avendo giri a disposizione, porta il motivo in
+  `auto_fix_hold` e la card lo mostra. Vedi "Correzione automatica del goal".
 
 ## Goal
 
@@ -1276,7 +1282,7 @@ Il goal (obiettivo) è l'oggetto tracciato sopra i task: nasce da una proposta a
 una fase calcolata e una chiusura. Il progetto completo, con le tappe successive (branch del goal, consegna,
 correzione automatica, follow-up), è in [GOALS.MD](GOALS.MD); qui il contratto consegnato (tappa T2). Il codice è
 in `board/goal.rs` e `board/goal/` (puro, senza orologio). Il branch del goal (tappa T4) è in "Branch del goal" più sotto,
-la consegna (tappa T5) in "Consegna del goal".
+la consegna (tappa T5) in "Consegna del goal", la correzione automatica (tappa T7) in "Correzione automatica del goal".
 
 ```jsonc
 {
@@ -1297,16 +1303,19 @@ la consegna (tappa T5) in "Consegna del goal".
   },
   "auto_deliver": false,      // consegna automatica quando il goal è pronto (default false; lo cambia solo l'utente)
   "deliver_bot": "general",   // Bot che esegue la consegna; omesso = "general"; lo cambia solo l'utente
+  "auto_fix": { "max_rounds": 0 },  // giri di correzione accettati dall'app: 0..=3, 0 = di serie (lo cambia solo l'utente)
+  "auto_rounds": [],          // i giri le cui correzioni ha accettato l'app (vedi "Correzione automatica del goal")
   "report": {                 // solo se chiuso "delivered" da un task di consegna (vedi "Consegna del goal")
     "summary": "...", "commits": ["abc1234"], "pr_urls": ["https://..."]
   }
 }
 ```
 
-I campi delle tappe successive (`auto_fix`, `follow_ups`) non esistono
-ancora; `auto_deliver`, `deliver_bot` e `report` sono della consegna (T5): nessun tool MCP, proposta di task o di
-impostazioni li scrive, e il `report` al caricamento si toglie da un goal che non è `delivered` (e si riporta nei
-limiti). Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
+Il campo della tappa successiva (`follow_ups`) non esiste
+ancora; `auto_deliver`, `deliver_bot` e `report` sono della consegna (T5), `auto_fix` e `auto_rounds` della
+correzione automatica (T7): nessun tool MCP, proposta di task o di impostazioni li scrive, il `report` al
+caricamento si toglie da un goal che non è `delivered` (e si riporta nei limiti), `max_rounds` si riporta a 0..=3 e
+`auto_rounds` ai giri possibili (2..=4, senza doppioni, in ordine). Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
 tasks to an open goal with goal_id").
 
 **Nascita** (`propose_tasks`, poi l'accettazione dell'utente):
@@ -1346,7 +1355,9 @@ cambia mai.
 
 L'ordine dei controlli è: chiuso, `delivering`, `executing`, `verifying`, `deciding`, `ready`.
 
-`waiting` (vuoto = il goal procede da solo), nell'ordine: `proposal` (una proposta del goal è pendente), `deliver`
+`waiting` (vuoto = il goal procede da solo), nell'ordine: `proposal` (una proposta del goal è pendente e non sarà
+accettata in automatico), `round_limit` (una proposta di correzione è pendente e i giri automatici sono finiti: solo
+con `auto_fix.max_rounds > 0`; con 0 la correzione è una `proposal` come prima), `deliver`
 (il goal è `ready`, ha branch, non ha un task di consegna e la consegna non parte da sola: l'utente preme "Consegna"),
 `failed` (un task del goal è `failed`, anche quello di consegna), `attention` (un task del goal ha il worker in
 attesa dell'utente). Un goal chiuso non aspetta nulla.
@@ -1363,6 +1374,9 @@ a goal aperto: l'interfaccia ne ricava "Consegna" o "Consegna comunque" (con `is
   3. `ready` e senza `branches` (cartella senza git, o task mai partiti in git): chiuso `delivered` **senza report**
      né notifica: non c'è nulla da consegnare;
   4. `ready`, `auto_deliver` acceso e ultima review non `issues`: non chiude, chiede la consegna automatica;
+
+  Prima dei goal, lo stesso passo aggiorna `auto_fix_hold` di ogni proposta pendente e chiede l'accettazione automatica
+  delle correzioni che la meritano (vedi "Correzione automatica del goal").
   Con la regola provvisoria della T2 un goal si chiudeva appena finiti i task (`Board::close_finished_goals`): non
   esiste più, la chiusura `delivered` avviene solo con la consegna;
 - **"Chiudi goal"** (comando `goal_close`): elimina i task `queued` e `failed` del goal, con i task non `done` che ne
@@ -1379,7 +1393,59 @@ task manuali, review: "goal <id> is being delivered: new tasks cannot join it").
 (1..=500 caratteri; oltre 50 voci cadono le più vecchie).
 
 **Vista.** `BoardView.goals: GoalView[]` (i campi del goal più `phase`, `waiting`, `last_review` e `tasks: { done, total }`), nell'ordine
-della board; ogni `TaskView` porta il suo `goal` e `round`; le proposte portano `goal`/`goal_id`.
+della board; ogni `TaskView` porta il suo `goal` e `round`; le proposte portano `goal`/`goal_id` e, se trattenute,
+`auto_fix_hold`.
+
+### Correzione automatica del goal
+
+Tappa T7 di [GOALS.MD](GOALS.MD) ("Giri e correzione automatica"). La decisione è pura (`board/goal/auto_fix.rs`,
+`auto_fix_decision`); l'effetto lo esegue l'automazione (`automation/boards/auto_fix.rs`).
+
+**Impostazione.** `auto_fix.max_rounds` (0..=3, di serie 0) lo sceglie solo l'utente: sulla card della proposta che crea
+il goal ("Correzioni automatiche: no / 1 / 2 / 3 giri", `proposal_decide` con `auto_fix`) e nel dettaglio del goal
+(`goal_set_auto_fix`). Nessun tool MCP lo scrive: non è un campo di `propose_tasks` (il goal di `propose_tasks` rifiuta
+`auto_fix`: "goal: unknown field 'auto_fix' …"), di `propose_settings` né di `update_task`; lo fissa un test che chiama
+ogni metodo con ogni ruolo (`no_role_can_change_the_automatic_correction_of_a_goal`). Errori (inglese): "auto_fix
+max_rounds must be between 0 and 3", "auto_fix applies only to a proposal that creates a new goal" (una scelta attiva
+su una proposta senza goal nuovo; "no" non cambia nulla).
+
+**Decisione** su ogni proposta pendente (`AutoFixDecision`), nell'ordine:
+
+| Caso | Decisione |
+|---|---|
+| non è una correzione (`is_correction`), il goal è chiuso o ha `max_rounds: 0` | `Manual`: la decide l'utente, come prima |
+| `round - 1 >= max_rounds` | `RoundLimit`: resta pendente, `waiting` riporta `round_limit` |
+| non ammissibile | `Hold(motivo)`: resta pendente, `auto_fix_hold` = il motivo, `waiting` riporta `proposal` |
+| altrimenti | `Accept`: l'app la accetta |
+
+Ammissibile = tutti i criteri di GOALS.MD §8, ognuno con il suo motivo (`AutoFixHold`, `reason`):
+
+| `reason` | Criterio violato |
+|---|---|
+| `not_from_review` | `source_task` è una review di quel goal (non lo è più se la review è stata tolta) |
+| `kind` (`task`, `kind`) | solo task `work` e `review` |
+| `repo` (`task`, `repo`) | solo repository già usati da un task del goal (chiave `repo_key`, `.` = la root) |
+| `bot` (`task`, `bot`) | nessun Bot spento di serie (`enabled_by_default: false`: `git-operator`, `release`), anche se acceso dall'utente (`bots::presets::off_by_default`) |
+| `invalid` (`error`) | l'ultima accettazione automatica tentata è fallita la validazione |
+
+**Effetto.** A ogni publish `advance_goals` aggiorna `auto_fix_hold` e ritorna in `GoalAdvance.auto_fix` le proposte da
+accettare; l'automazione mette in coda `Effect::AutoFix` (una sola richiesta in volo per proposta, `auto_fixing`) che,
+fuori dal lock, chiama `proposal_decide_with` con `Acceptance::AUTOMATIC`: **lo stesso percorso del pulsante**
+(repository e E2E verificati con git, poi `accept_proposal_with` con la stessa validazione). Dentro il lock la board
+ricontrolla che la decisione sia ancora `Accept` ("proposal <id> is not accepted automatically" altrimenti). Riuscita:
+i task entrano con `round + 1`, il giro va in `auto_rounds` e il registro riceve una voce `app` ("Round 2 accepted
+automatically: 3 tasks", "… 1 task"). Fallita: la proposta resta pendente con `auto_fix_hold: { reason: "invalid",
+error }` e l'app non ci riprova (l'utente la accetta o la scarta; azzerare e rialzare i giri la fa ritentare una volta).
+Alzare `max_rounds` con una correzione ferma al tetto la fa partire al publish successivo.
+
+**Tetto.** Nessun ciclo senza fine è possibile: ogni accettazione automatica fa avanzare `round`, e con
+`round - 1 >= max_rounds` la decisione è `RoundLimit`. Con `max_rounds: N` le correzioni dei giri 2..=N+1 entrano da
+sole e la successiva aspetta l'utente (test `a_review_that_always_finds_issues_stops_at_the_last_automatic_round`).
+Con `auto_fix` e `auto_deliver` un goal va dalla proposta accettata alla base senza interventi, entro il tetto.
+
+**HUB.** `decide_hub_proposal` resta manuale e passa da `proposal_decide`: su una proposta già accettata in automatico
+risponde "proposal not found: <id>"; una proposta decisa (dall'utente o dall'HUB) mentre l'accettazione automatica è in
+coda non viene toccata: l'effetto trova la proposta sparita, registra l'errore nel log e non scrive nulla.
 
 ### Branch del goal
 
@@ -1732,6 +1798,8 @@ Argomenti camelCase lato JS.
   goal `ready`, anche se l'ultima review ha trovato problemi (vedi "Consegna del goal").
 - `goal_set_delivery(workspace_id, goal_id, auto_deliver?, bot?) -> BoardView`: consegna automatica e/o Bot di consegna di
   un goal aperto (almeno uno dei due; il Bot deve esistere, essere acceso e avere `work` fra i `kinds`).
+- `goal_set_auto_fix(workspace_id, goal_id, max_rounds) -> BoardView`: giri di correzione automatica (0..=3) di un
+  goal aperto (vedi "Correzione automatica del goal").
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` è un `TaskAction` (vedi "Azioni consentite"; una stringa sconosciuta è rifiutata in deserializzazione) ∈ `retry` (failed →
   queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i
@@ -1754,9 +1822,11 @@ Argomenti camelCase lato JS.
   Il percorso lo ricava il backend (worktree del task o cartella del repository + `junit`, per i
   workspace WSL convertito in un percorso UNC `wsl.localhost` della distro), mai il frontend. Errori (italiano): nessuna
   esecuzione, report non piu' presente (cartella ripulita).
-- `proposal_decide(workspace_id, proposal_id, accept, auto_deliver?) -> BoardView`: `auto_deliver` è la consegna
-  automatica del goal nuovo che la proposta accettata crea; `true` con una proposta senza goal nuovo è un errore
-  ("auto_deliver applies only to a proposal that creates a new goal").
+- `proposal_decide(workspace_id, proposal_id, accept, auto_deliver?, auto_fix?) -> BoardView`: `auto_deliver` è la
+  consegna automatica e `auto_fix` i giri di correzione automatica (0..=3) del goal nuovo che la proposta accettata
+  crea; una scelta attiva con una proposta senza goal nuovo è un errore ("auto_deliver applies only to a proposal that
+  creates a new goal", "auto_fix applies only to a proposal that creates a new goal"). L'accettazione automatica
+  dell'app usa la stessa funzione (`proposal_decide_with`), mai questo comando.
 - `settings_proposal_decide(workspace_id, proposal_id, accept) -> { board, workspace? }`
   (vedi "Proposte di impostazioni").
 - `set_delivery`, `set_use_schedule` (workspace), `schedule_get`/`schedule_set` (invariati).
@@ -1809,7 +1879,10 @@ Testi in italiano.
 - Intestazione: "Task", pausa/riprendi la coda, "Apri Tasks Manager" (Ctrl+Maiusc+B), comprimi.
   Con la coda in pausa: banner "Coda in pausa…"; con la fascia chiusa: "Fuori fascia oraria".
 - Sezioni: **Serve a te** (solo se non vuota; sostituisce "Proposte" e "Falliti"), nell'ordine:
-  proposte di task (con il goal a cui appartengono e, per le correzioni, "correzione · giro N") e
+  proposte di task (con il goal a cui appartengono e, per le correzioni, "correzione · giro N"; una correzione ferma al
+  tetto dice "Giri automatici finiti (N/N): decidi tu", una trattenuta "Non accettata in automatico: <motivo>",
+  `proposalAutoFixNote` in `src/lib/autoFix.ts`; la card di un goal nuovo offre "Correzioni automatiche: no / 1 / 2 /
+  3 giri" e "Consegna automatica") e
   di impostazioni (card "Proposta di impostazioni", vedi "Proposte di impostazioni"), task che
   aspettano l'utente (domanda del worker, poi attenzione; clic → tab del worker), task falliti (motivo,
   "Blocca: …" coi task in coda che bloccano, Riprova). Le azioni sono quelle di prima (Accetta/Scarta,
@@ -1858,11 +1931,13 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   mostrano il goal come etichetta (Kanban, Lista, grafo, dettaglio). Logica in `src/lib/goals.ts`.
 - **Dettaglio del goal** (stesso pannello laterale del task, uno solo alla volta): fase, giro e
   avanzamento, cosa aspetta l'utente, richiesta, criteri, decisioni con "Aggiungi nota" (1..=500
-  caratteri, solo goal aperti), task per giro con stato, esito delle review, "Chiudi goal" con
+  caratteri, solo goal aperti), task per giro con stato (dal secondo giro, "accettato in automatico" o "accettato da
+  te", da `auto_rounds`), esito delle review, "Correzioni automatiche" (selettore no / 1 / 2 / 3 giri e giri usati,
+  `goal_set_auto_fix`), "Consegna" (consegna automatica, Bot, task e pulsante di consegna), "Chiudi goal" con
   conferma in linea che elenca i task in coda/falliti e le proposte che verranno eliminati (con un
   task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data. Branch: per ogni
   repository `goal/<id>` con la base da cui è nato; per un goal abbandonato "Elimina branch" con conferma
-  (`goal_delete_branches`). Consegna, correzioni e consegna automatiche arrivano con le tappe successive.
+  (`goal_delete_branches`).
 - **Dipendenze**: il grafo React Flow attuale, ripulito (nodi con i 4 stati).
 - **Dettaglio** (pannello laterale destro agganciato, uguale per tutte le viste e aperto anche
   dal pannello Task): stato, id, titolo, azioni per stato (Da fare: Modifica, In cima alla

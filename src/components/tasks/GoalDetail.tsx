@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import DetailSection from "./DetailSection";
 import GoalCloseBox from "./GoalCloseBox";
+import GoalAutoFix from "./GoalAutoFix";
 import GoalBranches from "./GoalBranches";
 import GoalClosedInfo from "./GoalClosedInfo";
 import GoalDelivery from "./GoalDelivery";
@@ -15,7 +16,7 @@ import type { GoalView } from "../../lib/goals";
 
 /**
  * Props del dettaglio di un goal (stesso pannello laterale destro del task): richiesta, criteri, decisioni
- * con la nota, task per giro, esito delle review e chiusura. Chiama `api` e passa a `onBoard` la board restituita.
+ * con la nota, task per giro, esito delle review, correzioni automatiche, consegna e chiusura. Chiama `api` e passa a `onBoard` la board restituita.
  */
 export interface GoalDetailProps {
   workspaceId: string;
@@ -84,8 +85,9 @@ export default function GoalDetail({ workspaceId, goal, board, now, onBoard, onC
           </DetailSection>
         )}
         <GoalDecisions workspaceId={workspaceId} goal={goal} open={open} now={now} onBoard={onBoard} />
-        <GoalRounds tasks={tasks} onSelectTask={onSelectTask} />
+        <GoalRounds goal={goal} tasks={tasks} onSelectTask={onSelectTask} />
         <GoalReviews tasks={tasks} onSelectTask={onSelectTask} />
+        {open && <GoalAutoFix workspaceId={workspaceId} goal={goal} onBoard={onBoard} />}
         {open && (
           <GoalDelivery
             workspaceId={workspaceId}

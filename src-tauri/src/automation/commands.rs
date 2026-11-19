@@ -136,9 +136,10 @@ pub async fn goal_add_note(
     .await
 }
 
-/// Accetta o scarta una proposta dell'Intake. `auto_deliver`: con una proposta
-/// accettata che crea un goal nuovo, la sua consegna automatica (errore se `true` e
-/// la proposta non crea un goal).
+/// Accetta o scarta una proposta dell'Intake. Con una proposta accettata che crea
+/// un goal nuovo, `auto_deliver` e' la sua consegna automatica e `auto_fix` i suoi
+/// giri di correzione automatica (0..=3): errore se attivi e la proposta non crea
+/// un goal.
 #[tauri::command]
 pub async fn proposal_decide(
     app: AppHandle,
@@ -146,15 +147,37 @@ pub async fn proposal_decide(
     proposal_id: String,
     accept: bool,
     auto_deliver: Option<bool>,
+    auto_fix: Option<u8>,
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
+        let acceptance = board::Acceptance { auto_deliver, auto_fix, automatic: false };
         boards::proposal_decide_with(
             &app.state::<AutomationState>(),
             &TauriHost(app.clone()),
             &workspace_id,
             &proposal_id,
             accept,
-            auto_deliver,
+            acceptance,
+        )
+    })
+    .await
+}
+
+/// Giri di correzione automatica di un goal aperto (0..=3), dal dettaglio del goal.
+#[tauri::command]
+pub async fn goal_set_auto_fix(
+    app: AppHandle,
+    workspace_id: String,
+    goal_id: String,
+    max_rounds: u8,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_set_auto_fix(
+            &app.state::<AutomationState>(),
+            &TauriHost(app.clone()),
+            &workspace_id,
+            &goal_id,
+            max_rounds,
         )
     })
     .await

@@ -80,6 +80,13 @@ pub enum Effect {
         ws_id: String,
         goal_id: String,
     },
+    /// Accettare da sola una proposta di correzione: con lo stesso percorso
+    /// dell'accettazione manuale, che verifica i repository (git) fuori dal lock
+    /// (vedi `boards::auto_fix`).
+    AutoFix {
+        ws_id: String,
+        proposal_id: String,
+    },
 }
 
 /// Cio' che `complete_task` porta oltre stato e riassunto: i campi del report e
@@ -111,6 +118,9 @@ pub struct Registry {
     /// Consegne automatiche in volo (workspace, goal): finche' una e' in corso la
     /// board non ne chiede un'altra per lo stesso goal.
     pub(super) auto_delivering: std::collections::HashSet<(String, String)>,
+    /// Accettazioni automatiche in volo (workspace, proposta): finche' una e' in
+    /// corso la board non la chiede di nuovo.
+    pub(super) auto_fixing: std::collections::HashSet<(String, String)>,
 }
 
 impl Registry {

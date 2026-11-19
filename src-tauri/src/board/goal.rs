@@ -3,10 +3,11 @@
 //! docs/GOALS.MD). Qui il modello sul disco; i sottomoduli: `input` (il goal di
 //! `propose_tasks` e i suoi limiti), `membership` (a quale goal vanno i task
 //! nuovi e da chi possono dipendere), `closure` (chiusura, note, giri),
-//! `phase` (fase e attesa, derivate: mai scritte su disco), `delivery` (consegna:
-//! impostazioni, rapporto e task di consegna), `advance` (chiusura e consegna
-//! automatica al publish) e `archive` (goal chiusi oltre il tetto). Funzioni
-//! pure, tempo passato dal chiamante.
+//! `phase` (fase e attesa, derivate: mai scritte su disco), `auto_fix`
+//! (correzione automatica con tetto di giri), `delivery` (consegna:
+//! impostazioni, rapporto e task di consegna), `advance` (chiusura, consegna e
+//! correzione automatiche al publish) e `archive` (goal chiusi oltre il
+//! tetto). Funzioni pure, tempo passato dal chiamante.
 
 use super::TITLE_MAX;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use ts_rs::TS;
 
 mod advance;
 mod archive;
+mod auto_fix;
 mod branches;
 mod closure;
 mod delivery;
@@ -27,6 +29,7 @@ mod tests;
 
 pub use advance::{DeliveredGoal, GoalAdvance};
 pub use archive::MAX_CLOSED_GOALS_KEPT;
+pub use auto_fix::{auto_fix_decision, Acceptance, AutoFix, AutoFixDecision, AutoFixHold, MAX_AUTO_FIX_ROUNDS};
 pub use branches::{goal_branch_name, GoalBranch, GOAL_BRANCH_PREFIX};
 pub use delivery::{GoalReport, DEFAULT_DELIVER_BOT};
 pub use input::{parse_goal_id, parse_goal_spec, GoalSpec, ProposalGoal};
@@ -95,8 +98,8 @@ pub enum GoalReview {
 
 /// Un goal della board. Fase e attesa non sono qui: si derivano (`GoalView`).
 /// Giro e chiusura li scrive solo la board (`closure`), i branch solo l'app
-/// (`branches`), le impostazioni di consegna solo l'utente (`delivery`), mai un
-/// tool.
+/// (`branches`), le impostazioni di consegna e di correzione solo l'utente
+/// (`delivery`, `auto_fix`), mai un tool.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
 #[ts(export)]
@@ -122,6 +125,11 @@ pub struct Goal {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub(in crate::board) deliver_bot: Option<String>,
+    /// Correzione automatica: quanti giri di correzione l'app accetta da sola.
+    /// La cambia solo l'utente, mai un tool.
+    pub(in crate::board) auto_fix: AutoFix,
+    /// I giri le cui correzioni ha accettato l'app, non l'utente.
+    pub(in crate::board) auto_rounds: Vec<u32>,
     /// 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata.
     pub(in crate::board) round: u32,
     pub created_at: i64,
@@ -207,5 +215,6 @@ impl Goal {
         self.decisions.drain(..surplus);
         self.sanitize_branches();
         self.sanitize_delivery();
+        self.sanitize_auto_fix();
     }
 }

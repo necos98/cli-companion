@@ -3,7 +3,8 @@
 //! chiama quali consegne partono da sole. Le chiusure sono le sole che non
 //! sono dell'utente: task di consegna `done` (`delivered`, con il rapporto),
 //! goal rimasto senza task (`abandoned`) e goal pronto senza branch
-//! (`delivered`, senza rapporto: nulla da consegnare). Funzioni pure.
+//! (`delivered`, senza rapporto: nulla da consegnare). Dice anche quali proposte
+//! di correzione si accettano da sole (`auto_fix`). Funzioni pure.
 
 use super::delivery::GoalReport;
 use super::phase::delivers_by_itself;
@@ -28,6 +29,9 @@ pub struct GoalAdvance {
     /// Goal pronti con `auto_deliver`: il task di consegna lo crea chi chiama
     /// (`Board::create_deliver_task`), perche' servono i Bot, letti fuori dal lock.
     pub auto_deliver: Vec<String>,
+    /// Proposte di correzione che l'app accetta da sola: le accetta chi chiama, con
+    /// lo stesso percorso (e la stessa validazione) dell'accettazione manuale.
+    pub auto_fix: Vec<String>,
 }
 
 /// Cosa fare di un goal aperto.
@@ -48,14 +52,18 @@ impl Board {
     /// 3. `ready` e senza branch (cartella senza git): `delivered`, senza rapporto;
     /// 4. `ready` e la consegna parte da sola (`auto_deliver`, ultima review non
     ///    `issues`): il goal e' nell'elenco `auto_deliver`, senza cambiare nulla.
+    ///
+    /// Prima, il motivo di blocco delle proposte e quelle di correzione che si
+    /// accettano da sole (`auto_fix`).
     pub fn advance_goals(&mut self, now: i64) -> GoalAdvance {
+        let auto_fix = self.advance_auto_fix();
         let steps: Vec<(String, String, Step)> = self
             .goal_views()
             .iter()
             .filter(|v| v.goal.is_open())
             .filter_map(|v| Some((v.goal.id.clone(), v.goal.title.clone(), self.step_of(v)?)))
             .collect();
-        let mut out = GoalAdvance::default();
+        let mut out = GoalAdvance { auto_fix, ..GoalAdvance::default() };
         for (id, title, step) in steps {
             match step {
                 Step::Delivered { task_id, report } => {

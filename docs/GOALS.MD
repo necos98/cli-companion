@@ -1,6 +1,6 @@
 # Goal (proposta di design)
 
-> **Stato: in corso.** Le tappe T1, T2, T3, T4, T5 e T6 sono consegnate (vedi "Tappe"); il resto (T7 e T8) non è implementato. Descrive
+> **Stato: in corso.** Le tappe T1, T2, T3, T4, T5, T6 e T7 sono consegnate (vedi "Tappe"); il resto (T8) non è implementato. Descrive
 > come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
 > una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
 
@@ -410,7 +410,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia — **consegnata** | T2 |
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` — **consegnata** | T3, T4 |
 | T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |
-| T7 | Correzione automatica con tetto di giri | T3, T4 |
+| T7 | Correzione automatica con tetto di giri — **consegnata** | T3, T4 |
 | T8 | Follow-up alla chiusura | T3 |
 
 Fra T2 e T4 un goal si chiudeva da solo quando tutti i suoi task erano `done` (regola provvisoria): con T5 è
@@ -464,6 +464,21 @@ Note sulla consegna di T5 (il contratto è in BOARD.MD, "Goal" e "Consegna del g
   `ready` con `deliver` in `waiting` e il pulsante nel dettaglio mostra l'errore;
 - `proposal_decide` accetta `auto_deliver` solo per una proposta che crea un goal **nuovo** ("auto_deliver applies
   only to a proposal that creates a new goal"); per un goal esistente si cambia nel dettaglio.
+
+Note sulla consegna di T7 (il contratto è in BOARD.MD, "Correzione automatica del goal"):
+
+- la decisione è `board::auto_fix_decision` (`Manual` | `RoundLimit` | `Hold(motivo)` | `Accept`), pura; l'accettazione
+  la esegue l'effetto `AutoFix` con `proposal_decide_with` e `Acceptance::AUTOMATIC`, lo stesso percorso del pulsante;
+- il motivo per cui una correzione ammissibile per numero di giri resta pendente è nella proposta (`auto_fix_hold`,
+  scritto al publish; `invalid` dopo una validazione fallita, che l'app non ritenta);
+- il goal guadagna `auto_rounds`, i giri accettati dall'app: il dettaglio ne ricava "accettato in automatico" per giro;
+- con `max_rounds: 0` una correzione pendente resta `proposal` in `waiting` (come prima); `round_limit` compare solo con
+  la correzione automatica accesa e i giri finiti, al posto di `proposal`;
+- `proposal_decide` accetta `auto_fix` solo per una proposta che crea un goal **nuovo**; "no" (0) su un'altra proposta
+  non è un errore e non cambia nulla;
+- alzare i giri dal dettaglio fa partire una correzione ferma al tetto: è una scelta dell'utente;
+- i "repository già usati dal goal" sono quelli dei suoi task (chiave `repo_key`), non solo quelli con un branch: così
+  vale anche in una cartella senza git.
 
 ## 17. Punti aperti
 

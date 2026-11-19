@@ -249,6 +249,10 @@ impl AutomationState {
                     let (st, h) = (self.clone(), host.clone());
                     host.defer(Duration::ZERO, Box::new(move || boards::run_auto_deliver(&st, &h, &ws_id, &goal_id)));
                 }
+                Effect::AutoFix { ws_id, proposal_id } => {
+                    let (st, h) = (self.clone(), host.clone());
+                    host.defer(Duration::ZERO, Box::new(move || boards::run_auto_fix(&st, &h, &ws_id, &proposal_id)));
+                }
                 Effect::Archive { ws_id, tasks, goals } => {
                     let tasks = archive_or_keep(&ws_id, "task", tasks, |t| &t.id, |t| host.archive_tasks(&ws_id, t));
                     let goals = archive_or_keep(&ws_id, "goal", goals, |g| &g.id, |g| host.archive_goals(&ws_id, g));

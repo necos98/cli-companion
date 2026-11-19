@@ -36,9 +36,11 @@ impl Registry {
     }
 
     /// Cio' che l'avanzamento dei goal chiede dopo `publish_board`: la notifica di
-    /// ogni goal consegnato e la consegna automatica dei goal pronti, una sola
-    /// per goal finche' non e' finita (`auto_delivering`).
+    /// ogni goal consegnato, la consegna automatica dei goal pronti, una sola
+    /// per goal finche' non e' finita (`auto_delivering`), e l'accettazione
+    /// automatica delle correzioni (`queue_auto_fix`).
     pub(in crate::automation) fn apply_advance(&mut self, ws: &str, advance: GoalAdvance) {
+        self.queue_auto_fix(ws, advance.auto_fix);
         for delivered in advance.delivered {
             self.notify_delivered(ws, delivered);
         }

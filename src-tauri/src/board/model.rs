@@ -4,7 +4,9 @@
 //! `lifecycle` e `scheduler`.
 
 use super::record::TaskRecord;
-use super::{E2eRun, Goal, GoalSpec, ProposalGoal, SettingsProposal, TaskKind, TaskQuestion, TaskSpec, TaskState};
+use super::{
+    AutoFixHold, E2eRun, Goal, GoalSpec, ProposalGoal, SettingsProposal, TaskKind, TaskQuestion, TaskSpec, TaskState,
+};
 use crate::agents::Effort;
 use crate::bots::SkillRef;
 use serde::{Deserialize, Serialize};
@@ -161,6 +163,11 @@ pub struct Proposal {
     pub goal_id: Option<String>,
     pub created_at: i64,
     pub tasks: Vec<TaskSpec>,
+    /// Correzione che l'app non accetta da sola pur avendo giri automatici: il
+    /// motivo, scritto dalla board al publish (o dopo una validazione fallita).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub auto_fix_hold: Option<AutoFixHold>,
 }
 
 impl Proposal {

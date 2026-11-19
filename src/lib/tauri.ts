@@ -508,9 +508,21 @@ export const api = {
   taskMove: (workspaceId: string, taskId: string, beforeId?: string | null) =>
     invoke<BoardView>("task_move", { workspaceId, taskId, beforeId: beforeId ?? null }),
 
-  /** Accetta o scarta una proposta di Task Intake. */
-  proposalDecide: (workspaceId: string, proposalId: string, accept: boolean, autoDeliver: boolean | null) =>
-    invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept, autoDeliver }),
+  /**
+   * Accetta o scarta una proposta di Task Intake. `autoDeliver` e `autoFix` (giri di correzione automatica, 0..=3)
+   * sono le scelte dell'utente per il goal nuovo che la proposta crea; null altrimenti.
+   */
+  proposalDecide: (
+    workspaceId: string,
+    proposalId: string,
+    accept: boolean,
+    autoDeliver: boolean | null,
+    autoFix: number | null,
+  ) => invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept, autoDeliver, autoFix }),
+
+  /** Giri di correzione automatica di un goal aperto (0..=3). */
+  goalSetAutoFix: (workspaceId: string, goalId: string, maxRounds: number) =>
+    invoke<BoardView>("goal_set_auto_fix", { workspaceId, goalId, maxRounds }),
 
   /** "Consegna" / "Consegna comunque": crea il task di consegna del goal pronto. */
   goalDeliver: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_deliver", { workspaceId, goalId }),

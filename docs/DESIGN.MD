@@ -287,6 +287,11 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
    sul branch del goal per ogni repository da consegnare; senza commit il task si chiude senza worker. A `done`
    `Board::advance_goals` chiude il goal `delivered` e notifica; `Effect::DeliveryCleanup` toglie i worktree e cancella i
    branch locali del goal dopo la chiusura del tab. Contratto in BOARD.MD, "Consegna del goal".
+9. **Correzione automatica.** Con `auto_fix.max_rounds > 0` (scelto solo dall'utente) `Board::advance_goals` segnala le
+   proposte di correzione ammissibili entro il tetto dei giri (`auto_fix_decision`, pura); l'effetto `Effect::AutoFix`,
+   fuori dal lock, le accetta con `proposal_decide_with` e `Acceptance::AUTOMATIC`, lo stesso percorso del pulsante.
+   Una validazione fallita lascia la proposta pendente con il motivo. Contratto in BOARD.MD, "Correzione automatica del
+   goal".
 
 ### Persistenza e migrazioni
 
@@ -773,7 +778,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `state.rs` | `TaskState`: `Queued`, `Running(Run)` con fase `Preparing` (l'app prepara worktree e setup, nessun worker) o `Live` (il tab del worker e la sua attività), `Done(Finished)`, `Failed { finished, cause }` |
 | `lifecycle.rs`, `lifecycle/` | **l'unico posto che scrive lo stato del task**: `TaskEvent` applicato con `Task::apply`; `actions.rs` ha la tabella `permits(stato, operazione)` e `TaskAction`; `ops.rs` i metodi di `Board` (ferma, riprova, segna come fatto, archiviazione del workspace) |
 | `queue.rs`, `cascade.rs` | specifiche, proposte (accetta/scarta, con il loro goal), modifica, riordino, eliminazione anche a cascata (indice delle dipendenze inverse) |
-| `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", scrittura della chiusura), `phase.rs` (`GoalView`: fase, attesa e `last_review` derivate, pure), `advance.rs` (`Board::advance_goals`: chiusure automatiche e consegne da avviare, al publish), `delivery.rs` + `delivery/task.rs` (`auto_deliver`, `deliver_bot`, `GoalReport`, `set_goal_delivery`, `create_deliver_task`), `archive.rs` (goal chiusi oltre il tetto) |
+| `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", scrittura della chiusura), `phase.rs` (`GoalView`: fase, attesa e `last_review` derivate, pure), `advance.rs` (`Board::advance_goals`: chiusure automatiche e consegne da avviare, al publish), `delivery.rs` + `delivery/task.rs` (`auto_deliver`, `deliver_bot`, `GoalReport`, `set_goal_delivery`, `create_deliver_task`), `auto_fix.rs` (`AutoFix`, `auto_fix_decision`, `AutoFixHold`, `Acceptance`, `set_goal_auto_fix`: correzione automatica con tetto di giri), `archive.rs` (goal chiusi oltre il tetto) |
 | `spec.rs` | `TaskSpec`/`TaskPatch`, id (anche generati dal titolo), repository, grafo delle dipendenze, parsing di proposte e limiti |
 | `goal/branches.rs` | branch del goal (`GoalBranch`, `goal_branch_name`, `Goal.branches` ripulito al caricamento, registrazione e "Elimina branch" lato board); test in `goal/branches/tests.rs` |
 | `scheduler.rs`, `scheduler/tests.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura); i task di un goal in una cartella git non occupano il repository (`Task::runs_in_own_worktree`) |
@@ -806,7 +811,8 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
   pubblicazione, prima della vista e dell'archivio: chiude `delivered` il goal con il task di consegna `done` (con il
   `report`) o pronto senza branch, `abandoned` quello senza task, e restituisce un `GoalAdvance` (`delivered`: le consegne
   da notificare; `auto_deliver`: i goal la cui consegna parte da sola, che la board non crea perché servono i Bot letti
-  fuori dal lock). Il lavoro arriva sulla base solo con la consegna. Contratto in BOARD.MD, "Goal" e "Consegna del goal"; progetto in GOALS.MD.
+  fuori dal lock; `auto_fix`: le proposte di correzione che l'app accetta da sola, perché l'accettazione verifica i
+  repository con git). Il lavoro arriva sulla base solo con la consegna. Contratto in BOARD.MD, "Goal" e "Consegna del goal"; progetto in GOALS.MD.
 
 ### `automation/` — Task Manager: coda, scheduler e worker
 
@@ -839,7 +845,7 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   `worktrees/start.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn); `start/goal.rs`: avvio di un task
   di un goal (creazione di `goal/<id>` e worktree da quel branch, sempre), `start/setup.rs`: hook del worktree appena creato.
   I test del branch del goal sono in `tests/goal_branch.rs`.
-  `worktrees/cleanup.rs`: pulizia a consegna avvenuta. Consegna del goal: `deliver.rs` (`get_task` e RPC del `deliverer`, `DeliverTarget`: i repository da consegnare calcolati all'avvio), `boards/delivery.rs` (creazione del task di consegna, `goal_deliver`, `goal_set_delivery`, consegna automatica, notifica "Goal consegnato", chiusura senza worker), `worktrees/start/deliver.rs` (avvio: commit oltre la base, worktree sul branch del goal), `worktrees/delivery_cleanup.rs` (`DeliveryCleanup`). `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
+  `worktrees/cleanup.rs`: pulizia a consegna avvenuta. Consegna del goal: `deliver.rs` (`get_task` e RPC del `deliverer`, `DeliverTarget`: i repository da consegnare calcolati all'avvio), `boards/delivery.rs` (creazione del task di consegna, `goal_deliver`, `goal_set_delivery`, consegna automatica, notifica "Goal consegnato", chiusura senza worker), `boards/auto_fix.rs` (accettazione automatica delle correzioni, `goal_set_auto_fix`), `worktrees/start/deliver.rs` (avvio: commit oltre la base, worktree sul branch del goal), `worktrees/delivery_cleanup.rs` (`DeliveryCleanup`). `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
   sempre tramite `process.rs`), rilevamento dei repository, file di esclusione.
   `worktrees/reconcile.rs`: riallineamento delle worktree con le board (task `done` rimasti,
   worktree `task/*` orfane) all'avvio e ogni 5 minuti, dal tick dello scheduler. `hooks.rs`: setup e pulizia per repository (`RepoConfig`), più lettura e

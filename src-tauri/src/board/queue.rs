@@ -4,9 +4,9 @@
 
 use super::agent::{check_bot_kind, resolve_spec, SpecContext};
 use super::{
-    check_plan_spec, check_review_deps, parse_spec, permits, valid_id, validate_graph, Board, LifecycleError, Op,
-    Proposal, ProposalGoal, ProposalInput, Task, TaskAction, TaskSpec, TaskStatus, MAX_PENDING_PROPOSALS,
-    MAX_TASKS_PER_BOARD,
+    check_plan_spec, check_review_deps, parse_spec, permits, valid_id, validate_graph, Acceptance, Board,
+    LifecycleError, Op, Proposal, ProposalGoal, ProposalInput, Task, TaskAction, TaskSpec, TaskStatus,
+    MAX_PENDING_PROPOSALS, MAX_TASKS_PER_BOARD,
 };
 use crate::validate::clip_chars;
 use serde_json::Value;
@@ -165,6 +165,7 @@ impl Board {
             goal_id,
             created_at: now,
             tasks: specs,
+            auto_fix_hold: None,
         });
         self.updated_at = now;
         Ok(())
@@ -179,23 +180,22 @@ impl Board {
     /// nuovo; una correzione fa avanzare il giro). Se la validazione fallisce
     /// la proposta resta pendente.
     pub fn accept_proposal(&mut self, id: &str, ctx: SpecContext<'_>, now: i64) -> Result<Vec<String>, String> {
-        self.accept_proposal_with(id, None, ctx, now)
+        self.accept_proposal_with(id, Acceptance::default(), ctx, now)
     }
 
-    /// Come `accept_proposal`; `auto_deliver` e' la scelta dell'utente per il goal
-    /// NUOVO della proposta. `Some(true)` con una proposta che non crea un goal
-    /// e' un errore (e la proposta resta pendente).
+    /// Come `accept_proposal`, con `acceptance`: le scelte dell'utente per il goal
+    /// NUOVO della proposta (consegna e correzione automatiche) o l'accettazione
+    /// automatica di una correzione. Scelte che non valgono per la proposta sono
+    /// un errore (e la proposta resta pendente), vedi `check_acceptance`.
     pub fn accept_proposal_with(
         &mut self,
         id: &str,
-        auto_deliver: Option<bool>,
+        acceptance: Acceptance,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<Vec<String>, String> {
         let proposal = self.proposal(id)?;
-        if auto_deliver == Some(true) && proposal.goal.is_none() {
-            return Err("auto_deliver applies only to a proposal that creates a new goal".to_string());
-        }
+        self.check_acceptance(proposal, acceptance)?;
         let (goal, correction) = (proposal.target_goal(), proposal.is_correction());
         let specs = proposal.tasks.clone();
         if let Some(g) = &goal {
@@ -203,10 +203,8 @@ impl Board {
         }
         let specs = self.check_specs(&specs, &HashSet::new(), goal.as_ref().map(ProposalGoal::id), ctx)?;
         let membership = goal.map(|g| self.enter_goal(g, correction, now)).transpose()?;
-        if auto_deliver == Some(true) {
-            if let Some(goal) = membership.as_ref().and_then(|(g, _)| self.goal_mut(g)) {
-                goal.auto_deliver = true;
-            }
+        if let Some((goal, round)) = &membership {
+            self.apply_acceptance(goal, *round, specs.len(), acceptance, now);
         }
         self.proposals.retain(|p| p.id != id);
         Ok(self.push_specs(specs, membership.as_ref().map(|(g, round)| (g.as_str(), *round)), now))

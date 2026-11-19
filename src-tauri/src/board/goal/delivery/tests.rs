@@ -4,11 +4,16 @@
 use super::super::tests::{accept, board_with_goal, finish, in_goal, new_goal, review, set_status, spec, view, CTX};
 use super::*;
 use crate::board::{
-    parse_spec, DeliveredGoal, GoalAdvance, GoalBranch, GoalOutcome, GoalPhase, GoalReview, GoalWaiting, TaskReport,
-    TaskStatus, Verdict,
+    parse_spec, Acceptance, DeliveredGoal, GoalAdvance, GoalBranch, GoalOutcome, GoalPhase, GoalReview, GoalWaiting,
+    TaskReport, TaskStatus, Verdict,
 };
 use crate::bots::{default_agent_bots, AgentBot};
 use serde_json::json;
+
+/// L'accettazione dell'utente con la sua scelta sulla consegna automatica.
+fn delivering(auto_deliver: Option<bool>) -> Acceptance {
+    Acceptance { auto_deliver, ..Acceptance::default() }
+}
 
 fn bots() -> Vec<AgentBot> {
     default_agent_bots()
@@ -259,10 +264,10 @@ fn a_new_goal_takes_the_auto_deliver_choice_of_the_user_at_acceptance() {
     let propose = |b: &mut Board, id: &str, input| b.add_proposal(id.into(), "intake", None, input, CTX, 5).unwrap();
     let mut b = Board::new("ws-1");
     propose(&mut b, "p-1", new_goal("g", vec![spec("a", &[])]));
-    b.accept_proposal_with("p-1", Some(true), CTX, 6).unwrap();
+    b.accept_proposal_with("p-1", delivering(Some(true)), CTX, 6).unwrap();
     assert!(b.goal("g").unwrap().auto_deliver());
     propose(&mut b, "p-2", new_goal("h", vec![spec("b", &[])]));
-    b.accept_proposal_with("p-2", Some(false), CTX, 7).unwrap();
+    b.accept_proposal_with("p-2", delivering(Some(false)), CTX, 7).unwrap();
     assert!(!b.goal("h").unwrap().auto_deliver());
     propose(&mut b, "p-3", new_goal("k", vec![spec("c", &[])]));
     b.accept_proposal("p-3", CTX, 8).unwrap();
@@ -270,10 +275,10 @@ fn a_new_goal_takes_the_auto_deliver_choice_of_the_user_at_acceptance() {
     // Senza un goal nuovo, `true` e' un errore e la proposta resta.
     for input in [vec![spec("x", &[])].into(), in_goal("g", vec![spec("y", &[])])] {
         propose(&mut b, "p-4", input);
-        let err = b.accept_proposal_with("p-4", Some(true), CTX, 9).unwrap_err();
+        let err = b.accept_proposal_with("p-4", delivering(Some(true)), CTX, 9).unwrap_err();
         assert_eq!(err, "auto_deliver applies only to a proposal that creates a new goal");
         assert!(b.proposal("p-4").is_ok());
-        b.accept_proposal_with("p-4", Some(false), CTX, 9).unwrap();
+        b.accept_proposal_with("p-4", delivering(Some(false)), CTX, 9).unwrap();
     }
 }
 
@@ -351,7 +356,7 @@ fn a_ready_goal_that_delivers_by_itself_is_reported_and_left_untouched() {
     with_bots(|ctx| b.set_goal_delivery("g", Some(true), None, ctx, 40)).unwrap();
     let before = b.clone();
     let advance = b.advance_goals(41);
-    assert_eq!(advance, GoalAdvance { delivered: Vec::new(), auto_deliver: vec!["g".into()] });
+    assert_eq!(advance, GoalAdvance { auto_deliver: vec!["g".into()], ..GoalAdvance::default() });
     assert_eq!(b, before, "the board does not create the task here: it needs the bots");
     // Ripetuto, lo riporta ancora: evitare il doppio avvio e' di chi chiama.
     assert_eq!(b.advance_goals(42).auto_deliver, ["g"]);
@@ -368,7 +373,7 @@ fn a_done_delivery_closes_the_goal_with_the_merged_report_and_announces_it() {
     finish_delivery(&mut b, &id, 45, delivery_report());
     let advance = b.advance_goals(46);
     let delivered = DeliveredGoal { goal_id: "g".into(), title: "Goal g".into(), deliver_task_id: id.clone() };
-    assert_eq!(advance, GoalAdvance { delivered: vec![delivered], auto_deliver: Vec::new() });
+    assert_eq!(advance, GoalAdvance { delivered: vec![delivered], ..GoalAdvance::default() });
     let g = b.goal("g").unwrap();
     assert_eq!(
         (g.closed_at(), g.outcome(), g.review(), b.updated_at),

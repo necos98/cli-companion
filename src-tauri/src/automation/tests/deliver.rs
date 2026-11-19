@@ -5,7 +5,7 @@
 //! regola su `rev-list --count` dice quanti commit ha oltre la base.
 
 use super::*;
-use crate::board::{GoalOutcome, GoalPhase, GoalReview, GoalWaiting, TaskKind};
+use crate::board::{Acceptance, GoalOutcome, GoalPhase, GoalReview, GoalWaiting, TaskKind};
 
 pub(super) const GOAL_WT: &str = "C:\\p\\.worktrees\\deliver-g";
 
@@ -20,11 +20,16 @@ pub(super) fn review_spec(id: &str, deps: &[&str]) -> Value {
     s
 }
 
+/// L'accettazione dell'utente con la sua scelta sulla consegna automatica.
+pub(super) fn delivering(auto_deliver: Option<bool>) -> Acceptance {
+    Acceptance { auto_deliver, ..Acceptance::default() }
+}
+
 /// Propone dall'Intake un goal nuovo con i task `tasks` e lo accetta, con la scelta
 /// dell'utente sulla consegna automatica.
 pub(super) fn accept_goal(st: &AutomationState, h: &FakeHost, goal: &str, tasks: Vec<Value>, auto: Option<bool>) {
     let r = call(st, h, INTAKE, "propose_tasks", json!({ "tasks": tasks, "goal": goal_json(goal) })).unwrap();
-    boards::proposal_decide_with(st, h, "ws-1", r["proposal"].as_str().unwrap(), true, auto).unwrap();
+    boards::proposal_decide_with(st, h, "ws-1", r["proposal"].as_str().unwrap(), true, delivering(auto)).unwrap();
 }
 
 /// Un host in cui `goal/<goal>` esiste e ha `commits` commit oltre la base.
@@ -221,7 +226,7 @@ fn a_failed_automatic_creation_leaves_the_goal_ready_and_can_be_done_by_hand() {
 #[test]
 fn an_automatic_delivery_is_asked_once_while_it_is_in_flight() {
     let (st, _h) = ready_goal(DeliveryMode::Commit, 2, None);
-    let advance = || crate::board::GoalAdvance { delivered: Vec::new(), auto_deliver: vec!["g".to_string()] };
+    let advance = || crate::board::GoalAdvance { auto_deliver: vec!["g".to_string()], ..Default::default() };
     let mut r = st.registry();
     let auto =
         |r: &mut Registry| r.take_effects().into_iter().filter(|e| matches!(e, Effect::AutoDeliver { .. })).count();
@@ -289,7 +294,7 @@ fn auto_deliver_in_a_decision_needs_a_proposal_with_a_new_goal() {
     let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
     let r = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("loose", &[])] })).unwrap();
     let id = r["proposal"].as_str().unwrap();
-    let err = boards::proposal_decide_with(&st, &h, "ws-1", id, true, Some(true)).unwrap_err();
+    let err = boards::proposal_decide_with(&st, &h, "ws-1", id, true, delivering(Some(true))).unwrap_err();
     assert!(err.contains("new goal"), "{err}");
-    assert!(boards::proposal_decide_with(&st, &h, "ws-1", id, true, Some(false)).is_ok());
+    assert!(boards::proposal_decide_with(&st, &h, "ws-1", id, true, delivering(Some(false))).is_ok());
 }
