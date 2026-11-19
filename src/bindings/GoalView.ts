@@ -4,6 +4,7 @@ import type { GoalDecision } from "./GoalDecision";
 import type { GoalOutcome } from "./GoalOutcome";
 import type { GoalPhase } from "./GoalPhase";
 import type { GoalProgress } from "./GoalProgress";
+import type { GoalReport } from "./GoalReport";
 import type { GoalReview } from "./GoalReview";
 import type { GoalWaiting } from "./GoalWaiting";
 
@@ -15,6 +16,11 @@ export type GoalView = { phase: GoalPhase,
  * Vuoto = il goal procede da solo.
  */
 waiting: Array<GoalWaiting>, tasks: GoalProgress, 
+/**
+ * Verdetto dell'ultima review `done` del goal (`none` se non ce n'e'), anche
+ * a goal aperto: da qui l'interfaccia sceglie "Consegna" o "Consegna comunque".
+ */
+last_review: GoalReview, 
 /**
  * Stesso formato degli id dei task, unico fra i goal della board.
  */
@@ -38,6 +44,16 @@ decisions: Array<GoalDecision>,
  */
 branches: { [key in string]: GoalBranch }, 
 /**
+ * Il task di consegna si crea da solo quando il goal e' pronto (e l'ultima
+ * review non ha trovato problemi). Lo cambia solo l'utente, mai un tool.
+ */
+auto_deliver: boolean, 
+/**
+ * Il Bot del task di consegna; `None` = `DEFAULT_DELIVER_BOT`. Lo cambia solo
+ * l'utente, mai un tool.
+ */
+deliver_bot?: string, 
+/**
  * 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata.
  */
 round: number, created_at: number, 
@@ -52,4 +68,8 @@ outcome?: GoalOutcome,
 /**
  * Solo se chiuso.
  */
-review?: GoalReview, };
+review?: GoalReview, 
+/**
+ * Cosa e' stato consegnato: solo se chiuso `delivered` con un task di consegna.
+ */
+report?: GoalReport, };

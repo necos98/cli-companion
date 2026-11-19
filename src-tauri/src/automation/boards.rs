@@ -5,23 +5,25 @@
 //! worktree sono in `worktrees`; tipi, validazione e scheduler puri in
 //! `crate::board`. Il contratto e' `docs/BOARD.MD`.
 
-use super::worktrees::{CleanupTarget, FolderKinds, StartJob};
+use super::worktrees::{CleanupTarget, DeliveryCleanup, FolderKinds, StartJob};
 use super::*;
 use crate::board::{self, GoalView, ProposalInput, SchedCtx, SpecContext, Task, TaskSpec, TaskView};
 use serde_json::json;
 
 mod agents;
 mod commands;
+mod delivery;
 mod goal_branches;
 mod lifecycle;
 mod session;
 
 pub(super) use agents::ReadinessLookup;
 pub(super) use commands::{
-    board_set, goal_add_note, goal_close, proposal_decide, task_action, task_create, task_move, task_update,
-    task_update_check, workspace_of,
+    board_set, goal_add_note, goal_close, proposal_decide, proposal_decide_with, task_action, task_create, task_move,
+    task_update, task_update_check, workspace_of,
 };
-pub(super) use goal_branches::goal_delete_branches;
+pub(super) use delivery::{goal_deliver, goal_set_delivery, run_auto_deliver};
+pub(super) use goal_branches::{delete_branch, goal_delete_branches};
 #[cfg(test)]
 pub(super) use lifecycle::START_TIMEOUT_MS;
 pub(super) use session::{
@@ -145,19 +147,17 @@ impl Registry {
         ws: &str,
         id: &str,
         accept: bool,
+        auto_deliver: Option<bool>,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<(), String> {
-        self.edit(
-            ws,
-            |b| {
-                if accept {
-                    b.accept_proposal(id, ctx, now).map(|_| ())
-                } else {
-                    b.discard_proposal(id, now)
-                }
-            },
-        )
+        self.edit(ws, |b| {
+            if accept {
+                b.accept_proposal_with(id, auto_deliver, ctx, now).map(|_| ())
+            } else {
+                b.discard_proposal(id, now)
+            }
+        })
     }
 
     pub fn update_task(
@@ -187,7 +187,7 @@ impl Registry {
     /// Toglie un task; se aveva un worktree lo fa ripulire.
     pub fn delete_task(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.delete_task(id, now))?;
-        self.queue_cleanups(ws, vec![removed], None);
+        self.queue_cleanups(ws, vec![removed], None, None);
         Ok(())
     }
 
@@ -195,7 +195,7 @@ impl Registry {
     /// scarta le sue proposte e lo chiude; fa ripulire i worktree.
     pub fn close_goal(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.close_goal(id, now))?;
-        self.queue_cleanups(ws, removed, None);
+        self.queue_cleanups(ws, removed, None, None);
         Ok(())
     }
 
@@ -207,20 +207,34 @@ impl Registry {
     /// Toglie un task e quelli che ne dipendono (tutto o niente); fa ripulire i worktree.
     pub fn delete_task_cascade(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.delete_with_dependents(id, now))?;
-        self.queue_cleanups(ws, removed, None);
+        self.queue_cleanups(ws, removed, None, None);
         Ok(())
     }
 
     /// Mette in coda la pulizia del worktree di ogni task tolto. `workspace`:
-    /// copia del workspace quando non e' piu' nello store.
-    fn queue_cleanups(&mut self, ws: &str, removed: Vec<Task>, workspace: Option<&Workspace>) {
-        for target in removed.into_iter().filter_map(|t| CleanupTarget::for_task(ws, t)) {
-            let target = match workspace {
-                Some(w) => target.with_workspace(w),
-                None => target,
-            };
-            self.effects.push(Effect::Cleanup(Box::new(target)));
+    /// copia del workspace quando non e' piu' nello store. `gone`: la board, se
+    /// non e' piu' nel registro (serve ai repository del goal di una consegna).
+    /// Di un task di consegna si rimuovono i worktree e si conservano i branch del
+    /// goal: non e' stato consegnato.
+    fn queue_cleanups(&mut self, ws: &str, removed: Vec<Task>, workspace: Option<&Workspace>, gone: Option<&Board>) {
+        let board = gone.or_else(|| self.boards.get(ws));
+        let mut effects = Vec::new();
+        for task in removed {
+            if task.worktree.is_some() {
+                if let Some(cleanup) = DeliveryCleanup::of_task(ws, &task, board, false, workspace) {
+                    effects.push(Effect::DeliveryCleanup(Box::new(cleanup)));
+                    continue;
+                }
+            }
+            if let Some(target) = CleanupTarget::for_task(ws, task) {
+                let target = match workspace {
+                    Some(w) => target.with_workspace(w),
+                    None => target,
+                };
+                effects.push(Effect::Cleanup(Box::new(target)));
+            }
         }
+        self.effects.extend(effects);
     }
 
     pub fn retry_task(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
@@ -296,7 +310,7 @@ impl Registry {
             self.dirty.retain(|d| *d != ws.id);
             self.next_rev += 1;
             self.effects.push(Effect::DeleteBoard(ws.id.clone(), self.next_rev));
-            self.queue_cleanups(&ws.id, board.tasks, Some(ws));
+            self.queue_cleanups(&ws.id, board.tasks.clone(), Some(ws), Some(&board));
         }
     }
 
@@ -346,7 +360,11 @@ impl Registry {
             if let Some(task) = b.task(&id).cloned() {
                 let key = board::repo_key(task.repo.as_deref());
                 let goal_branch = task.goal().and_then(|g| b.goal_branch(g, &key)).cloned();
-                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task, goal_branch };
+                let goal_branches = match task.goal().and_then(|g| b.goal(g)) {
+                    Some(goal) if task.kind == TaskKind::Deliver => goal.branches.clone(),
+                    _ => Default::default(),
+                };
+                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task, goal_branch, goal_branches };
                 self.effects.push(Effect::StartTask(Box::new(job)));
             }
         }
@@ -363,8 +381,9 @@ impl Registry {
         };
         b.rev = self.next_rev;
         b.updated_at = now;
-        // Chiusura provvisoria dei goal finiti, prima della vista e dell'archivio.
-        b.close_finished_goals(now);
+        // Chiusura dei goal finiti, prima della vista e dell'archivio; le consegne da
+        // annunciare e da avviare sono effetti (vedi `apply_advance`).
+        let advance = b.advance_goals(now);
         // L'archivio prima della board salvata senza quei task e goal: se l'app
         // cade in mezzo restano nel file della board (e nell'archivio, due volte).
         let archived = b.take_archivable();
@@ -375,6 +394,7 @@ impl Registry {
             self.effects.push(Effect::Archive { ws_id: ws_id.to_string(), tasks: archived, goals: archived_goals });
         }
         self.effects.push(published);
+        self.apply_advance(ws_id, advance);
     }
 
     /// L'archivio ha rifiutato questi task e goal, gia' tolti dalla board: li

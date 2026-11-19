@@ -388,6 +388,7 @@ fn closed_workers_are_pruned_beyond_the_cap() {
             goal_branch: None,
             root_plan: None,
             free: false,
+            deliver: Vec::new(),
         };
         let new = NewWorker {
             workspace_id: "w".into(),

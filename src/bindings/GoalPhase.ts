@@ -3,4 +3,4 @@
 /**
  * Fase di un goal, lineare.
  */
-export type GoalPhase = "executing" | "verifying" | "deciding" | "ready" | "closed";
+export type GoalPhase = "executing" | "verifying" | "deciding" | "ready" | "delivering" | "closed";

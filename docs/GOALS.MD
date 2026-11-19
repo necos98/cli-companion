@@ -1,6 +1,6 @@
 # Goal (proposta di design)
 
-> **Stato: in corso.** Le tappe T1, T2, T3, T4 e T6 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
+> **Stato: in corso.** Le tappe T1, T2, T3, T4, T5 e T6 sono consegnate (vedi "Tappe"); il resto (T7 e T8) non è implementato. Descrive
 > come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
 > una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
 
@@ -345,11 +345,11 @@ Si copiano perché i task verranno archiviati. Dall'UI ogni voce si può **scart
 
 ## 12. Tool MCP
 
-| Metodo | `worker` | `reviewer` | `planner` | `session` |
-|---|:-:|:-:|:-:|:-:|
-| `list_goals` | no | no | sì | sì |
-| `get_goal` | sì (solo `deliver`) | sì | sì | sì |
-| `get_task_details` | sì (solo `deliver`) | sì | sì | sì |
+| Metodo | `worker` | `reviewer` | `planner` | `deliverer` | `session` |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `list_goals` | no | no | sì | no | sì |
+| `get_goal` | no | sì | sì | sì | sì |
+| `get_task_details` | no | sì | sì | sì | sì |
 
 - `list_goals { open_only? }` → righe `{ id, title, phase, round, waiting, tasks: { done, total } }`.
 - `get_goal { id }` → il goal con `phase`, `waiting`, `branches` e i suoi task (`id`, `title`, `status`, `kind`,
@@ -408,21 +408,22 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T2 | Goal: modello, `propose_tasks` con `goal`/`goal_id`, eredità dalle review, fase, chiusura a mano, archivio, `list_goals`/`get_goal`, skill `task-intake` — **consegnata** | — |
 | T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal — **consegnata** | T1, T2 |
 | T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia — **consegnata** | T2 |
-| T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` | T3, T4 |
+| T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` — **consegnata** | T3, T4 |
 | T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |
 | T7 | Correzione automatica con tetto di giri | T3, T4 |
 | T8 | Follow-up alla chiusura | T3 |
 
-Fra T2 e T5 un goal si chiude solo a mano, o da solo quando tutti i suoi task sono `done` (regola provvisoria,
-sostituita in T5 dalla chiusura alla consegna). T4 e T5 conviene rilasciarle insieme: con il branch ma senza la
-consegna, il lotto resterebbe sul branch del goal.
+Fra T2 e T4 un goal si chiudeva da solo quando tutti i suoi task erano `done` (regola provvisoria): con T5 è
+sostituita dalla chiusura alla consegna (`Board::advance_goals`, vedi "Note sulla consegna di T5"). T4 e T5 conviene
+rilasciarle insieme: con il branch ma senza la consegna, il lotto resterebbe sul branch del goal.
 
 Note sulla consegna di T2 (il contratto è in BOARD.MD, "Goal"):
 
 - lo schema del file della board passa alla versione 3 (il passo `v2_to_v3` aggiunge `goals: []`; la "v1 → v2"
   di "Migrazione" è il primo passo dei goal nella numerazione dei goal, non in quella del file);
 - nella fase, una review del goal `failed` lascia il goal in `verifying` (con `failed` in `waiting`), non in
-  `ready`; `ready` esiste nel tipo ma in T2 non dura, perché la chiusura provvisoria scatta subito;
+  `ready`; `ready` esiste nel tipo ma in T2 non durava, perché la chiusura provvisoria scattava subito (con T5 dura
+  finché la consegna non parte);
 - un goal rimasto senza task (tutti eliminati) e senza proposte si chiude da solo `abandoned`;
 - la proposta di un worker (reviewer o planner) non può indicare `goal` né `goal_id`: il goal del reviewer lo
   eredita l'app, i task `plan` non ne hanno;
@@ -432,17 +433,46 @@ Note sulla consegna di T4 (il contratto è in BOARD.MD, "Branch del goal"):
 
 - la chiave di `goal.branches` per la root del workspace è `"."` (`repo_key`), per un repository la sua cartella
   relativa alla root;
-- finché non c'è T5 la chiusura provvisoria resta com'è, ma il lavoro del goal **resta su `goal/<goal-id>`**: nulla
-  arriva sulla base. "Chiudi goal" non tocca i branch; "Elimina branch" (solo goal abbandonato) li cancella;
+- finché non c'era T5 il lavoro del goal **restava su `goal/<goal-id>`** e nulla arrivava sulla base; ora ce lo porta
+  la consegna. "Chiudi goal" non tocca i branch; "Elimina branch" (solo goal abbandonato) li cancella;
 - il riallineamento delle worktree riconosce solo i worktree `task/<id>` (esiste solo con la consegna a worktree):
   un branch `goal/*` non è mai orfano e non si cancella da lì.
+
+Note sulla consegna di T5 (il contratto è in BOARD.MD, "Goal" e "Consegna del goal"):
+
+- il worker di un task `deliver` ha un ruolo suo, `deliverer` (`Role::Deliverer`, `automation/roles.rs`): `get_task`,
+  `complete_task`, `run_e2e`/`get_e2e_result`, `ask_user` (con l'HUB), `get_goal` e `get_task_details` (in §12 la
+  colonna "worker, solo `deliver`" della proposta è diventata la colonna `deliverer`); niente proposte né altri tool. Il suo `get_task` aggiunge a
+  `goal` (come in "Passaggio di consegne") `goal_tasks`, i report dei task `work` e `review` del goal;
+- `GoalView` guadagna `last_review` (`passed` | `issues` | `none`, il verdetto dell'ultima review `done`, anche a goal
+  aperto): l'interfaccia ne ricava "Consegna" o "Consegna comunque". Il pulsante compare con `deliver` in `waiting`
+  **o** con il goal `ready`: così resta anche quando la creazione automatica fallisce;
+- il goal guadagna `auto_deliver` (default `false`), `deliver_bot` (omesso = `general`) e `report`
+  (`{ summary, commits, pr_urls }`, solo su un goal chiuso `delivered` da un task di consegna); li cambia solo
+  l'utente (`goal_set_delivery`, `proposal_decide`), nessun tool MCP;
+- il task ha id `deliver-<goal-id>` (con suffisso numerico se occupato) e titolo "Consegna: <titolo>", va in cima alla
+  coda e non ha dipendenze. Il repository principale è quello di un task `work` del goal con `e2e`, altrimenti la
+  root, altrimenti il primo dei branch; `e2e` è acceso se un `work` con `e2e` sta in quel repository;
+- il goal con un task di consegna non `done` (anche `failed`) è `delivering` e non accetta task nuovi;
+- consegna senza nulla da consegnare (nessun repository del goal ha commit oltre la base): il task si chiude `done`
+  senza worker, con un report dell'app, e il goal si chiude `delivered` con quel riepilogo;
+- un goal `ready` senza `branches` (cartella senza git, o task mai partiti in git) si chiude `delivered` senza
+  rapporto né notifica; `abandoned` resta per il goal rimasto senza task;
+- cancellati i branch locali `goal/<id>`, l'app li toglie da `Goal.branches` ("dimenticati"): "Elimina branch" non
+  li ritrova. Con più repository un branch che non si riesce a cancellare resta registrato e si segnala nella `note`;
+- se la creazione automatica fallisce (Bot spento o senza `work`) l'app lo scrive nel log e basta: il goal resta
+  `ready` con `deliver` in `waiting` e il pulsante nel dettaglio mostra l'errore;
+- `proposal_decide` accetta `auto_deliver` solo per una proposta che crea un goal **nuovo** ("auto_deliver applies
+  only to a proposal that creates a new goal"); per un goal esistente si cambia nel dettaglio.
 
 ## 17. Punti aperti
 
 1. `auto_fix.max_rounds` e `auto_deliver` hanno un valore di serie per workspace, o si scelgono sempre goal per
    goal?
 2. Il tetto di 3 giri automatici è giusto, o serve anche un tetto sul numero di task per giro?
-3. La consegna merita un Bot e una skill dedicati, o bastano le istruzioni del `kind` con General?
+3. ~~La consegna merita un Bot e una skill dedicati?~~ Deciso in T5: no. Bastano le istruzioni proprie del `kind`
+   `deliver` (`board/prompts/deliver_instructions.md`), eseguite da un Bot con `work` fra i `kinds`: General di serie,
+   cambiabile nel dettaglio del goal; nessun Bot dedicato e nessuna skill.
 4. In modalità `pr`, il branch del goal va pubblicato sul remoto durante il lavoro (visibilità, copia di
    sicurezza) o solo alla consegna?
 

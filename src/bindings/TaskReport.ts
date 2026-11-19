@@ -11,7 +11,15 @@ status: string, summary: string, commit?: string,
 /**
  * Link della PR (modalita' `pr`).
  */
-pr_url?: string, files_changed: Array<string>, tests: Array<TestRun>, follow_ups: Array<string>, diffstat?: string, 
+pr_url?: string, 
+/**
+ * Commit finali consegnati, uno per repository (solo task `deliver`).
+ */
+commits?: Array<string>, 
+/**
+ * Link delle PR, una per repository (solo task `deliver`).
+ */
+pr_urls?: Array<string>, files_changed: Array<string>, tests: Array<TestRun>, follow_ups: Array<string>, diffstat?: string, 
 /**
  * Esito di una revisione (solo task `review` completati).
  */

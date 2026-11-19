@@ -8,6 +8,7 @@ import AttentionCard from "./AttentionCard";
 import PanelFailedCard from "./PanelFailedCard";
 import PanelSection from "./PanelSection";
 import ProposalCard from "./ProposalCard";
+import ReadyGoalCard from "./ReadyGoalCard";
 import SettingsProposalCard from "./SettingsProposalCard";
 
 interface NeedsYouSectionProps {
@@ -21,7 +22,7 @@ interface NeedsYouSectionProps {
   onFocusTab: (tabId: string) => void;
 }
 
-/** Sezione "SERVE A TE" del pannello: proposte, domande, attenzione e falliti in un'unica lista. Assente se vuota. */
+/** Sezione "SERVE A TE" del pannello: proposte, goal pronti, domande, attenzione e falliti in un'unica lista. Assente se vuota. */
 export default function NeedsYouSection({
   workspaceId,
   board,
@@ -57,6 +58,8 @@ export default function NeedsYouSection({
             onWorkspace={workspaceUpdated}
           />
         );
+      case "deliver":
+        return <ReadyGoalCard workspaceId={workspaceId} goal={item.goal} label={item.label} onBoard={onBoard} />;
       case "attention": {
         const { task } = item;
         return (

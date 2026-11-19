@@ -240,6 +240,15 @@ impl AutomationState {
                     let (st, h) = (self.clone(), host.clone());
                     host.defer(CLEANUP_DELAY, Box::new(move || worktrees::run_cleanup(&st, &h, *target)));
                 }
+                Effect::DeliveryCleanup(cleanup) => {
+                    let (st, h) = (self.clone(), host.clone());
+                    let delay = if cleanup.immediate { Duration::ZERO } else { CLEANUP_DELAY };
+                    host.defer(delay, Box::new(move || worktrees::run_delivery_cleanup(&st, &h, *cleanup)));
+                }
+                Effect::AutoDeliver { ws_id, goal_id } => {
+                    let (st, h) = (self.clone(), host.clone());
+                    host.defer(Duration::ZERO, Box::new(move || boards::run_auto_deliver(&st, &h, &ws_id, &goal_id)));
+                }
                 Effect::Archive { ws_id, tasks, goals } => {
                     let tasks = archive_or_keep(&ws_id, "task", tasks, |t| &t.id, |t| host.archive_tasks(&ws_id, t));
                     let goals = archive_or_keep(&ws_id, "goal", goals, |g| &g.id, |g| host.archive_goals(&ws_id, g));

@@ -14,7 +14,7 @@
 //! MCP), `worker` (stati del worker e tabella degli hook), `persist` (busta e
 //! schema del file, riga dell'archivio), `legacy` (migrazioni dello schema),
 //! `recovery` (recupero dopo un riavvio), `archive` (task conclusi da archiviare),
-//! `review` e `plan` (regole dei task di revisione e di pianificazione),
+//! `review`, `plan` e `deliver` (regole dei task di revisione, pianificazione e consegna),
 //! `goal` (obiettivi: appartenenza dei task, fase, chiusura e archivio),
 //! `relocation` (task che impediscono di cambiare la cartella del workspace).
 
@@ -22,6 +22,7 @@ mod agent;
 mod agent_gate;
 mod archive;
 mod cascade;
+mod deliver;
 mod e2e;
 mod goal;
 mod handoff;
@@ -55,15 +56,16 @@ pub use agent::SpecContext;
 pub use agent_gate::{AgentGate, AgentUnavailableView};
 pub use archive::MAX_FINISHED_KEPT;
 pub use cascade::CascadeDelete;
+pub use deliver::{check_deliver_report, goal_task_entries, DELIVER_KIND_RESERVED};
 pub use e2e::{
     check_gate, strip_ansi, CodeFingerprint, E2eFailure, E2eOutcome, E2eRun, E2eStatus, E2eTotals, GateOutcome,
     E2E_ERROR_MAX, E2E_GATE_SKIPPED_NOTE, E2E_OUTPUT_TAIL_MAX,
 };
 pub use goal::{
-    goal_branch_name, parse_goal_id, parse_goal_spec, DecisionSource, Goal, GoalBranch, GoalDecision, GoalOutcome,
-    GoalPhase, GoalProgress, GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX,
-    DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX, GOAL_BRANCH_PREFIX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT,
-    MAX_OPEN_GOALS,
+    goal_branch_name, parse_goal_id, parse_goal_spec, DecisionSource, DeliveredGoal, Goal, GoalAdvance, GoalBranch,
+    GoalDecision, GoalOutcome, GoalPhase, GoalProgress, GoalReport, GoalReview, GoalSpec, GoalView, GoalWaiting,
+    ProposalGoal, DECISIONS_KEPT, DECISION_MAX, DEFAULT_DELIVER_BOT, DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX,
+    GOAL_BRANCH_PREFIX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT, MAX_OPEN_GOALS,
 };
 pub use handoff::Handoff;
 pub use lifecycle::{permits, LifecycleError, Op, Outcome, TaskAction, TaskEvent};
@@ -76,7 +78,7 @@ pub use persist::{archive_goal_line, archive_line, board_store};
 pub use plan::{check_kind_input, check_plan_report, check_plan_spec, PLAN_KIND_RESERVED};
 pub use question::{parse_question, TaskQuestion, ANSWER_MAX, OPTIONS_MAX, OPTION_MAX, QUESTIONS_KEPT, QUESTION_MAX};
 pub use relocation::{relocation_blockers, relocation_refusal};
-pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
+pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DELIVERED_MAX, DIFFSTAT_MAX};
 pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Verdict};
 pub use scheduler::{schedule, SchedCtx};
 pub use settings::{SettingsProposal, SettingsProposalView};

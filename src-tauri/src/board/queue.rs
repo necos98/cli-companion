@@ -121,7 +121,7 @@ impl Board {
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<String, String> {
-        let membership = goal.map(|g| self.open_goal(g).map(|g| (g.id.clone(), g.round()))).transpose()?;
+        let membership = goal.map(|g| self.joinable_goal(g).map(|g| (g.id.clone(), g.round()))).transpose()?;
         let resolved = self.check_specs(std::slice::from_ref(&spec), &self.pending_ids(None), goal, ctx)?;
         Ok(self.push_specs(resolved, membership.as_ref().map(|(id, round)| (id.as_str(), *round)), now).remove(0))
     }
@@ -179,7 +179,23 @@ impl Board {
     /// nuovo; una correzione fa avanzare il giro). Se la validazione fallisce
     /// la proposta resta pendente.
     pub fn accept_proposal(&mut self, id: &str, ctx: SpecContext<'_>, now: i64) -> Result<Vec<String>, String> {
+        self.accept_proposal_with(id, None, ctx, now)
+    }
+
+    /// Come `accept_proposal`; `auto_deliver` e' la scelta dell'utente per il goal
+    /// NUOVO della proposta. `Some(true)` con una proposta che non crea un goal
+    /// e' un errore (e la proposta resta pendente).
+    pub fn accept_proposal_with(
+        &mut self,
+        id: &str,
+        auto_deliver: Option<bool>,
+        ctx: SpecContext<'_>,
+        now: i64,
+    ) -> Result<Vec<String>, String> {
         let proposal = self.proposal(id)?;
+        if auto_deliver == Some(true) && proposal.goal.is_none() {
+            return Err("auto_deliver applies only to a proposal that creates a new goal".to_string());
+        }
         let (goal, correction) = (proposal.target_goal(), proposal.is_correction());
         let specs = proposal.tasks.clone();
         if let Some(g) = &goal {
@@ -187,6 +203,11 @@ impl Board {
         }
         let specs = self.check_specs(&specs, &HashSet::new(), goal.as_ref().map(ProposalGoal::id), ctx)?;
         let membership = goal.map(|g| self.enter_goal(g, correction, now)).transpose()?;
+        if auto_deliver == Some(true) {
+            if let Some(goal) = membership.as_ref().and_then(|(g, _)| self.goal_mut(g)) {
+                goal.auto_deliver = true;
+            }
+        }
         self.proposals.retain(|p| p.id != id);
         Ok(self.push_specs(specs, membership.as_ref().map(|(g, round)| (g.as_str(), *round)), now))
     }

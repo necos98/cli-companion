@@ -17,10 +17,12 @@ pub enum Role {
     Reviewer,
     /// Il worker di un task `plan`: esplora il repository in sola lettura e propone i task.
     Planner,
+    /// Il worker di un task `deliver`: porta il branch del goal sulla base, per intero.
+    Deliverer,
 }
 
 impl Role {
-    pub const ALL: [Role; 4] = [Role::Session, Role::Worker, Role::Reviewer, Role::Planner];
+    pub const ALL: [Role; 5] = [Role::Session, Role::Worker, Role::Reviewer, Role::Planner, Role::Deliverer];
 
     /// Valore di `whoami` sul filo.
     pub fn as_str(self) -> &'static str {
@@ -29,6 +31,7 @@ impl Role {
             Role::Worker => "worker",
             Role::Reviewer => "reviewer",
             Role::Planner => "planner",
+            Role::Deliverer => "deliverer",
         }
     }
 
@@ -43,6 +46,7 @@ impl Role {
             Some(TaskKind::Work) => Role::Worker,
             Some(TaskKind::Review) => Role::Reviewer,
             Some(TaskKind::Plan) => Role::Planner,
+            Some(TaskKind::Deliver) => Role::Deliverer,
         }
     }
 }
@@ -75,25 +79,28 @@ pub enum Method {
 /// Tutti i ruoli.
 const EVERYONE: &[Role] = &Role::ALL;
 /// I worker automatici: leggono il loro task e ne riferiscono l'esito.
-const AUTOMATED: &[Role] = &[Role::Worker, Role::Reviewer, Role::Planner];
+const AUTOMATED: &[Role] = &[Role::Worker, Role::Reviewer, Role::Planner, Role::Deliverer];
 /// Chi verifica il codice con gli E2E: il pianificatore non scrive codice.
-const E2E_RUNNERS: &[Role] = &[Role::Worker, Role::Reviewer];
-/// Proposte e dettaglio dei task: il revisore e il pianificatore ne hanno bisogno.
+const E2E_RUNNERS: &[Role] = &[Role::Worker, Role::Reviewer, Role::Deliverer];
+/// Proposte di task: il revisore e il pianificatore ne hanno bisogno.
 const PROPOSERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
+/// Dettaglio dei task: anche chi consegna un goal, che rilegge le specifiche dei suoi task.
+const TASK_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner, Role::Deliverer];
 /// Lettura della coda e dei goal: anche il pianificatore.
 const SESSION_AND_PLANNER: &[Role] = &[Role::Session, Role::Planner];
-/// Dettaglio di un goal: anche il revisore, che verifica l'obiettivo.
-const GOAL_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
+/// Dettaglio di un goal: anche il revisore, che verifica l'obiettivo, e chi lo consegna.
+const GOAL_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner, Role::Deliverer];
 /// Lettura delle impostazioni (Bot, agenti, modelli): anche il revisore, che deve
 /// scegliere Bot e modello dei task di correzione e della nuova revisione. Sola lettura:
 /// `propose_settings` resta della sessione.
 const SETTINGS_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
 /// Strumenti dell'utente (coda, skill, impostazioni): vietati ai worker.
 const SESSION_ONLY: &[Role] = &[Role::Session];
-/// Chi puo' fare una domanda bloccante all'utente: il worker e il pianificatore.
-/// Il revisore e' escluso di proposito: il suo lavoro e' un verdetto, quindi un
-/// dubbio che blocca diventa un rilievo o una revisione fallita e resta non interattivo.
-const ASKERS: &[Role] = &[Role::Worker, Role::Planner];
+/// Chi puo' fare una domanda bloccante all'utente: il worker, il pianificatore e
+/// chi consegna un goal. Il revisore e' escluso di proposito: il suo lavoro e' un
+/// verdetto, quindi un dubbio che blocca diventa un rilievo o una revisione fallita
+/// e resta non interattivo.
+const ASKERS: &[Role] = &[Role::Worker, Role::Planner, Role::Deliverer];
 
 impl Method {
     pub const ALL: [Method; 18] = [
@@ -152,7 +159,8 @@ impl Method {
             Method::GetTask | Method::CompleteTask => AUTOMATED,
             Method::AskUser => ASKERS,
             Method::RunE2e | Method::GetE2eResult => E2E_RUNNERS,
-            Method::ProposeTasks | Method::GetTaskDetails => PROPOSERS,
+            Method::ProposeTasks => PROPOSERS,
+            Method::GetTaskDetails => TASK_READERS,
             Method::ListTasks | Method::ListGoals => SESSION_AND_PLANNER,
             Method::GetGoal => GOAL_READERS,
             Method::GetWorkspaceSettings => SETTINGS_READERS,
@@ -257,6 +265,7 @@ mod tests {
         assert_eq!(Role::of_worker(Some(TaskKind::Work)), Role::Worker);
         assert_eq!(Role::of_worker(Some(TaskKind::Review)), Role::Reviewer);
         assert_eq!(Role::of_worker(Some(TaskKind::Plan)), Role::Planner);
+        assert_eq!(Role::of_worker(Some(TaskKind::Deliver)), Role::Deliverer);
     }
 
     #[test]
@@ -282,17 +291,16 @@ mod tests {
     fn the_table_keeps_the_agreed_permissions() {
         let who = |m: Method| Role::ALL.into_iter().filter(|r| m.allows(*r)).collect::<Vec<_>>();
         for m in [Method::GetTask, Method::CompleteTask] {
-            assert_eq!(who(m), vec![Role::Worker, Role::Reviewer, Role::Planner], "{}", m.name());
+            assert_eq!(who(m), vec![Role::Worker, Role::Reviewer, Role::Planner, Role::Deliverer], "{}", m.name());
         }
         for m in [Method::RunE2e, Method::GetE2eResult] {
-            assert_eq!(who(m), vec![Role::Worker, Role::Reviewer], "{}", m.name());
+            assert_eq!(who(m), vec![Role::Worker, Role::Reviewer, Role::Deliverer], "{}", m.name());
         }
-        for m in [Method::ProposeTasks, Method::GetTaskDetails] {
-            assert_eq!(who(m), vec![Role::Session, Role::Reviewer, Role::Planner], "{}", m.name());
-        }
+        assert_eq!(who(Method::ProposeTasks), vec![Role::Session, Role::Reviewer, Role::Planner]);
+        assert_eq!(who(Method::GetTaskDetails), vec![Role::Session, Role::Reviewer, Role::Planner, Role::Deliverer]);
         assert_eq!(who(Method::ListTasks), vec![Role::Session, Role::Planner]);
         assert_eq!(who(Method::ListGoals), vec![Role::Session, Role::Planner]);
-        assert_eq!(who(Method::GetGoal), vec![Role::Session, Role::Reviewer, Role::Planner]);
+        assert_eq!(who(Method::GetGoal), vec![Role::Session, Role::Reviewer, Role::Planner, Role::Deliverer]);
         assert_eq!(who(Method::GetWorkspaceSettings), vec![Role::Session, Role::Reviewer, Role::Planner]);
         for m in [
             Method::UpdateTask,
@@ -304,7 +312,7 @@ mod tests {
         ] {
             assert_eq!(who(m), vec![Role::Session], "{}", m.name());
         }
-        assert_eq!(who(Method::AskUser), vec![Role::Worker, Role::Planner]);
+        assert_eq!(who(Method::AskUser), vec![Role::Worker, Role::Planner, Role::Deliverer]);
     }
 
     #[test]

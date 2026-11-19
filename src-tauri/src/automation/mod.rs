@@ -31,7 +31,7 @@
 //! - `state`, `host`, `rpc`: stato Tauri, effetti verso l'esterno, smistamento RPC.
 //! - `agent_probe`: prontezza degli agenti nel target del workspace, in cache.
 //! - `questions`, `answer_input`: domande dei worker all'utente (`ask_user`) e consegna della risposta.
-//! - `boards`, `worktrees`, `review`, `planner`, `settings`, `skills`, `e2e`, `auto`:
+//! - `boards`, `worktrees`, `review`, `planner`, `deliver`, `settings`, `skills`, `e2e`, `auto`:
 //!   operazioni sulle board e funzioni dei singoli ambiti.
 
 use crate::agents::{Readiness, WaitKind};
@@ -58,6 +58,7 @@ mod board_files;
 mod boards;
 mod bridge;
 mod commands;
+mod deliver;
 mod e2e;
 mod hooks;
 mod host;
@@ -99,7 +100,7 @@ pub use state::AutomationState;
 use worker::Worker;
 pub(crate) use worker::WorkerEnv;
 pub use worker::{AutomationTabInfo, HookEvent, NewWorker, SpawnEvent, TabEvent, BOOTSTRAP_PROMPT, STOP_BLOCK_REASON};
-pub use worktrees::{CleanupTarget, GitOut, StartJob};
+pub use worktrees::{CleanupTarget, DeliveryCleanup, GitOut, StartJob};
 
 /// Dopo `complete_task` il tab resta aperto il tempo di vedere l'esito.
 pub const CLOSE_DELAY: Duration = Duration::from_millis(1500);

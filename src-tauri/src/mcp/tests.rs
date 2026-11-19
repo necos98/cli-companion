@@ -1,6 +1,6 @@
 use super::tools::{
-    model_description, planner_tools, proposed_model_description, reviewer_tools, session_tools, settings_properties,
-    tools_for, worker_tools,
+    deliverer_tools, model_description, planner_tools, proposed_model_description, reviewer_tools, session_tools,
+    settings_properties, tools_for, worker_tools,
 };
 use super::*;
 use crate::agents::{PermissionMode, TierModels};
@@ -288,12 +288,22 @@ fn tools_list_depends_on_role() {
     );
     let r = send(&s, &Fake::new("planner"), json!({"jsonrpc":"2.0","id":5,"method":"initialize"})).unwrap();
     assert!(r["result"]["instructions"].as_str().unwrap().contains("automated planner"));
+    let s = Server::default();
+    let r = send(&s, &Fake::new("deliverer"), json!({"jsonrpc":"2.0","id":6,"method":"tools/list"})).unwrap();
+    assert_eq!(names(&r), ["get_task", "complete_task", "get_task_details", "get_goal", "run_e2e", "get_e2e_result"]);
+    let r = send(&s, &Fake::new("deliverer"), json!({"jsonrpc":"2.0","id":7,"method":"initialize"})).unwrap();
+    assert!(r["result"]["instructions"].as_str().unwrap().contains("automated deliverer"));
 }
 
 #[test]
 fn no_orchestrator_tool_survives() {
-    let all: Vec<Value> =
-        session_tools().into_iter().chain(worker_tools()).chain(reviewer_tools()).chain(planner_tools()).collect();
+    let all: Vec<Value> = session_tools()
+        .into_iter()
+        .chain(worker_tools())
+        .chain(reviewer_tools())
+        .chain(planner_tools())
+        .chain(deliverer_tools())
+        .collect();
     for gone in [
         "spawn_session",
         "list_sessions",
@@ -661,9 +671,9 @@ fn reviewer_complete_task_schema_has_verdict_and_findings() {
 }
 
 #[test]
-fn e2e_tools_belong_to_worker_and_reviewer_only() {
+fn e2e_tools_belong_to_worker_reviewer_and_deliverer_only() {
     let has = |tools: &[Value], name: &str| tools.iter().any(|t| t["name"] == name);
-    for tools in [worker_tools(), reviewer_tools()] {
+    for tools in [worker_tools(), reviewer_tools(), deliverer_tools()] {
         assert!(has(&tools, "run_e2e") && has(&tools, "get_e2e_result"));
     }
     let session = session_tools();
@@ -680,10 +690,11 @@ fn e2e_tools_belong_to_worker_and_reviewer_only() {
     assert_eq!(props["wait_seconds"]["maximum"], 25);
     let run = worker_tools().into_iter().find(|t| t["name"] == "run_e2e").unwrap();
     assert_eq!(run["inputSchema"]["properties"], json!({}));
-    // Stessa definizione per worker e revisore.
+    // Stessa definizione per worker, revisore e chi consegna.
     for name in ["run_e2e", "get_e2e_result"] {
         let of = |tools: Vec<Value>| tools.into_iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(of(worker_tools()), of(reviewer_tools()), "{name}");
+        assert_eq!(of(worker_tools()), of(deliverer_tools()), "{name}");
     }
 }
 
@@ -798,7 +809,9 @@ fn list_for(b: &Fake) -> Vec<String> {
 }
 
 #[test]
-fn ask_user_is_listed_only_with_the_hub_and_only_for_worker_and_planner() {
+fn ask_user_is_listed_only_with_the_hub_and_only_for_worker_planner_and_deliverer() {
+    assert!(!list_for(&Fake::new("deliverer")).contains(&"ask_user".to_string()));
+    assert_eq!(list_for(&Fake::with_hub("deliverer"))[2], "ask_user");
     assert_eq!(list_for(&Fake::new("worker")), ["get_task", "complete_task", "run_e2e", "get_e2e_result"]);
     assert_eq!(
         list_for(&Fake::with_hub("worker")),

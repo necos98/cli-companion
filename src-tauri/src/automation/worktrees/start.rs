@@ -3,6 +3,7 @@
 
 use super::{git, is_abs, join_path, repo_cfg, repo_dir, task_branch, FetchCache, StartJob, WORKTREES_DIR};
 use crate::agents::{registry, AutomationLaunch, AutomationRequest, AutomationStart};
+use crate::automation::deliver::DeliverTarget;
 use crate::automation::planner::root::RootPlan;
 use crate::automation::*;
 use crate::board::{Task, WorktreeInfo};
@@ -10,6 +11,7 @@ use crate::validate::valid_branch;
 use crate::workspaces::DeliveryMode;
 use setup::{setup_cfg, setup_worktree};
 
+mod deliver;
 mod free;
 mod goal;
 mod setup;
@@ -263,6 +265,10 @@ struct Placement {
     root_plan: Option<RootPlan>,
     /// Modalita' libera: la cartella non e' un repository git.
     free: bool,
+    /// Task di consegna: il checkout del repository principale (al posto di quello
+    /// del `repo` del task) e i repository da consegnare.
+    repo_dir: Option<String>,
+    deliver: Vec<DeliverTarget>,
 }
 
 /// Prepara il repository del task: worktree e setup, oppure (in place) solo i
@@ -286,20 +292,32 @@ fn place_in_repo<H: Host>(st: &AutomationState, host: &H, job: &StartJob, dir: &
     Ok(Placement { branch, base, ..Placement::default() })
 }
 
-fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Result<Prepared, String> {
+/// Prepara l'avvio del task: `None` = non c'e' nulla da avviare (consegna senza commit).
+fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Result<Option<Prepared>, String> {
     let (ws, task) = (&job.ws, &job.task);
     let delivery = ws.delivery;
     skill::check(host, task)?;
     let dir = repo_dir(ws, task.repo.as_deref());
-    // Una cartella senza git (modalita' libera) non ha worktree, branch, setup
-    // ne' controlli sul checkout, qualunque sia la consegna del workspace.
-    let place = match (free::is_free(host, job, &dir)?, task.goal()) {
-        (true, _) => free::place(host, job)?,
-        // I task di un goal hanno sempre il worktree, sul branch del goal.
-        (false, Some(goal)) => goal::place(st, host, job, &dir, goal)?,
-        (false, None) => place_in_repo(st, host, job, &dir)?,
+    // Un task di consegna lavora sul branch del goal in ogni repository con commit
+    // da consegnare; se non ce n'e' nessuno non parte (vedi `deliver`).
+    let place = if task.kind == TaskKind::Deliver {
+        match deliver::place(st, host, job)? {
+            Some(place) => place,
+            None => return Ok(None),
+        }
+    } else {
+        // Una cartella senza git (modalita' libera) non ha worktree, branch, setup
+        // ne' controlli sul checkout, qualunque sia la consegna del workspace.
+        match (free::is_free(host, job, &dir)?, task.goal()) {
+            (true, _) => free::place(host, job)?,
+            // I task di un goal hanno sempre il worktree, sul branch del goal.
+            (false, Some(goal)) => goal::place(st, host, job, &dir, goal)?,
+            (false, None) => place_in_repo(st, host, job, &dir)?,
+        }
     };
-    let Placement { worktree, warnings, branch, base, goal_branch, root_plan, free } = place;
+    let Placement { worktree, warnings, branch, base, goal_branch, root_plan, free, repo_dir: main_dir, deliver } =
+        place;
+    let dir = main_dir.unwrap_or(dir);
     let workdir = worktree.as_ref().map_or_else(|| dir.clone(), |w| w.path.clone());
     let permissions_file = host.worker_permissions_file(ws, &task.agent)?;
     let req = AutomationRequest {
@@ -312,7 +330,7 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
     let AutomationStart { launch: AutomationLaunch { command, env: launch_env }, warnings: launch_warnings } =
         host.launch_command(&task.agent, ws.kind, &req)?;
     let warnings = [warnings, launch_warnings].concat();
-    Ok(Prepared {
+    Ok(Some(Prepared {
         worktree,
         warnings,
         new: NewWorker {
@@ -324,8 +342,8 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
             env: launch_env,
             kind: task.kind,
         },
-        env: WorkerEnv { delivery, repo_dir: dir, workdir, branch, base, goal_branch, root_plan, free },
-    })
+        env: WorkerEnv { delivery, repo_dir: dir, workdir, branch, base, goal_branch, root_plan, free, deliver },
+    }))
 }
 
 /// Lavoro dell'avvio: git, comando di lancio, registrazione del worker e
@@ -342,7 +360,12 @@ pub(in crate::automation) fn run_start_job<H: Host>(st: &AutomationState, host: 
         // Superato mentre aspettava il turno: niente git.
         if st.run(host, |r| r.start_is_current(&ws_id, &tid, attempt)) {
             match prepare_start(st, host, &job) {
-                Ok(p) => {
+                Ok(None) => {
+                    st.run(host, |r| {
+                        r.finish_without_worker(&ws_id, &tid, attempt, deliver::NOTHING_TO_DELIVER, now_millis())
+                    });
+                }
+                Ok(Some(p)) => {
                     let launch_env = p.new.env.clone();
                     let ev = st.run(host, |r| {
                         r.register_task_worker(&job, p.worktree, p.warnings, p.new, p.env, now_millis())

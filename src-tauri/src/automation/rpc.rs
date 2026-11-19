@@ -3,10 +3,12 @@
 //! per ruolo. Il worker di un task consegna il lavoro (`get_task`,
 //! `complete_task`, `run_e2e`, `get_e2e_result`); il revisore, cioe' il worker di
 //! un task `review`, fa lo stesso piu' `get_task_details` e `propose_tasks`
-//! (`review`); il pianificatore, worker di un task `plan`, legge il suo task, la
-//! coda e le impostazioni e propone (`planner`), senza E2E; la sessione
-//! normale, Intake compreso, gestisce la coda (`boards`),
-//! le skill globali (`skills`) e le impostazioni del workspace (`settings`).
+//! (`review`); chi consegna un goal, worker di un task `deliver`, fa lo stesso del
+//! worker piu' `get_goal` e `get_task_details` (`deliver`); il pianificatore,
+//! worker di un task `plan`, legge il suo task, la coda e le impostazioni e
+//! propone (`planner`), senza E2E; la sessione normale, Intake compreso, gestisce
+//! la coda (`boards`), le skill globali (`skills`) e le impostazioni del
+//! workspace (`settings`).
 //! `whoami` e' l'handshake del server MCP, non un tool; dice anche se l'Agents
 //! HUB e' acceso (`hub`), da cui dipendono i tool riservati all'HUB (`ask_user`).
 
@@ -28,7 +30,7 @@ pub fn handle<H: Host>(st: &AutomationState, host: &H, req: &RpcRequest) -> RpcR
 pub(super) fn denied(method: Method, role: Role) -> String {
     match role {
         Role::Session => format!("{} is reserved for automated sessions", method.name()),
-        Role::Worker | Role::Reviewer | Role::Planner => {
+        Role::Worker | Role::Reviewer | Role::Planner | Role::Deliverer => {
             format!("{} is not available to automated sessions", method.name())
         }
     }
@@ -82,10 +84,13 @@ pub fn dispatch<H: Host>(
         Method::GetWorkspaceSettings | Method::GetGoal if role == Role::Reviewer => {
             review::rpc_reviewer(st, host, session, method, params)
         }
+        Method::GetGoal | Method::GetTaskDetails if role == Role::Deliverer => {
+            deliver::rpc_deliverer(st, host, session, method, params)
+        }
         Method::ProposeTasks | Method::GetTaskDetails => match role {
             Role::Session => boards::rpc_session(st, host, session, method.name(), params),
             Role::Reviewer => review::rpc_reviewer(st, host, session, method, params),
-            Role::Worker | Role::Planner => Err(denied(method, role)),
+            Role::Worker | Role::Planner | Role::Deliverer => Err(denied(method, role)),
         },
         Method::ListTasks | Method::UpdateTask | Method::DeleteTask | Method::ListGoals | Method::GetGoal => {
             boards::rpc_session(st, host, session, method.name(), params)

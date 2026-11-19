@@ -3,17 +3,21 @@
 //! docs/GOALS.MD). Qui il modello sul disco; i sottomoduli: `input` (il goal di
 //! `propose_tasks` e i suoi limiti), `membership` (a quale goal vanno i task
 //! nuovi e da chi possono dipendere), `closure` (chiusura, note, giri),
-//! `phase` (fase e attesa, derivate: mai scritte su disco) e `archive` (goal
-//! chiusi oltre il tetto). Funzioni pure, tempo passato dal chiamante.
+//! `phase` (fase e attesa, derivate: mai scritte su disco), `delivery` (consegna:
+//! impostazioni, rapporto e task di consegna), `advance` (chiusura e consegna
+//! automatica al publish) e `archive` (goal chiusi oltre il tetto). Funzioni
+//! pure, tempo passato dal chiamante.
 
 use super::TITLE_MAX;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+mod advance;
 mod archive;
 mod branches;
 mod closure;
+mod delivery;
 mod input;
 mod membership;
 mod phase;
@@ -21,8 +25,10 @@ mod phase;
 #[cfg(test)]
 mod tests;
 
+pub use advance::{DeliveredGoal, GoalAdvance};
 pub use archive::MAX_CLOSED_GOALS_KEPT;
 pub use branches::{goal_branch_name, GoalBranch, GOAL_BRANCH_PREFIX};
+pub use delivery::{GoalReport, DEFAULT_DELIVER_BOT};
 pub use input::{parse_goal_id, parse_goal_spec, GoalSpec, ProposalGoal};
 pub use phase::{GoalPhase, GoalProgress, GoalView, GoalWaiting};
 
@@ -68,7 +74,8 @@ pub struct GoalDecision {
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum GoalOutcome {
-    /// Il lavoro e' finito (fino alla consegna del goal: tutti i task `done`).
+    /// Il goal e' stato consegnato (task di consegna `done`), o non ha nulla da
+    /// consegnare (cartella senza git).
     Delivered,
     /// L'utente l'ha chiuso a mano.
     Abandoned,
@@ -88,7 +95,8 @@ pub enum GoalReview {
 
 /// Un goal della board. Fase e attesa non sono qui: si derivano (`GoalView`).
 /// Giro e chiusura li scrive solo la board (`closure`), i branch solo l'app
-/// (`branches`), mai un tool.
+/// (`branches`), le impostazioni di consegna solo l'utente (`delivery`), mai un
+/// tool.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
 #[ts(export)]
@@ -106,6 +114,14 @@ pub struct Goal {
     /// sono nati. Li scrive solo l'app, all'avvio del primo task del goal in quel
     /// repository: vuoto finche' nessun task e' partito (o senza git).
     pub branches: BTreeMap<String, GoalBranch>,
+    /// Il task di consegna si crea da solo quando il goal e' pronto (e l'ultima
+    /// review non ha trovato problemi). Lo cambia solo l'utente, mai un tool.
+    pub(in crate::board) auto_deliver: bool,
+    /// Il Bot del task di consegna; `None` = `DEFAULT_DELIVER_BOT`. Lo cambia solo
+    /// l'utente, mai un tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(in crate::board) deliver_bot: Option<String>,
     /// 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata.
     pub(in crate::board) round: u32,
     pub created_at: i64,
@@ -121,6 +137,10 @@ pub struct Goal {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub(in crate::board) review: Option<GoalReview>,
+    /// Cosa e' stato consegnato: solo se chiuso `delivered` con un task di consegna.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(in crate::board) report: Option<GoalReport>,
 }
 
 impl Goal {
@@ -161,6 +181,10 @@ impl Goal {
         self.review
     }
 
+    pub fn report(&self) -> Option<&GoalReport> {
+        self.report.as_ref()
+    }
+
     /// Aggiunge una voce al registro; oltre `DECISIONS_KEPT` cadono le piu' vecchie.
     pub(in crate::board) fn record(&mut self, source: DecisionSource, text: String, now: i64) {
         self.decisions.push(GoalDecision { at: now, source, text });
@@ -182,5 +206,6 @@ impl Goal {
         let surplus = self.decisions.len().saturating_sub(DECISIONS_KEPT);
         self.decisions.drain(..surplus);
         self.sanitize_branches();
+        self.sanitize_delivery();
     }
 }

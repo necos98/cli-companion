@@ -18,6 +18,7 @@ export const GOAL_PHASE_LABELS: Record<GoalPhase, string> = {
   verifying: "In verifica",
   deciding: "Da decidere",
   ready: "Pronto",
+  delivering: "In consegna",
   closed: "Chiuso",
 };
 
@@ -26,6 +27,7 @@ export const GOAL_WAITING_LABELS: Record<GoalWaiting, string> = {
   proposal: "Una proposta da decidere",
   failed: "Un task è fallito",
   attention: "Un task richiede attenzione",
+  deliver: "Da consegnare",
 };
 
 /** Esito della chiusura. */
@@ -180,4 +182,25 @@ export function groupByRound<T extends Pick<Task, "round">>(tasks: T[]): RoundGr
 /** Task di un goal, nell'ordine della board. */
 export function goalTasks<T extends Pick<Task, "goal">>(tasks: T[], goalId: string): T[] {
   return tasks.filter((t) => t.goal === goalId);
+}
+
+// ---------------------------------------------------------------- consegna
+
+/** Pulsante di consegna di un goal. */
+export type DeliveryAction = "Consegna" | "Consegna comunque";
+
+/**
+ * Il goal si può consegnare? Sì se aspetta la consegna o è pronto (`ready`: un goal pronto aperto non ha mai un task
+ * di consegna, quindi vale anche quando la creazione automatica è fallita). "Consegna comunque" se l'ultima review
+ * ha trovato problemi; null se non c'è nulla da consegnare.
+ */
+export function deliveryAction(goal: Pick<GoalView, "waiting" | "phase" | "last_review">): DeliveryAction | null {
+  if (!goal.waiting.includes("deliver") && goal.phase !== "ready") return null;
+  return goal.last_review === "issues" ? "Consegna comunque" : "Consegna";
+}
+
+/** Task di consegna del goal (il più recente se ce ne sono più d'uno), se esiste. */
+export function deliveryTask<T extends Pick<Task, "goal" | "kind">>(tasks: readonly T[], goalId: string): T | null {
+  const found = tasks.filter((t) => t.goal === goalId && t.kind === "deliver");
+  return found.length > 0 ? found[found.length - 1] : null;
 }

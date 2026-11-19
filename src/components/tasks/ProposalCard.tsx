@@ -10,6 +10,7 @@ import { dependencyLabels, dependsOnText, specExcerpt } from "../../lib/taskPane
 import { proposalAgentLabel } from "../../lib/taskAgent";
 import type { TaskAgents } from "../../lib/taskAgent";
 import GoalTag from "./GoalTag";
+import { goalBranchName } from "../../lib/goalDelivery";
 
 /**
  * Props della card "Proposta da Task Intake" / "Proposta dal reviewer" (pannello Task e Tasks Manager):
@@ -64,6 +65,7 @@ export default function ProposalCard({
 }: ProposalCardProps) {
   const [pending, setPending] = useState<"accept" | "discard" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [autoDeliver, setAutoDeliver] = useState(false);
   const specs = proposal.tasks;
   const heading = useMemo(() => proposalHeading(proposal, board.tasks), [proposal, board.tasks]);
   const single = specs.length === 1 ? specs[0] : null;
@@ -73,7 +75,7 @@ export default function ProposalCard({
     setError(null);
     setPending(accept ? "accept" : "discard");
     try {
-      onBoard(await api.proposalDecide(workspaceId, proposal.id, accept));
+      onBoard(await api.proposalDecide(workspaceId, proposal.id, accept, accept && proposal.goal ? autoDeliver : null));
     } catch (e) {
       setError(String(e));
       setPending(null);
@@ -104,6 +106,28 @@ export default function ProposalCard({
           )}
           {round !== null && <span>correzione · giro {round}</span>}
         </p>
+      )}
+
+      {proposal.goal && (
+        <div className="flex min-w-0 flex-col gap-1.5 text-[11px] text-muted-foreground">
+          <p className="break-words">
+            Branch che verrà creato:{" "}
+            <code className="font-mono text-text-secondary">{goalBranchName(proposal.goal.id)}</code>
+          </p>
+          <label className="flex items-center gap-2">
+            Consegna automatica
+            <select
+              aria-label="Consegna automatica"
+              value={autoDeliver ? "yes" : "no"}
+              disabled={pending !== null}
+              onChange={(e) => setAutoDeliver(e.target.value === "yes")}
+              className="h-6 rounded-md border border-input bg-transparent px-1.5 text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="no">no</option>
+              <option value="yes">sì</option>
+            </select>
+          </label>
+        </div>
       )}
 
       {single ? (

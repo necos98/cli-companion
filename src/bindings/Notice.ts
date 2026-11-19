@@ -2,7 +2,7 @@
 
 /**
  * Notifica di sistema per l'utente (evento `task-notify`): un task richiede
- * attenzione o e' fallito. Il testo e' in italiano.
+ * attenzione o e' fallito, o un goal e' stato consegnato. Il testo e' in italiano.
  */
 export type Notice = { workspace_id: string, task_id: string, 
 /**
@@ -10,10 +10,11 @@ export type Notice = { workspace_id: string, task_id: string,
  */
 tab_id: string | null, 
 /**
- * `attention` | `failed` | `question`
+ * `attention` | `failed` | `question` | `delivered` (un goal consegnato:
+ * `task_id` e' il suo task di consegna e il tab e' sempre assente).
  */
 kind: string, 
 /**
- * Titolo del task.
+ * Titolo del task (del goal, per `delivered`).
  */
 title: string, body: string, };

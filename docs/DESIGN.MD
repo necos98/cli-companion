@@ -281,6 +281,12 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
 7. **Dopo.** I task conclusi oltre i 200 più recenti escono dalla board nell'archivio `.jsonl`; a ogni avvio e ogni 5
    minuti il riallineamento delle worktree ripulisce ciò che la pulizia normale ha perso. Gli stati e le transizioni sono
    in [BOARD.MD](BOARD.MD), "Ciclo di vita".
+8. **Consegna del goal.** Quando un goal è `ready` e ha branch, un task `kind: "deliver"` (creato solo dall'app, da
+   `goal_deliver` o dall'effetto `Effect::AutoDeliver`, eseguito fuori dal lock) porta `goal/<id>` sulla base con i passi
+   della modalità del workspace. L'avvio (`worktrees/start/deliver.rs`) conta i commit oltre la base e apre un worktree
+   sul branch del goal per ogni repository da consegnare; senza commit il task si chiude senza worker. A `done`
+   `Board::advance_goals` chiude il goal `delivered` e notifica; `Effect::DeliveryCleanup` toglie i worktree e cancella i
+   branch locali del goal dopo la chiusura del tab. Contratto in BOARD.MD, "Consegna del goal".
 
 ### Persistenza e migrazioni
 
@@ -767,7 +773,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `state.rs` | `TaskState`: `Queued`, `Running(Run)` con fase `Preparing` (l'app prepara worktree e setup, nessun worker) o `Live` (il tab del worker e la sua attività), `Done(Finished)`, `Failed { finished, cause }` |
 | `lifecycle.rs`, `lifecycle/` | **l'unico posto che scrive lo stato del task**: `TaskEvent` applicato con `Task::apply`; `actions.rs` ha la tabella `permits(stato, operazione)` e `TaskAction`; `ops.rs` i metodi di `Board` (ferma, riprova, segna come fatto, archiviazione del workspace) |
 | `queue.rs`, `cascade.rs` | specifiche, proposte (accetta/scarta, con il loro goal), modifica, riordino, eliminazione anche a cascata (indice delle dipendenze inverse) |
-| `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", chiusura provvisoria), `phase.rs` (`GoalView`: fase e attesa derivate, pure), `archive.rs` (goal chiusi oltre il tetto) |
+| `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", scrittura della chiusura), `phase.rs` (`GoalView`: fase, attesa e `last_review` derivate, pure), `advance.rs` (`Board::advance_goals`: chiusure automatiche e consegne da avviare, al publish), `delivery.rs` + `delivery/task.rs` (`auto_deliver`, `deliver_bot`, `GoalReport`, `set_goal_delivery`, `create_deliver_task`), `archive.rs` (goal chiusi oltre il tetto) |
 | `spec.rs` | `TaskSpec`/`TaskPatch`, id (anche generati dal titolo), repository, grafo delle dipendenze, parsing di proposte e limiti |
 | `goal/branches.rs` | branch del goal (`GoalBranch`, `goal_branch_name`, `Goal.branches` ripulito al caricamento, registrazione e "Elimina branch" lato board); test in `goal/branches/tests.rs` |
 | `scheduler.rs`, `scheduler/tests.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura); i task di un goal in una cartella git non occupano il repository (`Task::runs_in_own_worktree`) |
@@ -776,8 +782,9 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `worker.rs` | `WorkerStatus`/`WorkerActivity`/`WorkerEnd` e la tabella di transizione pura applicata agli hook |
 | `report.rs`, `review.rs`, `e2e.rs` | `TaskReport`, task di review (verdetto, task rivisti), tipi E2E e `check_gate` (il blocco della consegna) |
 | `plan.rs` | regole dei task di pianificazione (`kind: "plan"`): tipo riservato all'app, niente `e2e`, report senza consegna, `TaskKind::isolated` |
+| `deliver.rs` | regole dei task di consegna (`kind: "deliver"`): tipo riservato all'app (`DELIVER_KIND_RESERVED`), `TaskKind::bot_kind` (un Bot con `work` li esegue), `check_deliver_report` (`commits`/`pr_urls` solo qui), `goal_task_entries` (`goal_tasks` di `get_task`) |
 | `settings.rs` | proposte di impostazioni (`SettingsProposal`) |
-| `texts.rs`, `texts/`, `prompts/*.md` | istruzioni, ambiente e passi di consegna dati al worker; standard di ingegneria e istruzioni del reviewer e del pianificatore (inglese, `include_str!`). `texts/goal.rs` (+ `texts/goal/tests.rs`): consegna, ambiente e riferimento del revisore per i task di un goal in una cartella git; `texts/pr.rs`: passi PR comuni a worktree e in place |
+| `texts.rs`, `texts/`, `prompts/*.md` | istruzioni, ambiente e passi di consegna dati al worker; standard di ingegneria e istruzioni del reviewer e del pianificatore (inglese, `include_str!`). `texts/goal.rs` (+ `texts/goal/tests.rs`): consegna, ambiente e riferimento del revisore per i task di un goal in una cartella git; `texts/pr.rs`: passi PR comuni a worktree e in place; `texts/deliver.rs` (+ `texts/deliver/tests.rs`) con `prompts/deliver_instructions.md`: istruzioni, ambiente e passi del task di consegna di un goal, da un input puro (`DeliverInput`, `DeliverRepo`), con `pr_title_safe` |
 | `persist.rs`, `legacy.rs`, `legacy_settings.rs`, `legacy_goals.rs`, `recovery.rs`, `archive.rs` | formato su disco (busta, migrazioni, righe degli archivi), migrazioni dei file (v0.11, impostazioni per agente, goal), recupero dopo un riavvio, selezione dei task da archiviare (mai quelli di un goal aperto) |
 
 - **Scheduler.** `schedule` non fa nulla con la coda in pausa o con il gate chiuso (workspace archiviato, oppure con
@@ -795,8 +802,11 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
   `boards/archive/<workspace_id>.goals.jsonl`. Il tutto è descritto in BOARD.MD ("File su disco" e "Archivio dei task
   conclusi").
 - **Goal.** La fase e l'attesa di un goal sono derivate (`goal/phase.rs`), mai scritte; la board scrive solo nascita,
-  giro, note e chiusura. La chiusura provvisoria (`Board::close_finished_goals`) la chiama `automation` a ogni
-  pubblicazione, prima della vista e dell'archivio; il lavoro resta su `goal/<id>` fino alla consegna del goal (T5). Contratto in BOARD.MD, "Goal"; progetto in GOALS.MD.
+  giro, note, impostazioni di consegna e chiusura. `Board::advance_goals` (`goal/advance.rs`) la chiama `automation` a ogni
+  pubblicazione, prima della vista e dell'archivio: chiude `delivered` il goal con il task di consegna `done` (con il
+  `report`) o pronto senza branch, `abandoned` quello senza task, e restituisce un `GoalAdvance` (`delivered`: le consegne
+  da notificare; `auto_deliver`: i goal la cui consegna parte da sola, che la board non crea perché servono i Bot letti
+  fuori dal lock). Il lavoro arriva sulla base solo con la consegna. Contratto in BOARD.MD, "Goal" e "Consegna del goal"; progetto in GOALS.MD.
 
 ### `automation/` — Task Manager: coda, scheduler e worker
 
@@ -829,7 +839,7 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   `worktrees/start.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn); `start/goal.rs`: avvio di un task
   di un goal (creazione di `goal/<id>` e worktree da quel branch, sempre), `start/setup.rs`: hook del worktree appena creato.
   I test del branch del goal sono in `tests/goal_branch.rs`.
-  `worktrees/cleanup.rs`: pulizia a consegna avvenuta. `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
+  `worktrees/cleanup.rs`: pulizia a consegna avvenuta. Consegna del goal: `deliver.rs` (`get_task` e RPC del `deliverer`, `DeliverTarget`: i repository da consegnare calcolati all'avvio), `boards/delivery.rs` (creazione del task di consegna, `goal_deliver`, `goal_set_delivery`, consegna automatica, notifica "Goal consegnato", chiusura senza worker), `worktrees/start/deliver.rs` (avvio: commit oltre la base, worktree sul branch del goal), `worktrees/delivery_cleanup.rs` (`DeliveryCleanup`). `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
   sempre tramite `process.rs`), rilevamento dei repository, file di esclusione.
   `worktrees/reconcile.rs`: riallineamento delle worktree con le board (task `done` rimasti,
   worktree `task/*` orfane) all'avvio e ogni 5 minuti, dal tick dello scheduler. `hooks.rs`: setup e pulizia per repository (`RepoConfig`), più lettura e
@@ -853,25 +863,26 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   i metodi che la tabella di `roles.rs` gli consente (`Method::roles`, un `match` esaustivo: aggiungere un metodo
   obbliga a decidere chi lo può chiamare):
 
-  | Metodo | Worker | Reviewer | Planner | Sessione |
-  |---|:-:|:-:|:-:|:-:|
-  | `whoami` (handshake, non è un tool) | sì | sì | sì | sì |
-  | `get_task`, `complete_task` | sì | sì | sì | no |
-  | `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | no |
-  | `run_e2e`, `get_e2e_result` | sì | sì | no | no |
-  | `propose_tasks`, `get_task_details` | no | sì | sì | sì |
-  | `list_tasks`, `list_goals` | no | no | sì | sì |
-  | `get_goal` | no | sì | sì | sì |
-  | `get_workspace_settings` | no | sì | sì | sì |
-  | `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
-  | `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
+  | Metodo | Worker | Reviewer | Planner | Deliverer | Sessione |
+  |---|:-:|:-:|:-:|:-:|:-:|
+  | `whoami` (handshake, non è un tool) | sì | sì | sì | sì | sì |
+  | `get_task`, `complete_task` | sì | sì | sì | sì | no |
+  | `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | sì | no |
+  | `run_e2e`, `get_e2e_result` | sì | sì | no | sì | no |
+  | `propose_tasks` | no | sì | sì | no | sì |
+  | `get_task_details` | no | sì | sì | sì | sì |
+  | `list_tasks`, `list_goals` | no | no | sì | no | sì |
+  | `get_goal` | no | sì | sì | sì | sì |
+  | `get_workspace_settings` | no | sì | sì | no | sì |
+  | `update_task`, `delete_task`, `propose_settings` | no | no | no | no | sì |
+  | `save_skill`, `list_skills`, `delete_skill` | no | no | no | no | sì |
 
   Il ruolo viene dal tab: il worker di un task `work` è `worker`, quello di un task `review` è `reviewer`, quello di
-  un task `plan` è `planner`, ogni altro tab di cli-companion (Intake compreso, workspace = quello del tab) è
+  un task `plan` è `planner`, quello di un task `deliver` è `deliverer`, ogni altro tab di cli-companion (Intake compreso, workspace = quello del tab) è
   `session`. Un tab di un workspace archiviato è
   congelato. `ask_user` richiede l'HUB (`Method::requires_hub`): `whoami` riporta `hub` e senza HUB il tool non è
   nemmeno elencato (contratto in BOARD.MD, "Domanda all'utente"). `settings.rs`: patch validata in `workspaces/settings_patch.rs`, proposte in `board/settings.rs`.
-  `review.rs` ha ciò che il revisore legge in `get_task`; `planner.rs` il task di pianificazione (creazione
+  `review.rs` ha ciò che il revisore legge in `get_task`; `deliver.rs` ciò che legge chi consegna un goal (`get_task` con `goal_tasks`, `get_goal`, `get_task_details`; `board::Handoff::of_deliverer` ne dà il `goal`); `planner.rs` il task di pianificazione (creazione
   dall'app con `create_plan_task`, `get_task` e tool del pianificatore, proposta unica); `skills.rs` i tool delle skill utente (la logica su file è in
   `user_skills`).
 - `board_files.rs`: le board su disco (`<app data>/boards/<workspace>.json`) e il loro archivio `.jsonl`; un
@@ -930,7 +941,8 @@ nota diventa `reopened: ...`. Tab chiuso davvero (`tab_closed`) o task ripreso d
 vale la regola normale (notifica solo se il report e' `failed`, nessuna per `done`).
 
 Notifiche di sistema: evento `task-notify` `{workspace_id, task_id, tab_id?, kind:
-"attention"|"failed"|"question", title, body}` (testo in italiano); il frontend mostra la notifica.
+"attention"|"failed"|"question"|"delivered", title, body}` (testo in italiano); il frontend mostra la notifica. `delivered`
+("Goal consegnato: <titolo>") la emette `advance_goals` al publish per il goal chiuso dal suo task di consegna.
 
 Tutto cio' che legge il modello e' in inglese (`BOOTSTRAP_PROMPT`, `STOP_BLOCK_REASON`,
 istruzioni, ambiente e passi di consegna in `board/texts.rs`, `board/prompts/worker_standard_preamble.md`,
@@ -952,7 +964,7 @@ si perde (crash, chiusura dell'app) la rifa il riallineamento delle worktree (BO
 Eventi Tauri verso il frontend: `automation-spawn`, `automation-close`, `automation-update`,
 `board-update`, `task-notify`, `schedule-state`. Comandi: `automation_tab_closed`,
 `automation_sessions`, `board_get`, `board_set`, `task_create`, `task_update`, `task_action`,
-`task_move`, `proposal_decide`, `goal_close`, `goal_add_note`, `settings_proposal_decide`, `workspace_detect_repos`, `e2e_run_repo`,
+`task_move`, `proposal_decide`, `goal_close`, `goal_add_note`, `goal_deliver`, `goal_set_delivery`, `settings_proposal_decide`, `workspace_detect_repos`, `e2e_run_repo`,
 `e2e_last_result`, `e2e_open_report`, `schedule_get`, `schedule_set`, `frontend_ready`. Comando di avvio del worker:
 `agents::automation_command`; permessi = `Workspace.worker_permission`, modello = `task.model`
 poi `worker_agents[<agente del task>].model`, poi il predefinito dell'agente.

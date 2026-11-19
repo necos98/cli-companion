@@ -136,21 +136,58 @@ pub async fn goal_add_note(
     .await
 }
 
-/// Accetta o scarta una proposta dell'Intake.
+/// Accetta o scarta una proposta dell'Intake. `auto_deliver`: con una proposta
+/// accettata che crea un goal nuovo, la sua consegna automatica (errore se `true` e
+/// la proposta non crea un goal).
 #[tauri::command]
 pub async fn proposal_decide(
     app: AppHandle,
     workspace_id: String,
     proposal_id: String,
     accept: bool,
+    auto_deliver: Option<bool>,
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
-        boards::proposal_decide(
+        boards::proposal_decide_with(
             &app.state::<AutomationState>(),
             &TauriHost(app.clone()),
             &workspace_id,
             &proposal_id,
             accept,
+            auto_deliver,
+        )
+    })
+    .await
+}
+
+/// "Consegna" / "Consegna comunque": crea il task di consegna del goal pronto
+/// (anche se l'ultima review ha trovato problemi: e' la scelta dell'utente).
+#[tauri::command]
+pub async fn goal_deliver(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_deliver(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id)
+    })
+    .await
+}
+
+/// Impostazioni di consegna di un goal aperto: consegna automatica e/o Bot di
+/// consegna (acceso, con `work` fra i tipi di task).
+#[tauri::command]
+pub async fn goal_set_delivery(
+    app: AppHandle,
+    workspace_id: String,
+    goal_id: String,
+    auto_deliver: Option<bool>,
+    bot: Option<String>,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_set_delivery(
+            &app.state::<AutomationState>(),
+            &TauriHost(app.clone()),
+            &workspace_id,
+            &goal_id,
+            auto_deliver,
+            bot,
         )
     })
     .await

@@ -303,3 +303,19 @@ fn a_spec_without_a_bot_resolves_as_before_with_no_effort_or_skill() {
     assert_eq!(resolved.agent.as_deref(), Some(registry::default_agent().id()));
     assert_eq!((resolved.bot, resolved.effort, resolved.skill), (None, None, None));
 }
+
+#[test]
+fn a_delivery_is_run_by_a_bot_that_runs_work_tasks() {
+    let list = bots();
+    let general = resolve_bot_spec(&kind_spec("general", TaskKind::Deliver), &list, None).unwrap();
+    assert_eq!((general.kind, general.bot.as_deref()), (TaskKind::Deliver, Some("general")));
+    let refused = resolve_bot_spec(&kind_spec("reviewer", TaskKind::Deliver), &list, None).unwrap_err();
+    assert!(refused.contains("cannot run work tasks") && refused.contains("task 't1'"), "{refused}");
+    assert_eq!(check_bot_kind(&kind_spec("general", TaskKind::Deliver), &list), Ok(()));
+    let err = check_bot_kind(&kind_spec("planner", TaskKind::Deliver), &list).unwrap_err();
+    assert!(err.contains("cannot run work tasks"), "{err}");
+    // Un Bot che esegue solo `deliver` (che non e' un tipo da Bot) non basta: serve `work`.
+    let mut only_deliver = bots();
+    bot_mut(&mut only_deliver, "general").kinds = vec![TaskKind::Deliver];
+    assert!(check_bot_kind(&kind_spec("general", TaskKind::Deliver), &only_deliver).is_err());
+}

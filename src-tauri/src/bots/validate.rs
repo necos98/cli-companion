@@ -48,9 +48,11 @@ pub fn validate_draft(draft: AgentBotDraft, catalog: &AgentCatalog) -> Result<Ag
     })
 }
 
-/// I tipi di task senza doppioni, nell'ordine di `TaskKind::ALL`.
+/// I tipi di task senza doppioni, nell'ordine di `TaskKind::ALL`. Il tipo `deliver` non
+/// si sceglie: un Bot che esegue i `work` esegue anche le consegne dei goal (vedi
+/// `TaskKind::bot_kind`), quindi si scarta.
 pub fn normalize_kinds(kinds: Vec<TaskKind>) -> Vec<TaskKind> {
-    TaskKind::ALL.into_iter().filter(|k| kinds.contains(k)).collect()
+    TaskKind::ALL.into_iter().filter(|k| *k != TaskKind::Deliver && kinds.contains(k)).collect()
 }
 
 fn unavailable(reason: AgentUnavailable) -> String {
@@ -225,9 +227,13 @@ mod tests {
     #[test]
     fn kinds_are_deduplicated_in_canonical_order() {
         let kinds = |k: Vec<TaskKind>| check(AgentBotDraft { kinds: k, ..draft() }).unwrap().kinds;
-        let all = TaskKind::ALL.to_vec();
+        let all = vec![TaskKind::Work, TaskKind::Review, TaskKind::Plan];
         assert_eq!(kinds(vec![TaskKind::Plan, TaskKind::Work, TaskKind::Plan, TaskKind::Review]), all);
         assert_eq!(kinds(vec![TaskKind::Review, TaskKind::Review]), [TaskKind::Review]);
+        // `deliver` non si sceglie: lo esegue chi esegue i `work`.
+        assert_eq!(kinds(TaskKind::ALL.to_vec()), all);
+        assert_eq!(kinds(vec![TaskKind::Deliver, TaskKind::Work]), [TaskKind::Work]);
+        assert!(kinds(vec![TaskKind::Deliver]).is_empty());
         // Nessun tipo = Bot solo interattivo: ammesso.
         assert!(kinds(Vec::new()).is_empty());
     }

@@ -45,6 +45,7 @@ export const TASK_KIND_LABELS: Readonly<Record<TaskKind, string>> = {
   work: "Lavoro",
   review: REVIEW_LABEL,
   plan: PLAN_LABEL,
+  deliver: "Consegna",
 };
 
 /** Riepilogo di un Bot senza tipi di task: parte solo dai terminali. */

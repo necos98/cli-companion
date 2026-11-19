@@ -89,6 +89,8 @@ pub(crate) struct WorkerEnv {
     /// Modalita' libera: la cartella del task non e' un repository git, si
     /// lavora sul posto senza worktree, branch ne' consegna git.
     pub free: bool,
+    /// Solo un task di consegna: i repository da consegnare (vedi `deliver`).
+    pub deliver: Vec<deliver::DeliverTarget>,
 }
 
 pub(super) struct Worker {

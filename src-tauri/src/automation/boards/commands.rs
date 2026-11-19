@@ -175,6 +175,19 @@ pub(in crate::automation) fn proposal_decide<H: Host>(
     proposal_id: &str,
     accept: bool,
 ) -> Result<BoardView, String> {
+    proposal_decide_with(st, host, ws_id, proposal_id, accept, None)
+}
+
+/// Come `proposal_decide`; `auto_deliver` e' la scelta dell'utente per il goal
+/// nuovo della proposta accettata.
+pub(in crate::automation) fn proposal_decide_with<H: Host>(
+    st: &AutomationState,
+    host: &H,
+    ws_id: &str,
+    proposal_id: &str,
+    accept: bool,
+    auto_deliver: Option<bool>,
+) -> Result<BoardView, String> {
     let ws = workspace_of(host, ws_id)?;
     let mut kinds = FolderKinds::new();
     if accept {
@@ -188,7 +201,7 @@ pub(in crate::automation) fn proposal_decide<H: Host>(
     let bots = host.agent_bots();
     let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
     st.run(host, |r| {
-        r.decide_proposal(ws_id, proposal_id, accept, ctx, now)?;
+        r.decide_proposal(ws_id, proposal_id, accept, auto_deliver, ctx, now)?;
         r.note_no_git(ws_id, &kinds);
         Ok::<(), String>(())
     })?;

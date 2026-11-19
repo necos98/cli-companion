@@ -1,8 +1,8 @@
 //! Definizione dei tool MCP e delle istruzioni del server (le legge il
-//! modello: inglese, concise). Quattro insiemi: i tool del worker di un task, quelli
+//! modello: inglese, concise). Cinque insiemi: i tool del worker di un task, quelli
 //! del revisore (il worker di un task `review`), del pianificatore (task `plan`,
-//! in `planner`) e quelli di una sessione normale
-//! (Intake compreso). Quali metodi spettano a ogni ruolo lo decide la tabella di
+//! in `planner`), di chi consegna un goal (task `deliver`, in `deliver`) e quelli
+//! di una sessione normale (Intake compreso). Quali metodi spettano a ogni ruolo lo decide la tabella di
 //! `crate::automation::roles`: un test verifica che i tool coincidano.
 
 use crate::agents::{registry, tier_models, PermissionMode, TierModels};
@@ -19,8 +19,11 @@ use crate::workspaces::{
 };
 use serde_json::{json, Value};
 
+mod deliver;
 mod planner;
 
+use deliver::deliverer_instructions;
+pub use deliver::deliverer_tools;
 use planner::planner_instructions;
 pub use planner::planner_tools;
 
@@ -630,6 +633,7 @@ pub fn tools_for(role: Role, hub: bool) -> Vec<Value> {
         Role::Worker => worker_tools(),
         Role::Reviewer => reviewer_tools(),
         Role::Planner => planner_tools(),
+        Role::Deliverer => deliverer_tools(),
     };
     if hub && Method::AskUser.requires_hub() && Method::AskUser.allows(role) {
         let after = tools.iter().position(|t| t["name"] == "complete_task").map_or(0, |i| i + 1);
@@ -672,6 +676,7 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>, hub: bool) -> S
              your turn."
             .to_string(),
         Some(Role::Planner) => planner_instructions(hub).to_string(),
+        Some(Role::Deliverer) => deliverer_instructions(hub).to_string(),
         None => "cli-companion: tools are only available in cli-companion terminals with the app running.".to_string(),
     }
 }

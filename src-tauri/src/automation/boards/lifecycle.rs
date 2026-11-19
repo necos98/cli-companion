@@ -177,8 +177,12 @@ impl Registry {
 
     // --- pulizia ---
 
-    /// Task `done` con worktree: lo ripulisce l'applicazione degli effetti.
+    /// Task `done` con worktree: lo ripulisce l'applicazione degli effetti. Quello
+    /// di un task di consegna sta sul branch del goal: ha una pulizia sua.
     pub(in crate::automation) fn queue_cleanup(&mut self, ws: &str, tid: &str) {
+        if self.boards.get(ws).and_then(|b| b.task(tid)).is_some_and(|t| t.kind == TaskKind::Deliver) {
+            return self.queue_delivery_cleanup(ws, tid);
+        }
         let target = self
             .boards
             .get(ws)

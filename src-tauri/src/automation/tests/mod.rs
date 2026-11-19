@@ -19,6 +19,8 @@ mod bot_kinds;
 mod bot_settings;
 mod bot_tasks;
 mod bot_worker;
+mod deliver;
+mod deliver_flow;
 mod e2e;
 mod e2e_cancel;
 mod e2e_manual;

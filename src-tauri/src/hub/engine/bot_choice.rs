@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn an_updating_secretary_sees_the_bots_that_run_tasks_with_their_kinds() {
         let mut list = bots();
-        by_id(&mut list, "general").kinds = TaskKind::ALL.to_vec();
+        by_id(&mut list, "general").kinds = vec![TaskKind::Work, TaskKind::Review, TaskKind::Plan];
         by_id(&mut list, "reviewer").enabled = false;
         let text = describe(&with_tools(vec![SecretaryTool::RequestTaskUpdate]), &list).unwrap();
         assert!(text.starts_with(&format!("{INTRO}\n{UPDATE_INTRO}\n")), "{text}");

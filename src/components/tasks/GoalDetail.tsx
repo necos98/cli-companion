@@ -3,6 +3,8 @@ import DetailSection from "./DetailSection";
 import GoalCloseBox from "./GoalCloseBox";
 import GoalBranches from "./GoalBranches";
 import GoalClosedInfo from "./GoalClosedInfo";
+import GoalDelivery from "./GoalDelivery";
+import GoalDeliveryReport from "./GoalDeliveryReport";
 import GoalDecisions from "./GoalDecisions";
 import GoalProgressLine from "./GoalProgressLine";
 import GoalReviews from "./GoalReviews";
@@ -84,6 +86,16 @@ export default function GoalDetail({ workspaceId, goal, board, now, onBoard, onC
         <GoalDecisions workspaceId={workspaceId} goal={goal} open={open} now={now} onBoard={onBoard} />
         <GoalRounds tasks={tasks} onSelectTask={onSelectTask} />
         <GoalReviews tasks={tasks} onSelectTask={onSelectTask} />
+        {open && (
+          <GoalDelivery
+            workspaceId={workspaceId}
+            goal={goal}
+            board={board}
+            onBoard={onBoard}
+            onSelectTask={onSelectTask}
+          />
+        )}
+        {!open && <GoalDeliveryReport goal={goal} />}
         <GoalBranches workspaceId={workspaceId} goal={goal} open={open} onBoard={onBoard} />
         {open && <GoalCloseBox workspaceId={workspaceId} goal={goal} board={board} onBoard={onBoard} />}
       </div>

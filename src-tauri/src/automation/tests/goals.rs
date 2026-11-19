@@ -3,7 +3,7 @@
 //! (chiusura, note, task creato in un goal), chiusura provvisoria e archivio.
 
 use super::*;
-use crate::board::{Goal, GoalOutcome, GoalPhase, GoalReview, MAX_CLOSED_GOALS_KEPT};
+use crate::board::{Goal, GoalOutcome, GoalPhase, GoalReview, GoalWaiting, MAX_CLOSED_GOALS_KEPT};
 
 fn goal_json(id: &str) -> Value {
     json!({ "id": id, "title": "Export", "request": "export the orders", "done_when": ["a CSV file"],
@@ -83,7 +83,7 @@ fn the_reviewer_reads_its_goal_and_its_proposal_inherits_it() {
 }
 
 #[test]
-fn a_goal_closes_by_itself_when_its_last_proposal_is_discarded() {
+fn a_goal_whose_last_proposal_is_discarded_waits_for_the_user_to_deliver_anyway() {
     let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
     h.goal_branch_exists("g");
     queue_in(&st, &h, vec![spec("a", &[]), review_spec("rev", &["a"])], json!({ "goal": goal_json("g") }));
@@ -95,15 +95,10 @@ fn a_goal_closes_by_itself_when_its_last_proposal_is_discarded() {
     call(&st, &h, &r, "complete_task", issues).unwrap();
     assert!(goal_of(&st, &h, "g").goal.is_open());
     boards::proposal_decide(&st, &h, "ws-1", p["proposal"].as_str().unwrap(), false).unwrap();
+    // Il goal ha branch e la review ha trovato problemi: non si chiude e non si consegna da solo.
     let g = goal_of(&st, &h, "g");
-    assert_eq!(
-        (g.phase, g.goal.outcome(), g.goal.review()),
-        (GoalPhase::Closed, Some(GoalOutcome::Delivered), Some(GoalReview::Issues))
-    );
-    let saved = h.saved.lock().unwrap().get("ws-1").cloned().unwrap();
-    assert!(!saved.goal("g").unwrap().is_open(), "the closure is saved");
-    let err = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("late", &[])], "goal_id": "g" }));
-    assert_eq!(err.unwrap_err(), "goal g is closed: propose a new goal");
+    assert_eq!((g.phase, g.goal.outcome(), g.last_review), (GoalPhase::Ready, None, GoalReview::Issues));
+    assert_eq!(g.waiting, [GoalWaiting::Deliver]);
 }
 
 #[test]

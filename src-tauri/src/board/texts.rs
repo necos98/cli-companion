@@ -9,6 +9,7 @@ use goal::GOAL_DONE;
 use in_place::{in_place_description, root_planner_environment};
 use pr::pr_publish_steps;
 
+mod deliver;
 mod free;
 mod goal;
 mod in_place;
@@ -16,6 +17,9 @@ mod pr;
 mod skill;
 mod standard;
 
+pub use deliver::{
+    deliver_delivery_steps, deliver_environment, deliver_instructions, pr_title_safe, DeliverInput, DeliverRepo,
+};
 pub use skill::skill_instruction;
 pub use standard::{ENGINEERING_STANDARD, INTERACTIVE_STANDARD, WORKER_GUARDRAILS};
 

@@ -11,7 +11,7 @@ pub(super) const MAX_TRACKED_WORKERS: usize = 256;
 pub(crate) const TASK_UNASSIGNED: &str = "this task is no longer assigned to this session";
 
 /// Notifica di sistema per l'utente (evento `task-notify`): un task richiede
-/// attenzione o e' fallito. Il testo e' in italiano.
+/// attenzione o e' fallito, o un goal e' stato consegnato. Il testo e' in italiano.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct Notice {
@@ -19,9 +19,10 @@ pub struct Notice {
     pub task_id: String,
     /// Tab del worker, se esiste ancora (il toast cliccabile porta li').
     pub tab_id: Option<String>,
-    /// `attention` | `failed` | `question`
+    /// `attention` | `failed` | `question` | `delivered` (un goal consegnato:
+    /// `task_id` e' il suo task di consegna e il tab e' sempre assente).
     pub kind: &'static str,
-    /// Titolo del task.
+    /// Titolo del task (del goal, per `delivered`).
     pub title: String,
     pub body: String,
 }
@@ -70,6 +71,15 @@ pub enum Effect {
     /// Confrontare lo stato dei repository di un pianificatore alla root con
     /// quello dell'avvio (git: su un thread).
     ReadOnlyCheck(Box<planner::root::ReadOnlyCheck>),
+    /// Rimuovere i worktree di un task di consegna in ogni repository del goal e,
+    /// a goal consegnato, i suoi branch locali `goal/<id>`.
+    DeliveryCleanup(Box<DeliveryCleanup>),
+    /// Creare il task di consegna di un goal che si consegna da solo: servono i Bot,
+    /// che si leggono fuori dal lock (vedi `boards::delivery`).
+    AutoDeliver {
+        ws_id: String,
+        goal_id: String,
+    },
 }
 
 /// Cio' che `complete_task` porta oltre stato e riassunto: i campi del report e
@@ -98,6 +108,9 @@ pub struct Registry {
     /// Agenti non pronti per workspace, solo se ce n'e' qualcuno (vedi
     /// `boards::agents`).
     pub(super) gates: HashMap<String, AgentGate>,
+    /// Consegne automatiche in volo (workspace, goal): finche' una e' in corso la
+    /// board non ne chiede un'altra per lo stesso goal.
+    pub(super) auto_delivering: std::collections::HashSet<(String, String)>,
 }
 
 impl Registry {
@@ -255,6 +268,7 @@ impl Registry {
         let t = b.task(&tid).filter(|t| t.is_live_for(session)).ok_or_else(unassigned)?;
         let handoff = match t.kind {
             TaskKind::Work => board::Handoff::of_worker(b, t),
+            TaskKind::Deliver => board::Handoff::of_deliverer(b, t),
             TaskKind::Review | TaskKind::Plan => board::Handoff::default(),
         };
         let info = board::texts::EnvInfo {
@@ -274,6 +288,7 @@ impl Registry {
         let mut out = match t.kind {
             TaskKind::Review => review::get_task_json(&info, &ws.worker.rules, b),
             TaskKind::Plan => planner::get_task_json(&info, &ws.worker.rules, ask_user),
+            TaskKind::Deliver => deliver::get_task_json(ws, &env, t, b, ask_user),
             TaskKind::Work => serde_json::json!({
                 "task": t.task,
                 "title": t.title,
@@ -323,6 +338,7 @@ impl Registry {
         let kind = self.worker_kind(session).ok_or_else(|| "reserved for automated sessions".to_string())?;
         board::check_verdict(kind, completed, &extra.fields)?;
         board::check_plan_report(kind, completed, &extra.fields)?;
+        board::check_deliver_report(kind, &extra.fields)?;
         let gate_outcome = self.e2e_gate(session, completed, extra.gate.as_ref())?;
         self.reopen_after_session_end(session, now);
         let w = self.live_worker(session)?;

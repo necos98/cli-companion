@@ -26,6 +26,12 @@ impl Handoff {
         Handoff { dependencies: Vec::new(), goal: goal_context(board, task) }
     }
 
+    /// Consegne del task `task` di consegna: solo il goal (i report dei task del
+    /// goal li ha in `goal_tasks`, `deliver::goal_task_entries`).
+    pub fn of_deliverer(board: &Board, task: &Task) -> Handoff {
+        Self::of_reviewer(board, task)
+    }
+
     /// Niente da consegnare: `get_task` e istruzioni restano quelli di un task sciolto.
     pub fn is_empty(&self) -> bool {
         self.dependencies.is_empty() && self.goal.is_none()

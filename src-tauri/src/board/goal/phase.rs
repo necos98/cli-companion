@@ -2,7 +2,7 @@
 //! suoi task e dalle sue proposte con una funzione pura, mai scritte su disco
 //! ne' impostabili da un tool. `GoalView` le espone con il goal.
 
-use super::Goal;
+use super::{Goal, GoalReview};
 use crate::board::{Board, Task, TaskKind, TaskStatus};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -21,10 +21,27 @@ pub enum GoalPhase {
     Verifying,
     /// Nessun task aperto, ma una proposta del goal e' pendente.
     Deciding,
-    /// Nessun task aperto ne' proposta pendente. Fino alla consegna del goal
-    /// non dura: la board lo chiude subito (`Board::close_finished_goals`).
+    /// Nessun task aperto ne' proposta pendente, consegna non ancora partita.
+    /// Un goal senza branch (cartella senza git) non vi resta: la board lo
+    /// chiude subito (`Board::advance_goals`).
     Ready,
+    /// Il task di consegna del goal non e' `done` (in coda, in corso o fallito:
+    /// in quel caso `waiting` riporta `failed`).
+    Delivering,
     Closed,
+}
+
+impl GoalPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GoalPhase::Executing => "executing",
+            GoalPhase::Verifying => "verifying",
+            GoalPhase::Deciding => "deciding",
+            GoalPhase::Ready => "ready",
+            GoalPhase::Delivering => "delivering",
+            GoalPhase::Closed => "closed",
+        }
+    }
 }
 
 /// Cio' che di un goal aspetta l'utente.
@@ -34,6 +51,8 @@ pub enum GoalPhase {
 pub enum GoalWaiting {
     /// Una proposta del goal e' pendente.
     Proposal,
+    /// Il goal e' `ready` e la consegna non parte da sola: l'utente preme "Consegna".
+    Deliver,
     /// Un task del goal e' `failed`.
     Failed,
     /// Un task del goal ha il worker in attesa dell'utente.
@@ -58,6 +77,9 @@ pub struct GoalView {
     /// Vuoto = il goal procede da solo.
     pub waiting: Vec<GoalWaiting>,
     pub tasks: GoalProgress,
+    /// Verdetto dell'ultima review `done` del goal (`none` se non ce n'e'), anche
+    /// a goal aperto: da qui l'interfaccia sceglie "Consegna" o "Consegna comunque".
+    pub last_review: GoalReview,
 }
 
 /// Fase del goal dai suoi task e dalla presenza di una sua proposta pendente.
@@ -65,6 +87,8 @@ pub fn goal_phase(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalP
     let open = |kind: TaskKind| tasks.iter().any(|t| t.kind == kind && t.status() != TaskStatus::Done);
     if !goal.is_open() {
         GoalPhase::Closed
+    } else if open(TaskKind::Deliver) {
+        GoalPhase::Delivering
     } else if open(TaskKind::Work) {
         GoalPhase::Executing
     } else if open(TaskKind::Review) {
@@ -76,14 +100,37 @@ pub fn goal_phase(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalP
     }
 }
 
+/// Verdetto della review `done` conclusa per ultima fra `tasks`.
+pub(super) fn last_review_of(tasks: &[&Task]) -> GoalReview {
+    tasks
+        .iter()
+        .filter(|t| t.kind == TaskKind::Review && t.status() == TaskStatus::Done)
+        .filter_map(|t| Some((t.finished_at()?, t.report()?.verdict?)))
+        .max_by_key(|(at, _)| *at)
+        .map_or(GoalReview::NotReviewed, |(_, verdict)| verdict.into())
+}
+
+/// La consegna parte da sola: `auto_deliver` e l'ultima review non ha trovato
+/// problemi (con `issues` la sceglie l'utente: "Consegna comunque").
+pub(super) fn delivers_by_itself(goal: &Goal, last_review: GoalReview) -> bool {
+    goal.auto_deliver && last_review != GoalReview::Issues
+}
+
 /// Cio' che il goal aspetta dall'utente, nell'ordine di `GoalWaiting`. Un goal
 /// chiuso non aspetta nulla.
-pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> Vec<GoalWaiting> {
+pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool, last_review: GoalReview) -> Vec<GoalWaiting> {
     if !goal.is_open() {
         return Vec::new();
     }
+    // Pronto, con qualcosa da consegnare (senza branch il goal si chiude da solo),
+    // senza un task di consegna e senza che parta da solo.
+    let deliver = goal_phase(goal, tasks, proposal_pending) == GoalPhase::Ready
+        && !goal.branches.is_empty()
+        && tasks.iter().all(|t| t.kind != TaskKind::Deliver)
+        && !delivers_by_itself(goal, last_review);
     let checks = [
         (GoalWaiting::Proposal, proposal_pending),
+        (GoalWaiting::Deliver, deliver),
         (GoalWaiting::Failed, tasks.iter().any(|t| t.status() == TaskStatus::Failed)),
         (GoalWaiting::Attention, tasks.iter().any(|t| t.needs_attention())),
     ];
@@ -92,14 +139,16 @@ pub fn goal_waiting(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> Vec
 
 impl GoalView {
     fn of(goal: &Goal, tasks: &[&Task], proposal_pending: bool) -> GoalView {
+        let last_review = last_review_of(tasks);
         GoalView {
             goal: goal.clone(),
             phase: goal_phase(goal, tasks, proposal_pending),
-            waiting: goal_waiting(goal, tasks, proposal_pending),
+            waiting: goal_waiting(goal, tasks, proposal_pending, last_review),
             tasks: GoalProgress {
                 done: tasks.iter().filter(|t| t.status() == TaskStatus::Done).count(),
                 total: tasks.len(),
             },
+            last_review,
         }
     }
 

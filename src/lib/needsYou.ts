@@ -4,7 +4,8 @@
 
 import { displayStatus } from "./board.ts";
 import type { BoardView, Proposal, SettingsProposalView, Task } from "./board.ts";
-import { findGoal, goalLabel } from "./goals.ts";
+import { deliveryAction, findGoal, goalLabel, isGoalOpen } from "./goals.ts";
+import type { GoalView } from "./goals.ts";
 import { failureReason } from "./taskPanel.ts";
 
 export type NeedsYouItem =
@@ -17,6 +18,8 @@ export type NeedsYouItem =
       round: number | null;
     }
   | { kind: "settings"; proposal: SettingsProposalView }
+  /** Goal pronto da consegnare; `label` è il pulsante ("Consegna" o "Consegna comunque"). */
+  | { kind: "deliver"; goal: GoalView; label: string }
   | { kind: "attention"; task: Task; goal: string | null; question: boolean }
   | {
       kind: "failed";
@@ -48,7 +51,7 @@ function blockedTitles(tasks: readonly Task[], taskId: string): string[] {
 }
 
 /**
- * Proposte di task, proposte di impostazioni, task in corso che aspettano l'utente (domande prima
+ * Proposte di task, proposte di impostazioni, goal pronti da consegnare, task in corso che aspettano l'utente (domande prima
  * dell'attenzione) e task falliti, nell'ordine della board dentro ogni gruppo.
  */
 export function needsYou(board: Source): NeedsYouItem[] {
@@ -63,6 +66,10 @@ export function needsYou(board: Source): NeedsYouItem[] {
     });
   }
   for (const proposal of board.settings_proposals) items.push({ kind: "settings", proposal });
+  for (const goal of goals) {
+    const label = isGoalOpen(goal) && goal.waiting.includes("deliver") ? deliveryAction(goal) : null;
+    if (label) items.push({ kind: "deliver", goal, label });
+  }
   const waiting = board.tasks.flatMap((task) => {
     const shown = displayStatus(task);
     return shown === "question" || shown === "attention" ? [{ task, question: shown === "question" }] : [];
@@ -86,7 +93,13 @@ export function needsYou(board: Source): NeedsYouItem[] {
 
 /** Chiave stabile di una voce (per React). */
 export function needsYouKey(item: NeedsYouItem): string {
-  return item.kind === "proposal" || item.kind === "settings"
-    ? `${item.kind}:${item.proposal.id}`
-    : `${item.kind}:${item.task.id}`;
+  switch (item.kind) {
+    case "proposal":
+    case "settings":
+      return `${item.kind}:${item.proposal.id}`;
+    case "deliver":
+      return `deliver:${item.goal.id}`;
+    default:
+      return `${item.kind}:${item.task.id}`;
+  }
 }

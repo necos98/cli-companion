@@ -94,7 +94,7 @@ impl Registry {
             workdir: w.env.workdir.clone(),
             repo_dir: w.env.repo_dir.clone(),
             worktree: t.worktree.clone(),
-            gated: t.kind == TaskKind::Work && t.e2e,
+            gated: matches!(t.kind, TaskKind::Work | TaskKind::Deliver) && t.e2e,
             last_run: t.e2e_run.clone(),
         })
     }

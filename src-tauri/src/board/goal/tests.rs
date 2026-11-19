@@ -8,9 +8,9 @@ use crate::board::{
 };
 use serde_json::{json, Value};
 
-const CTX: SpecContext<'static> = SpecContext { workspace_agent: None, bots: &[] };
+pub(super) const CTX: SpecContext<'static> = SpecContext { workspace_agent: None, bots: &[] };
 
-fn spec(id: &str, deps: &[&str]) -> TaskSpec {
+pub(super) fn spec(id: &str, deps: &[&str]) -> TaskSpec {
     TaskSpec {
         id: id.into(),
         title: format!("Task {id}"),
@@ -20,11 +20,11 @@ fn spec(id: &str, deps: &[&str]) -> TaskSpec {
     }
 }
 
-fn review(id: &str, deps: &[&str]) -> TaskSpec {
+pub(super) fn review(id: &str, deps: &[&str]) -> TaskSpec {
     TaskSpec { kind: TaskKind::Review, ..spec(id, deps) }
 }
 
-fn goal_spec(id: &str) -> GoalSpec {
+pub(super) fn goal_spec(id: &str) -> GoalSpec {
     GoalSpec {
         id: id.into(),
         title: format!("Goal {id}"),
@@ -34,33 +34,35 @@ fn goal_spec(id: &str) -> GoalSpec {
     }
 }
 
-fn new_goal(id: &str, tasks: Vec<TaskSpec>) -> ProposalInput {
+pub(super) fn new_goal(id: &str, tasks: Vec<TaskSpec>) -> ProposalInput {
     ProposalInput { tasks, goal: Some(ProposalGoal::New(goal_spec(id))) }
 }
 
-fn in_goal(id: &str, tasks: Vec<TaskSpec>) -> ProposalInput {
+pub(super) fn in_goal(id: &str, tasks: Vec<TaskSpec>) -> ProposalInput {
     ProposalInput { tasks, goal: Some(ProposalGoal::Existing(id.into())) }
 }
 
 /// Propone e accetta subito, dall'Intake.
-fn accept(b: &mut Board, pid: &str, input: ProposalInput, now: i64) -> Result<Vec<String>, String> {
+pub(super) fn accept(b: &mut Board, pid: &str, input: ProposalInput, now: i64) -> Result<Vec<String>, String> {
     b.add_proposal(pid.into(), "intake", None, input, CTX, now)?;
     b.accept_proposal(pid, CTX, now)
 }
 
 /// Board con il goal `g` (task `a`, poi la review `rev` di `a`) accettato al tempo 10.
-fn board_with_goal() -> Board {
+pub(super) fn board_with_goal() -> Board {
     let mut b = Board::new("ws-1");
     accept(&mut b, "p-1", new_goal("g", vec![spec("a", &[]), review("rev", &["a"])]), 10).unwrap();
     b
 }
 
-fn report(verdict: Option<Verdict>) -> TaskReport {
+pub(super) fn report(verdict: Option<Verdict>) -> TaskReport {
     TaskReport {
         status: "completed".into(),
         summary: "ok".into(),
         commit: None,
         pr_url: None,
+        commits: Vec::new(),
+        pr_urls: Vec::new(),
         files_changed: Vec::new(),
         tests: Vec::new(),
         follow_ups: Vec::new(),
@@ -71,12 +73,12 @@ fn report(verdict: Option<Verdict>) -> TaskReport {
     }
 }
 
-fn finish(b: &mut Board, id: &str, at: i64, verdict: Option<Verdict>) {
+pub(super) fn finish(b: &mut Board, id: &str, at: i64, verdict: Option<Verdict>) {
     let report = Some(report(verdict));
     b.task_mut(id).unwrap().set_state(TaskState::Done(Finished { started_at: None, finished_at: at, report }));
 }
 
-fn set_status(b: &mut Board, id: &str, status: TaskStatus) {
+pub(super) fn set_status(b: &mut Board, id: &str, status: TaskStatus) {
     b.task_mut(id).unwrap().set_status(status);
 }
 
@@ -85,7 +87,7 @@ fn live(b: &mut Board, id: &str, worker: WorkerActivity) {
     b.task_mut(id).unwrap().set_state(TaskState::Running(Run { started_at: 1, previous_attempt: None, phase }));
 }
 
-fn view(b: &Board, id: &str) -> GoalView {
+pub(super) fn view(b: &Board, id: &str) -> GoalView {
     b.goal_view(id).unwrap()
 }
 
@@ -341,7 +343,7 @@ fn the_phase_follows_work_review_and_proposals() {
     b.add_proposal("p-2".into(), "rev-tab", Some("rev".into()), vec![spec("fix", &["a"])].into(), CTX, 22).unwrap();
     assert_eq!(view(&b, "g").phase, GoalPhase::Deciding);
     b.discard_proposal("p-2", 23).unwrap();
-    b.close_finished_goals(24);
+    b.advance_goals(24);
     let closed = view(&b, "g");
     assert_eq!((closed.phase, closed.waiting.as_slice()), (GoalPhase::Closed, &[][..]));
 }
@@ -400,25 +402,29 @@ fn the_view_counts_done_tasks_and_lists_every_goal() {
 // --- chiusura ---
 
 #[test]
-fn a_goal_with_every_task_done_closes_as_delivered_with_the_last_review() {
+fn a_goal_without_branches_closes_as_delivered_with_the_last_review_and_no_report() {
     let mut b = board_with_goal();
     finish(&mut b, "a", 20, None);
-    assert!(b.close_finished_goals(21).is_empty(), "the review is still open");
+    assert_eq!(b.advance_goals(21), GoalAdvance::default());
+    assert!(b.goal("g").unwrap().is_open(), "the review is still open");
     finish(&mut b, "rev", 22, Some(Verdict::Issues));
     b.add_proposal("p-2".into(), "rev-tab", Some("rev".into()), vec![spec("fix", &["a"])].into(), CTX, 23).unwrap();
-    assert!(b.close_finished_goals(24).is_empty(), "a proposal is pending");
+    assert_eq!(b.advance_goals(24), GoalAdvance::default());
+    assert!(b.goal("g").unwrap().is_open(), "a proposal is pending");
     b.accept_proposal("p-2", CTX, 25).unwrap();
     b.create_task_in(review("rev-2", &["fix"]), Some("g"), CTX, 25).unwrap();
     finish(&mut b, "fix", 26, None);
     finish(&mut b, "rev-2", 27, Some(Verdict::Passed));
-    assert_eq!(b.close_finished_goals(28), ["g"]);
+    assert_eq!(b.advance_goals(28), GoalAdvance::default(), "no delivery task: nothing to announce");
     let g = b.goal("g").unwrap();
     assert_eq!(
         (g.closed_at(), g.outcome(), g.review()),
         (Some(28), Some(GoalOutcome::Delivered), Some(GoalReview::Passed))
     );
     assert_eq!(b.updated_at, 28);
-    assert!(b.close_finished_goals(29).is_empty(), "closed once");
+    assert_eq!(b.advance_goals(29), GoalAdvance::default(), "closed once");
+    assert_eq!(b.updated_at, 28);
+    assert_eq!(b.goal("g").unwrap().report(), None, "nothing was delivered by a task");
 }
 
 #[test]
@@ -431,7 +437,7 @@ fn the_review_of_a_closed_goal_is_the_last_one_or_none() {
     finish(&mut b, "c", 2, None);
     finish(&mut b, "r2", 3, Some(Verdict::Passed));
     finish(&mut b, "r1", 4, Some(Verdict::Issues));
-    b.close_finished_goals(5);
+    b.advance_goals(5);
     assert_eq!(b.goal("plain").unwrap().review(), Some(GoalReview::NotReviewed));
     assert_eq!(b.goal("checked").unwrap().review(), Some(GoalReview::Issues), "r1 finished last");
 }
@@ -441,7 +447,7 @@ fn a_goal_left_without_tasks_closes_as_abandoned() {
     let mut b = Board::new("ws-1");
     accept(&mut b, "p-1", new_goal("g", vec![spec("a", &[])]), 1).unwrap();
     b.delete_task("a", 2).unwrap();
-    assert_eq!(b.close_finished_goals(3), ["g"]);
+    assert_eq!(b.advance_goals(3), GoalAdvance::default());
     assert_eq!(b.goal("g").unwrap().outcome(), Some(GoalOutcome::Abandoned));
 }
 
@@ -521,7 +527,7 @@ fn tasks_of_an_open_goal_are_never_archived() {
     finish(&mut b, "extra", 1, None);
     let gone: Vec<String> = b.take_archivable().into_iter().map(|t| t.id).collect();
     assert_eq!(gone, ["extra"], "the oldest belongs to an open goal");
-    b.close_finished_goals(2);
+    b.advance_goals(2);
     b.tasks.push(Task::from_spec(spec("extra-2", &[]), 1));
     finish(&mut b, "extra-2", 999, None);
     let gone: Vec<String> = b.take_archivable().into_iter().map(|t| t.id).collect();

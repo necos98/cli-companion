@@ -1,12 +1,13 @@
 //! Cio' che la board scrive di un goal: la nascita (o il giro successivo)
-//! all'accettazione di una proposta, le note dell'utente e la chiusura, a mano
-//! ("Chiudi goal": `abandoned`) o da sola quando non resta nulla di aperto
-//! (regola provvisoria fino alla consegna del goal: docs/GOALS.MD, "Tappe").
+//! all'accettazione di una proposta, le note dell'utente e la chiusura a mano
+//! ("Chiudi goal": `abandoned`). La chiusura da sola, alla consegna o quando non
+//! resta nulla, e' in `advance`.
 
-use super::{DecisionSource, Goal, GoalOutcome, GoalReview, ProposalGoal, DECISION_MAX};
-use crate::board::{Board, Task, TaskKind, TaskStatus, Verdict};
+use super::phase::last_review_of;
+use super::{DecisionSource, Goal, GoalOutcome, GoalReport, GoalReview, ProposalGoal, DECISION_MAX};
+use crate::board::{Board, Task, TaskStatus, Verdict};
 use crate::validate::req_text;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 impl From<Verdict> for GoalReview {
     fn from(v: Verdict) -> GoalReview {
@@ -15,13 +16,6 @@ impl From<Verdict> for GoalReview {
             Verdict::Issues => GoalReview::Issues,
         }
     }
-}
-
-/// Task di un goal: quanti sono e quanti sono ancora aperti (non `done`).
-#[derive(Default)]
-struct Tally {
-    total: usize,
-    open: usize,
 }
 
 impl Board {
@@ -81,7 +75,7 @@ impl Board {
         let removed_ids: Vec<&str> = removed.iter().map(|t| t.id.as_str()).collect();
         self.drop_references(&removed_ids);
         self.proposals.retain(|p| p.goal_id.as_deref() != Some(id));
-        self.close(id, GoalOutcome::Abandoned, now);
+        self.close(id, GoalOutcome::Abandoned, None, now);
         self.updated_at = now;
         Ok(removed)
     }
@@ -111,54 +105,16 @@ impl Board {
         Ok(doomed)
     }
 
-    /// Chiusura provvisoria: un goal aperto senza task aperti (tutti `done`) ne'
-    /// proposte pendenti si chiude da solo, `delivered`; senza piu' alcun task
-    /// (tutti eliminati) `abandoned`. Ritorna gli id dei goal chiusi.
-    pub fn close_finished_goals(&mut self, now: i64) -> Vec<String> {
-        let pending: HashSet<&str> = self.proposals.iter().filter_map(|p| p.goal_id.as_deref()).collect();
-        let mut tally: HashMap<&str, Tally> = HashMap::new();
-        for t in &self.tasks {
-            if let Some(g) = t.goal() {
-                let entry = tally.entry(g).or_default();
-                entry.total += 1;
-                entry.open += usize::from(t.status() != TaskStatus::Done);
-            }
-        }
-        let finished: Vec<(String, GoalOutcome)> = self
-            .goals
-            .iter()
-            .filter(|g| g.is_open() && !pending.contains(g.id.as_str()))
-            .filter_map(|g| match tally.get(g.id.as_str()) {
-                Some(t) if t.open > 0 => None,
-                Some(_) => Some((g.id.clone(), GoalOutcome::Delivered)),
-                None => Some((g.id.clone(), GoalOutcome::Abandoned)),
-            })
-            .collect();
-        for (id, outcome) in &finished {
-            self.close(id, *outcome, now);
-        }
-        if !finished.is_empty() {
-            self.updated_at = now;
-        }
-        finished.into_iter().map(|(id, _)| id).collect()
-    }
-
-    /// Scrive la chiusura del goal, con l'esito della sua ultima review.
-    fn close(&mut self, id: &str, outcome: GoalOutcome, now: i64) {
-        let review = self.last_review(id);
+    /// Scrive la chiusura del goal, con l'esito della sua ultima review e, se e'
+    /// stato consegnato da un task di consegna, il suo rapporto.
+    pub(super) fn close(&mut self, id: &str, outcome: GoalOutcome, report: Option<GoalReport>, now: i64) {
+        let tasks: Vec<&Task> = self.goal_tasks(id).collect();
+        let review = last_review_of(&tasks);
         if let Some(goal) = self.goal_mut(id) {
             goal.closed_at = Some(now);
             goal.outcome = Some(outcome);
             goal.review = Some(review);
+            goal.report = report;
         }
-    }
-
-    /// Verdetto della review del goal conclusa per ultima.
-    fn last_review(&self, id: &str) -> GoalReview {
-        self.goal_tasks(id)
-            .filter(|t| t.kind == TaskKind::Review && t.status() == TaskStatus::Done)
-            .filter_map(|t| Some((t.finished_at()?, t.report()?.verdict?)))
-            .max_by_key(|(at, _)| *at)
-            .map_or(GoalReview::NotReviewed, |(_, verdict)| verdict.into())
     }
 }

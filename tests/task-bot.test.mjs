@@ -97,7 +97,12 @@ describe("scelta del Bot nei form", () => {
 
 describe("tipi di task dei Bot", () => {
   it("etichette italiane, le stesse dei badge", () => {
-    assert.deepEqual(TASK_KIND_LABELS, { work: "Lavoro", review: "Review", plan: "Pianificazione" });
+    assert.deepEqual(TASK_KIND_LABELS, {
+      work: "Lavoro",
+      review: "Review",
+      plan: "Pianificazione",
+      deliver: "Consegna",
+    });
   });
   it("botHasKind e botsForKind: solo abilitati e con quel tipo, nell'ordine dei dati", () => {
     assert.equal(botHasKind(REVIEWER, "review"), true);

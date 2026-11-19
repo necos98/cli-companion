@@ -3,4 +3,4 @@
 /**
  * Cio' che di un goal aspetta l'utente.
  */
-export type GoalWaiting = "proposal" | "failed" | "attention";
+export type GoalWaiting = "proposal" | "deliver" | "failed" | "attention";

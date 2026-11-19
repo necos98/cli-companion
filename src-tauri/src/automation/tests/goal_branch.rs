@@ -364,11 +364,21 @@ fn delete_branches_refuses_open_and_delivered_goals_and_unknown_workspaces() {
     let err = boards::goal_delete_branches(&st, &h, "ws-1", "open").unwrap_err();
     assert_eq!(err, "goal open is open: close it first");
     finish(&st, &h, &session_of(&st, &h, "a"), "completed");
+    // Consegnato (qui senza nulla da consegnare: la sola cosa che lo chiude senza worker).
+    h.goal_branch_exists("open");
+    h.git_rule(
+        "rev-list --count",
+        true,
+        "0
+",
+        "",
+    );
+    boards::goal_deliver(&st, &h, "ws-1", "open").unwrap();
     let err = boards::goal_delete_branches(&st, &h, "ws-1", "open").unwrap_err();
     assert_eq!(err, "goal open was delivered: its branches are kept");
     assert_eq!(boards::goal_delete_branches(&st, &h, "ws-1", "nope").unwrap_err(), "unknown goal: nope");
     assert_eq!(boards::goal_delete_branches(&st, &h, "ws-9", "open").unwrap_err(), "workspace non trovato");
-    assert_eq!(count(&h, "branch -D goal/"), 0);
+    assert_eq!(count(&h, "branch -D goal/"), 1, "only the delivery itself deleted the branch");
 }
 
 #[test]

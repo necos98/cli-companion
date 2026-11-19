@@ -4,7 +4,8 @@
 use super::{git, repo_cfg, repo_dir, CleanupTarget};
 use crate::automation::hooks;
 use crate::automation::*;
-use crate::workspaces::DeliveryMode;
+use crate::board::GOAL_BRANCH_PREFIX;
+use crate::workspaces::{DeliveryMode, RepoConfig};
 
 /// Esito della pulizia: gli avvisi non bloccano mai.
 struct CleanupOutcome {
@@ -30,6 +31,40 @@ fn delete_goal_task_branch<H: Host>(
     }
 }
 
+/// Rimuove il worktree `path` del repository `root`: se esiste, prima i comandi di
+/// pulizia del repository (con `vars`, se dati), poi `git worktree remove` (con
+/// `--force` se l'impostazione lo chiede); se non c'e' piu' ne ripulisce solo
+/// la registrazione. `false` (con un avviso) se git non l'ha tolto.
+pub(super) fn remove_worktree<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    root: &str,
+    cfg: &RepoConfig,
+    path: &str,
+    vars: Option<&hooks::HookVars>,
+    warnings: &mut Vec<String>,
+) -> bool {
+    if !host.dir_exists(ws, path) {
+        let _ = git(host, ws, root, &["worktree", "prune"]);
+        return true;
+    }
+    if let Some(vars) = vars.filter(|_| !cfg.cleanup.is_empty()) {
+        warnings.extend(hooks::run_cleanup(host, ws, cfg, vars));
+    }
+    let mut args = vec!["worktree", "remove"];
+    if cfg.remove_force {
+        args.push("--force");
+    }
+    args.push(path);
+    match git(host, ws, root, &args) {
+        Ok(_) => true,
+        Err(e) => {
+            warnings.push(format!("worktree not removed: {e}"));
+            false
+        }
+    }
+}
+
 /// Esegue i comandi di pulizia del repository (se ci sono), poi rimuove il
 /// worktree (con `--force` se l'impostazione lo chiede) e il branch del task:
 /// `-D` per `pr` (il merge e' squash/rebase lato server, la consegna l'ha
@@ -40,28 +75,21 @@ fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, target: &CleanupTarget) -
     let (wt, mut warnings) = (&target.wt, Vec::new());
     let root = repo_dir(ws, target.repo.as_deref());
     let cfg = repo_cfg(ws, target.repo.as_deref()).cloned().unwrap_or_default();
-    if host.dir_exists(ws, &wt.path) {
-        if !cfg.cleanup.is_empty() {
-            let vars = hooks::HookVars {
-                repo_dir: &root,
-                worktree: &wt.path,
-                task_id: &target.task_id,
-                branch: &wt.branch,
-                base: &wt.base,
-            };
-            warnings.extend(hooks::run_cleanup(host, ws, &cfg, &vars));
-        }
-        let mut args = vec!["worktree", "remove"];
-        if cfg.remove_force {
-            args.push("--force");
-        }
-        args.push(&wt.path);
-        if let Err(e) = git(host, ws, &root, &args) {
-            warnings.push(format!("worktree not removed: {e}"));
-            return CleanupOutcome { removed: false, warnings };
-        }
-    } else {
-        let _ = git(host, ws, &root, &["worktree", "prune"]);
+    let vars = hooks::HookVars {
+        repo_dir: &root,
+        worktree: &wt.path,
+        task_id: &target.task_id,
+        branch: &wt.branch,
+        base: &wt.base,
+    };
+    if !remove_worktree(host, ws, &root, &cfg, &wt.path, Some(&vars), &mut warnings) {
+        return CleanupOutcome { removed: false, warnings };
+    }
+    // Difesa: il branch di un goal non e' di nessun task, lo cancella solo l'app
+    // a goal consegnato (vedi `DeliveryCleanup`).
+    if wt.branch.starts_with(GOAL_BRANCH_PREFIX) {
+        warnings.push(format!("branch {} kept: it is a goal branch", wt.branch));
+        return CleanupOutcome { removed: true, warnings };
     }
     match &target.goal_branch {
         Some(goal) => delete_goal_task_branch(host, ws, &root, &wt.branch, goal, &mut warnings),

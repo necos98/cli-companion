@@ -509,8 +509,15 @@ export const api = {
     invoke<BoardView>("task_move", { workspaceId, taskId, beforeId: beforeId ?? null }),
 
   /** Accetta o scarta una proposta di Task Intake. */
-  proposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
-    invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept }),
+  proposalDecide: (workspaceId: string, proposalId: string, accept: boolean, autoDeliver: boolean | null) =>
+    invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept, autoDeliver }),
+
+  /** "Consegna" / "Consegna comunque": crea il task di consegna del goal pronto. */
+  goalDeliver: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_deliver", { workspaceId, goalId }),
+
+  /** Impostazioni di consegna del goal: consegna automatica e Bot (null = invariato). */
+  goalSetDelivery: (workspaceId: string, goalId: string, autoDeliver: boolean | null, bot: string | null) =>
+    invoke<BoardView>("goal_set_delivery", { workspaceId, goalId, autoDeliver, bot }),
 
   /** "Chiudi goal": elimina i task in coda e falliti del goal, scarta le sue proposte e lo chiude. */
   goalClose: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_close", { workspaceId, goalId }),

@@ -356,7 +356,7 @@ fn v2_file_gets_task_kinds_and_the_new_presets_once() {
     );
     assert!(agent(&s, "setup").kinds.is_empty() && !agent(&s, "setup").enabled);
     for id in ["intake-other", "custom-planner"] {
-        assert_eq!(agent(&s, id).kinds, TaskKind::ALL, "{id}");
+        assert_eq!(agent(&s, id).kinds, [TaskKind::Work, TaskKind::Review, TaskKind::Plan], "{id}");
     }
     let reviewer = presets::find("reviewer").unwrap().bot();
     assert_eq!(agent(&s, "reviewer"), &reviewer);

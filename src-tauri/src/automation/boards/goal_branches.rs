@@ -39,7 +39,12 @@ impl Registry {
 
 /// Cancella `branch` (`git branch -D`) nel repository `dir`; se non c'e' piu'
 /// vale come cancellato. Git rifiuta, per esempio, un branch in checkout.
-fn delete_branch<H: Host>(host: &H, ws: &Workspace, dir: &str, branch: &str) -> Result<(), String> {
+pub(in crate::automation) fn delete_branch<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    dir: &str,
+    branch: &str,
+) -> Result<(), String> {
     let ref_name = format!("refs/heads/{branch}");
     let exists = host.git(ws, dir, &["rev-parse", "--verify", "--quiet", &ref_name]).map(|o| o.ok).unwrap_or(false);
     if !exists {

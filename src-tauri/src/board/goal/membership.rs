@@ -5,7 +5,7 @@
 //! di un goal aperto; un goal chiuso non riceve task.
 
 use super::{Goal, ProposalGoal, MAX_OPEN_GOALS};
-use crate::board::{Board, Task, TaskKind, TaskSpec};
+use crate::board::{Board, Task, TaskKind, TaskSpec, TaskStatus};
 use std::collections::HashSet;
 
 /// Errore di una proposta di un worker che indica da se' un goal.
@@ -42,6 +42,20 @@ impl Board {
         }
     }
 
+    /// Il goal ha un task di consegna non `done`.
+    pub(in crate::board) fn is_delivering(&self, id: &str) -> bool {
+        self.goal_tasks(id).any(|t| t.kind == TaskKind::Deliver && t.status() != TaskStatus::Done)
+    }
+
+    /// Il goal aperto `id` che accetta task nuovi: uno in consegna non ne accetta.
+    pub(in crate::board) fn joinable_goal(&self, id: &str) -> Result<&Goal, String> {
+        let goal = self.open_goal(id)?;
+        if self.is_delivering(id) {
+            return Err(format!("goal {id} is being delivered: new tasks cannot join it"));
+        }
+        Ok(goal)
+    }
+
     /// Un goal nuovo: id libero fra i goal della board e i goal nuovi delle
     /// altre proposte pendenti (`except` = la proposta stessa), e posto fra i
     /// goal aperti.
@@ -68,7 +82,7 @@ impl Board {
     pub(in crate::board) fn check_goal_target(&self, goal: &ProposalGoal, except: Option<&str>) -> Result<(), String> {
         match goal {
             ProposalGoal::New(spec) => self.check_new_goal(&spec.id, except),
-            ProposalGoal::Existing(id) => self.open_goal(id).map(|_| ()),
+            ProposalGoal::Existing(id) => self.joinable_goal(id).map(|_| ()),
         }
     }
 
