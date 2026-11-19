@@ -1,6 +1,6 @@
 # Goal (proposta di design)
 
-> **Stato: in corso.** Le tappe T1 e T2 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
+> **Stato: in corso.** Le tappe T1, T2, T3 e T6 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
 > come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
 > una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
 
@@ -409,7 +409,8 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T8 | Follow-up alla chiusura | T3 |
 
 Fra T2 e T5 un goal si chiude solo a mano, o da solo quando tutti i suoi task sono `done` (regola provvisoria,
-sostituita in T5 dalla chiusura alla consegna).
+sostituita in T5 dalla chiusura alla consegna). T4 e T5 conviene rilasciarle insieme: con il branch ma senza la
+consegna, il lotto resterebbe sul branch del goal.
 
 Note sulla consegna di T2 (il contratto è in BOARD.MD, "Goal"):
 
@@ -420,8 +421,7 @@ Note sulla consegna di T2 (il contratto è in BOARD.MD, "Goal"):
 - un goal rimasto senza task (tutti eliminati) e senza proposte si chiude da solo `abandoned`;
 - la proposta di un worker (reviewer o planner) non può indicare `goal` né `goal_id`: il goal del reviewer lo
   eredita l'app, i task `plan` non ne hanno;
-- un goal chiuso non accetta note dell'utente. T4 e T5 conviene rilasciarle insieme: con il branch ma senza la
-consegna, il lotto resterebbe sul branch del goal.
+- un goal chiuso non accetta note dell'utente.
 
 ## 17. Punti aperti
 

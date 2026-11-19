@@ -267,7 +267,7 @@ worker o cosa si può scegliere. Compaiono in `KanbanCard`, `ListRow`, `TaskDeta
 
 | Badge | Origine del dato | Effetto |
 |---|---|---|
-| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks`, nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`; la proposta torna nel thread d'origine. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
+| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks` (e `goal` se la review appartiene a un goal; ha anche `get_goal`), nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`; la proposta torna nel thread d'origine. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
 | **Pianificazione** | `kind: plan`, solo task creati dall'app (HUB e `create_plan_task`) | Ruolo Planner: worktree isolato sempre, non occupa il repository nello scheduler, niente setup, consegna, commit né E2E; `list_tasks`, `get_workspace_settings` e `ask_user`; notifica `PlanWithoutProposal` se chiude senza proposta; escluso dalla chiusura automatica del thread. Il `kind` è riservato all'app. Serve un Bot con `plan` (`Planner`) |
 | **Verificato** / **Problemi trovati** | verdetto del report di una review `done` | Solo informativo: i `findings` si leggono nel dettaglio |
 | **E2E richiesto** / esito | `e2e` del task e ultima esecuzione (`e2e_run` o `report.e2e`) | "E2E richiesto" finché il task marcato non ha mai eseguito gli E2E, poi l'esito (vedi "Test E2E") |
@@ -759,12 +759,15 @@ Worker:
 
 Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_tasks`,
 `propose_settings` o tool di skill; tutti gli altri metodi di sessione restano vietati):
-- `get_task` → `{ task, title, instructions, environment, reviewed_tasks, previous_attempt? }`.
+- `get_task` → `{ task, title, instructions, environment, reviewed_tasks, goal?, previous_attempt? }`.
   `instructions` sono quelle del reviewer, **senza `delivery`**. `reviewed_tasks` ha, per ogni
   dipendenza diretta, `{ id, title, status, summary (troncato), commit, pr_url, files_changed,
   diffstat, tests, follow_ups, truncated? }` (liste e testi limitati; `truncated: true` se
   qualcosa è stato tagliato). Non include la specifica: il reviewer la legge con
-  `get_task_details`.
+  `get_task_details`. `goal` (omesso se la review non appartiene a un goal): `{ title, request,
+  done_when, decisions }`, con `decisions` come `{ source, text }`, come per il worker. Il reviewer
+  non riceve `dependencies` (i report dei task rivisti sono già in `reviewed_tasks`) e le sue
+  istruzioni non hanno la riga "Read `dependencies` and `goal` before starting...".
 - `complete_task { status, summary, verdict?, findings?, ... }` (come sopra, più i campi di verdetto):
   con `status: "completed"` serve `verdict: "passed" | "issues"`; `findings: string[]` (stessi
   limiti di `follow_ups`: max 100 voci, 1..=2000 caratteri) è obbligatorio e non vuoto con
