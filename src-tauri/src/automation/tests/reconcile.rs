@@ -200,6 +200,7 @@ fn an_orphan_is_not_queued_if_a_task_with_its_id_appears_in_the_meantime() {
         },
         workspace: None,
         keep_unmerged: true,
+        goal_branch: None,
     };
     assert!(reg.queue_orphan_cleanup(target.clone()));
     assert_eq!(reg.take_effects().len(), 1);
@@ -298,4 +299,14 @@ fn removing_a_workspace_without_worktrees_cleans_nothing() {
     queue(&st, &h, vec![spec("a", &[])]);
     st.remove_board(&h, &h.ws_for("ws-1").unwrap());
     assert!(h.git_log().iter().all(|l| !l.contains("worktree remove") && !l.contains("branch -")), "{:?}", h.git_log());
+}
+
+#[test]
+fn a_goal_branch_worktree_is_never_an_orphan() {
+    let h = with_listed(DeliveryMode::Pr, &[("goal-x", Some("goal/x"))]);
+    orphan_exists(&h, "goal-x");
+    let st = AutomationState::default();
+    let report = st.reconcile_worktrees(&h);
+    assert!(report.queued.is_empty() && report.warnings.is_empty(), "{report:?}");
+    assert!(removals(&h).is_empty() && branch_deletions(&h).is_empty(), "{:?}", h.git_log());
 }

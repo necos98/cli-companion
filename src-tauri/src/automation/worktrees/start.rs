@@ -3,19 +3,29 @@
 
 use super::{git, is_abs, join_path, repo_cfg, repo_dir, task_branch, FetchCache, StartJob, WORKTREES_DIR};
 use crate::agents::{registry, AutomationLaunch, AutomationRequest, AutomationStart};
-use crate::automation::hooks;
 use crate::automation::planner::root::RootPlan;
 use crate::automation::*;
-use crate::board::{repo_key, Task, WorktreeInfo};
+use crate::board::{Task, WorktreeInfo};
 use crate::validate::valid_branch;
 use crate::workspaces::DeliveryMode;
+use setup::{setup_cfg, setup_worktree};
 
 mod free;
+mod goal;
+mod setup;
 mod skill;
 
 const EXCLUDE_LINE: &str = ".worktrees/";
 /// Quanto vale un `git fetch` gia' fatto per (repo, base).
 const FETCH_TTL: Duration = Duration::from_secs(60);
+
+/// Da quale riferimento nasce il worktree di un task.
+enum WorktreeStart<'a> {
+    /// Dal base: `origin/<base>` dopo un fetch (`pr`) o il `<base>` locale.
+    Base(&'a str),
+    /// Dal branch `goal/<id>` del goal del task, senza fetch.
+    GoalBranch(&'a str),
+}
 
 // ---------------------------------------------------------------------------
 // Base, fetch, worktree
@@ -110,51 +120,15 @@ fn add_worktrees_exclude<H: Host>(host: &H, ws: &Workspace, dir: &str, warnings:
     }
 }
 
-/// Configurazione del repository se il worktree del task va preparato: un
-/// task `isolated` legge solo il codice e non ha setup.
-fn setup_cfg(job: &StartJob) -> Option<&crate::workspaces::RepoConfig> {
-    let task = &job.task;
-    repo_cfg(&job.ws, task.repo.as_deref()).filter(|c| c.has_setup() && !task.kind.isolated())
-}
-
-/// Setup di un worktree appena creato (file ignorati, comandi), se il
-/// repository ne ha uno. Ogni passo e' pubblicato e fa da battito del guardiano.
-fn setup_worktree<H: Host>(
-    st: &AutomationState,
-    host: &H,
-    job: &StartJob,
-    dir: &str,
-    wt: &WorktreeInfo,
-) -> Result<Vec<String>, String> {
-    let (ws, task) = (&job.ws, &job.task);
-    let Some(cfg) = setup_cfg(job) else {
-        return Ok(Vec::new());
-    };
-    let key = repo_key(task.repo.as_deref());
-    let ctx = hooks::SetupCtx {
-        ws,
-        cfg,
-        repo: &key,
-        repo_dir: dir,
-        worktree: &wt.path,
-        task_id: &task.id,
-        branch: &wt.branch,
-        base: &wt.base,
-    };
-    let report = |label: &str| {
-        st.run(host, |r| r.touch_preparing(&ws.id, &task.id, job.attempt, Some(label), now_millis(), true));
-    };
-    hooks::run_setup(host, &ctx, &report)
-}
-
-/// Crea (o riusa) il worktree del task nel suo repository, dal branch base:
-/// `origin/<base>` dopo un fetch (`pr`) o il `<base>` locale (`local_merge`).
+/// Crea (o riusa) il worktree del task nel suo repository, da `start` (il
+/// base, con il fetch in `pr`, o il branch del goal). Il riferimento si calcola
+/// solo se il worktree va creato.
 /// Ritorna anche gli avvisi (non bloccanti) per la nota del task.
 fn prepare_worktree<H: Host>(
     st: &AutomationState,
     host: &H,
     job: &StartJob,
-    base: &str,
+    start: WorktreeStart,
 ) -> Result<(WorktreeInfo, Vec<String>), String> {
     let (ws, task) = (&job.ws, &job.task);
     let dir = repo_dir(ws, task.repo.as_deref());
@@ -163,12 +137,14 @@ fn prepare_worktree<H: Host>(
         return Ok((wt.clone(), Vec::new()));
     }
     let mut warnings = Vec::new();
-    let base_ref = if ws.delivery.mode == DeliveryMode::Pr {
-        // Un fetch alla volta: la cache evita di ripeterli per ogni task.
-        let mut cache = lock(&st.fetches);
-        remote_or_local(host, ws, &dir, base, &mut cache, &mut warnings)
-    } else {
-        base.to_string()
+    let base_ref = match start {
+        WorktreeStart::GoalBranch(goal) => goal.to_string(),
+        WorktreeStart::Base(base) if ws.delivery.mode == DeliveryMode::Pr => {
+            // Un fetch alla volta: la cache evita di ripeterli per ogni task.
+            let mut cache = lock(&st.fetches);
+            remote_or_local(host, ws, &dir, base, &mut cache, &mut warnings)
+        }
+        WorktreeStart::Base(base) => base.to_string(),
     };
     let path = task
         .worktree
@@ -203,7 +179,7 @@ fn prepare_and_setup<H: Host>(
     st: &AutomationState,
     host: &H,
     job: &StartJob,
-    base: &str,
+    start: WorktreeStart,
 ) -> Result<(WorktreeInfo, Vec<String>), String> {
     let (ws, task) = (&job.ws, &job.task);
     let slow = setup_cfg(job).is_some();
@@ -215,7 +191,7 @@ fn prepare_and_setup<H: Host>(
             st.run(host, |r| r.end_preparing(&ws.id, &task.id, job.attempt, now_millis()));
         }
     };
-    let result = prepare_worktree(st, host, job, base).and_then(|(mut wt, mut warnings)| {
+    let result = prepare_worktree(st, host, job, start).and_then(|(mut wt, mut warnings)| {
         if !wt.setup_done {
             let dir = repo_dir(ws, task.repo.as_deref());
             warnings.extend(setup_worktree(st, host, job, &dir, &wt)?);
@@ -282,6 +258,8 @@ struct Placement {
     warnings: Vec<String>,
     branch: Option<String>,
     base: Option<String>,
+    /// `goal/<id>`, per un task di un goal in una cartella git.
+    goal_branch: Option<String>,
     root_plan: Option<RootPlan>,
     /// Modalita' libera: la cartella non e' un repository git.
     free: bool,
@@ -300,7 +278,7 @@ fn place_in_repo<H: Host>(st: &AutomationState, host: &H, job: &StartJob, dir: &
         if delivery.mode == DeliveryMode::LocalMerge && !isolated {
             require_checkout_on_base(host, ws, dir, &base)?;
         }
-        let (wt, warnings) = prepare_and_setup(st, host, job, &base)?;
+        let (wt, warnings) = prepare_and_setup(st, host, job, WorktreeStart::Base(&base))?;
         return Ok(Placement { worktree: Some(wt), warnings, branch, base: Some(base), ..Placement::default() });
     }
     // Senza worktree l'app non tocca git: legge solo la base per le istruzioni.
@@ -315,9 +293,13 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
     let dir = repo_dir(ws, task.repo.as_deref());
     // Una cartella senza git (modalita' libera) non ha worktree, branch, setup
     // ne' controlli sul checkout, qualunque sia la consegna del workspace.
-    let place =
-        if free::is_free(host, job, &dir)? { free::place(host, job)? } else { place_in_repo(st, host, job, &dir)? };
-    let Placement { worktree, warnings, branch, base, root_plan, free } = place;
+    let place = match (free::is_free(host, job, &dir)?, task.goal()) {
+        (true, _) => free::place(host, job)?,
+        // I task di un goal hanno sempre il worktree, sul branch del goal.
+        (false, Some(goal)) => goal::place(st, host, job, &dir, goal)?,
+        (false, None) => place_in_repo(st, host, job, &dir)?,
+    };
+    let Placement { worktree, warnings, branch, base, goal_branch, root_plan, free } = place;
     let workdir = worktree.as_ref().map_or_else(|| dir.clone(), |w| w.path.clone());
     let permissions_file = host.worker_permissions_file(ws, &task.agent)?;
     let req = AutomationRequest {
@@ -342,7 +324,7 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
             env: launch_env,
             kind: task.kind,
         },
-        env: WorkerEnv { delivery, repo_dir: dir, workdir, branch, base, root_plan, free },
+        env: WorkerEnv { delivery, repo_dir: dir, workdir, branch, base, goal_branch, root_plan, free },
     })
 }
 

@@ -421,11 +421,14 @@ workspace. Cambiarla non tocca i task già `running`.
 
 Per le modalità con branch: `repos[repo].base_branch` → (solo `pr`) default di `origin`
 (`git symbolic-ref --short refs/remotes/origin/HEAD`, senza `origin/`) → branch corrente del
-checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branch corrente.
+checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branch corrente. Per un goal la regola
+vale una volta, alla creazione di `goal/<id>` nel repository: la base risolta si scrive in `Goal.branches` e non
+cambia più (vedi "Branch del goal").
 
 ### Worktree (solo modalità parallele)
 
-Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
+Fanno eccezione i task di un goal in una cartella git: hanno il worktree in ogni modalità, da `goal/<id>` (vedi
+"Branch del goal"). Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
 `info/exclude`, hook del repo (`copy_ignored`, `setup`) dopo la creazione, `setup_done`,
 riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 - Gli **hook** `setup` e `cleanup` girano con il runner dei processi dell'app (`automation/process.rs`,
@@ -467,7 +470,7 @@ riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 
 ### Modalità in place
 
-Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
+Per i task sciolti (un task di un goal ha sempre il worktree, vedi "Branch del goal"). Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
 nulla (niente fetch, niente worktree); nelle modalità con branch legge soltanto la base
 (`base_branch` del repo, default di `origin` per `pr`, branch corrente) per scriverla nelle
 istruzioni. In `pr`/`local_merge` seriali il worker crea il branch
@@ -504,6 +507,17 @@ modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalit�
 - **local_merge, in place**: `git switch -c task/<id> <base>`; lavoro; commit; `git switch
   <base>`; `git merge --ff-only task/<id>` (se non è fast-forward: `git rebase <base>
   task/<id>` e riprova); `git branch -d task/<id>`.
+- **Task di un goal** (in una cartella git; una sola variante, indipendente dalla modalità; testo in
+  `board/texts/goal.rs`, `environment` con task branch, goal branch e base): commit su `task/<id>` (il worktree è
+  già lì); `git rebase goal/<goal-id>` (risolvi i conflitti, ripeti la verifica); passo E2E per i task `e2e`;
+  `git fetch . task/<id>:goal/<goal-id>`, eseguito nel worktree del task: avanza il branch del goal al tuo commit
+  senza metterlo in checkout. Se è rifiutato come non fast-forward (`! [rejected] … (non-fast-forward)`, nulla
+  cambia) perché il branch del goal si è mosso: rebase di nuovo, ripeti la verifica, riprova. Se git rifiuta perché
+  `goal/<goal-id>` è in checkout nella copia dell'utente o in un altro worktree (`fatal: refusing to fetch into
+  branch 'refs/heads/goal/<id>' checked out at '<path>'`, nulla cambia, anche con `receive.denyCurrentBranch`) →
+  `complete_task` `failed` con il motivo: l'utente deve portare quella cartella su un altro branch. Mai push, mai
+  PR, mai toccare `<base>` (il goal si consegna per intero più tardi), niente checkout di altri branch; poi
+  `complete_task` `completed` con `commit`.
 - **push**: commit sul branch corrente; `git pull --rebase`; ripeti la verifica se ha portato
   modifiche; `git push`.
 - **commit**: commit sul branch corrente. Niente push.
@@ -534,6 +548,7 @@ Posizione del passo:
 - `local_merge` in place: dopo il commit del lavoro, prima di `git switch <base>`.
 - `push`: dopo `git pull --rebase` (e la ripetizione della verifica), prima di `git push`.
 - `commit`: dopo il commit, ultimo passo.
+- task di un goal: dopo `git rebase goal/<goal-id>`, prima di `git fetch . task/<id>:goal/<goal-id>`.
 
 Prima della chiamata finale a `complete_task` c'è la riga `E2E_GATE`: `completed` è accettato
 solo se l'ultima esecuzione è passata sul codice attuale (stesso albero e stesse modifiche non
@@ -602,7 +617,9 @@ Funzione pura dopo ogni modifica (come oggi):
 3. Slot: due task della stessa cartella senza git (`no_git`, vedi "Cartelle senza git") non girano
    mai insieme, nemmeno in modalità parallela. In modalità parallela (`pr`/`local_merge` con `parallel`) fino a `max_parallel`
    running nella board; altrimenti **1 running per repository** (chiave `repo`), comunque
-   entro `max_parallel`. Un task `plan`, che gira sempre nel suo worktree, non occupa il repository.
+   entro `max_parallel`. Un task `plan`, che gira sempre nel suo worktree, non occupa il repository; nemmeno un task
+   di un goal in una cartella git (`Task::runs_in_own_worktree`), che vale fino a `max_parallel` in ogni modalità.
+   Un task di un goal `no_git` lavora sul posto: resta esclusivo per cartella.
 4. Ogni scelto passa a `running` (`worker_status = starting`, `attempts += 1`,
    `started_at`), l'avvio vero (git + spawn) gira fuori dal lock su un thread separato.
 
@@ -1058,7 +1075,9 @@ tutti `done` (nessuna modifica allo scheduler).
 - **Chi la esegue**: un **reviewer** (`whoami` → `role: "reviewer"`), con istruzioni proprie
   (`reviewer_instructions.md`) e i tool descritti in "Tool MCP". Non modifica file tracciati, non
   fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
-  integrato con `git fetch origin` e `origin/<base>`. Legge le specifiche con `get_task_details`,
+  integrato con `git fetch origin` e `origin/<base>`; per la review di un goal lo stato integrato è `goal/<id>`
+  (il worktree parte da lì: niente fetch né `origin/<base>`) e il diff dell'intero goal è `<base>...goal/<id>`
+  (vedi "Branch del goal"). Legge le specifiche con `get_task_details`,
   i diff dei task rivisti, esegue build e test richiesti, se una specifica rivista ha scenari E2E esegue la suite E2E sullo stato integrato e controlla che ogni scenario abbia un test (scenario senza test o test che fallisce = difetto reale), controlla ogni "Done when" e
   l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali:
   obiettivo mancato, bug, regressioni, test mancanti, sicurezza e le **violazioni chiare dello
@@ -1198,6 +1217,8 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
 - **Scheduler**: due task della stessa cartella senza git non girano mai insieme, nemmeno in modalità
   parallela (condividono la cartella).
 - **Review**: rivede i file direttamente nella cartella (vedi "Task di review").
+- **Goal**: un goal in una cartella senza git non ha branch (nessuna voce in `Goal.branches` per quella cartella):
+  i suoi task lavorano in modalità libera come qui descritto.
 - **E2E**: un task `e2e` in una cartella senza git è rifiutato alla creazione, proposta, accettazione e
   aggiornamento, e fallisce all'avvio, perché il blocco della consegna richiede un'impronta git del codice
   ("task '<id>': e2e needs a git repository: <cartella> is not one … Remove e2e or ask the user to run git
@@ -1226,7 +1247,7 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
 Il goal (obiettivo) è l'oggetto tracciato sopra i task: nasce da una proposta accettata, raggruppa i suoi task, ha
 una fase calcolata e una chiusura. Il progetto completo, con le tappe successive (branch del goal, consegna,
 correzione automatica, follow-up), è in [GOALS.MD](GOALS.MD); qui il contratto consegnato (tappa T2). Il codice è
-in `board/goal.rs` e `board/goal/` (puro, senza orologio).
+in `board/goal.rs` e `board/goal/` (puro, senza orologio). Il branch del goal (tappa T4) è in "Branch del goal" più sotto.
 
 ```jsonc
 {
@@ -1241,11 +1262,14 @@ in `board/goal.rs` e `board/goal/` (puro, senza orologio).
   "created_at": 0,
   "closed_at": 0,             // presente = chiuso (omesso se aperto); un goal chiuso non si riapre
   "outcome": "delivered",     // solo se chiuso: delivered | abandoned
-  "review": "passed"          // solo se chiuso: passed | issues | none (verdetto della review del goal conclusa per ultima)
+  "review": "passed",         // solo se chiuso: passed | issues | none (verdetto della review del goal conclusa per ultima)
+  "branches": {               // repository -> branch del goal (vuoto finché nessun task è partito), vedi "Branch del goal"
+    ".": { "branch": "goal/export-ordini", "base": "main" }
+  }
 }
 ```
 
-I campi delle tappe successive (`branches`, `auto_fix`, `auto_deliver`, `report`, `follow_ups`) non esistono
+I campi delle tappe successive (`auto_fix`, `auto_deliver`, `report`, `follow_ups`) non esistono
 ancora. Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
 tasks to an open goal with goal_id").
 
@@ -1289,7 +1313,8 @@ aspetta nulla.
 
 **Chiusura** (l'unico stato del goal scritto su disco):
 
-- **da sola** (regola provvisoria fino alla consegna del goal): a ogni pubblicazione della board
+- **da sola** (regola provvisoria fino alla consegna del goal, tappa T5; il lavoro però **resta su `goal/<id>`**:
+  finché la consegna non esiste niente arriva sulla base): a ogni pubblicazione della board
   (`Board::close_finished_goals`, prima della vista e dell'archivio) un goal aperto senza task aperti (tutti `done`)
   né proposte pendenti si chiude `delivered`; un goal rimasto senza task (tutti eliminati) si chiude `abandoned`;
 - **"Chiudi goal"** (comando `goal_close`): elimina i task `queued` e `failed` del goal, con i task non `done` che ne
@@ -1297,7 +1322,7 @@ aspetta nulla.
   `running` risponde "cannot close goal '<id>': <ids> are running, stop them first" senza toccare la board. I
   worktree dei task tolti vengono ripuliti. I task `done` restano.
 
-In entrambi i casi `review` è il verdetto della review del goal conclusa per ultima (`none` se nessuna). Un goal
+La chiusura non tocca i branch del goal. In entrambi i casi `review` è il verdetto della review del goal conclusa per ultima (`none` se nessuna). Un goal
 chiuso rifiuta nuovi task e note.
 
 **Note dell'utente** (comando `goal_add_note`): una voce `user` nel registro delle decisioni di un goal aperto
@@ -1305,6 +1330,41 @@ chiuso rifiuta nuovi task e note.
 
 **Vista.** `BoardView.goals: GoalView[]` (i campi del goal più `phase`, `waiting` e `tasks: { done, total }`), nell'ordine
 della board; ogni `TaskView` porta il suo `goal` e `round`; le proposte portano `goal`/`goal_id`.
+
+### Branch del goal
+
+Ogni goal ha, per ogni repository git in cui lavora, un branch `goal/<goal-id>` (`goal_branch_name`,
+`board/goal/branches.rs`), registrato in `Goal.branches`: mappa chiave del repository → `{ branch, base }`. La
+chiave è `"."` per la root del workspace (`repo_key`), altrimenti la cartella relativa alla root; `base` è il nome
+semplice (senza `origin/`) risolto alla creazione con la regola di "Branch base", poi fisso. Al caricamento si
+scartano le voci con un nome diverso da `goal/<id>`, una base non valida o una chiave non canonica (il file non è
+fidato).
+
+- **Creazione** (`automation/worktrees/start/goal.rs`): la fa l'app all'avvio del primo task del goal in quel
+  repository, fuori dal lock della board, con `git branch --no-track goal/<id> <partenza>`: in `pr` da
+  `origin/<base>` dopo il fetch, altrimenti dal `<base>` locale. Un branch già esistente ma senza voce nel goal si
+  riusa; se la voce c'è e il branch è sparito l'avvio fallisce ("the goal branch goal/<id> no longer exists in
+  <dir>: the app does not recreate it silently. …"), mai ricreato in silenzio.
+- **Task del goal**: in una cartella git girano **sempre** in un worktree `<repoDir>/.worktrees/<task-id>`, branch
+  `task/<task-id>` creato da `goal/<goal-id>`, in ogni modalità di consegna (anche `push`/`commit`), con gli hook
+  `copy_ignored` e `setup` come negli altri worktree. Niente verifica "checkout sulla base" di `local_merge`; la
+  copia di lavoro dell'utente non si tocca e il branch del goal non si mette mai in checkout. Il retry riusa
+  worktree e branch. In una cartella senza git lavorano in modalità libera, senza branch.
+- **Integrazione**: vedi "Istruzioni di consegna" (rebase su `goal/<id>` e `git fetch . task/<id>:goal/<id>`).
+- **Review del goal**: il worktree parte da `goal/<id>`; per il reviewer lo stato integrato è `goal/<id>` e il diff
+  dell'intero goal è `<base>...goal/<id>`, al posto di `origin/<base>`. Le review sciolte non cambiano.
+- **Pulizia a `done`**: comandi `cleanup`, worktree rimosso e `task/<id>` cancellato (`-D`) **solo dopo**
+  `git merge-base --is-ancestor task/<id> goal/<id>`; altrimenti il branch resta con l'avviso "branch task/<id> kept:
+  not contained in goal/<id>" nella `note`. Un task `failed` conserva worktree e branch.
+- **Riallineamento**: riconosce solo i worktree `task/<id>`: un branch `goal/*` non è mai orfano né si cancella da lì.
+- **Elimina branch** (comando `goal_delete_branches`, `automation/boards/goal_branches.rs`): solo per un goal
+  **abbandonato** (un goal aperto o consegnato è rifiutato: "goal <id> is open: close it first", "goal <id> was
+  delivered: its branches are kept"). Il nome si ricostruisce dall'id e in ogni repository si fa `git branch -D`; un
+  branch già assente vale come cancellato. Le voci cancellate escono da `Goal.branches` anche se un altro repository
+  fallisce; i fallimenti tornano in un errore solo ("branch goal/<id> not deleted everywhere: <repo>: <errore>").
+- **Fino alla consegna del goal (T5)** il lavoro di un goal **resta su `goal/<id>`**: la chiusura provvisoria non lo
+  porta sulla base e nulla viene pushato né unito.
+- **Task sciolti**: invariati in tutto (checkout o worktree, base e consegna secondo la modalità).
 
 ### Proposte di impostazioni
 
@@ -1527,6 +1587,7 @@ Argomenti camelCase lato JS.
   (facoltativo, `NewTaskSpec.goal`) è un goal aperto: il task vi entra al giro corrente (vedi "Goal").
 - `goal_close(workspace_id, goal_id) -> BoardView`: "Chiudi goal" (vedi "Goal").
 - `goal_add_note(workspace_id, goal_id, text) -> BoardView`: nota dell'utente nel registro delle decisioni.
+- `goal_delete_branches(workspace_id, goal_id) -> BoardView`: "Elimina branch" di un goal abbandonato (vedi "Branch del goal").
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` è un `TaskAction` (vedi "Azioni consentite"; una stringa sconosciuta è rifiutata in deserializzazione) ∈ `retry` (failed →
   queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i
@@ -1652,8 +1713,9 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   avanzamento, cosa aspetta l'utente, richiesta, criteri, decisioni con "Aggiungi nota" (1..=500
   caratteri, solo goal aperti), task per giro con stato, esito delle review, "Chiudi goal" con
   conferma in linea che elenca i task in coda/falliti e le proposte che verranno eliminati (con un
-  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data. Consegna,
-  branch, correzioni e consegna automatiche arrivano con le tappe successive.
+  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data. Branch: per ogni
+  repository `goal/<id>` con la base da cui è nato; per un goal abbandonato "Elimina branch" con conferma
+  (`goal_delete_branches`). Consegna, correzioni e consegna automatiche arrivano con le tappe successive.
 - **Dipendenze**: il grafo React Flow attuale, ripulito (nodi con i 4 stati).
 - **Dettaglio** (pannello laterale destro agganciato, uguale per tutte le viste e aperto anche
   dal pannello Task): stato, id, titolo, azioni per stato (Da fare: Modifica, In cima alla

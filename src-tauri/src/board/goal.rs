@@ -8,9 +8,11 @@
 
 use super::TITLE_MAX;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 mod archive;
+mod branches;
 mod closure;
 mod input;
 mod membership;
@@ -20,6 +22,7 @@ mod phase;
 mod tests;
 
 pub use archive::MAX_CLOSED_GOALS_KEPT;
+pub use branches::{goal_branch_name, GoalBranch, GOAL_BRANCH_PREFIX};
 pub use input::{parse_goal_id, parse_goal_spec, GoalSpec, ProposalGoal};
 pub use phase::{GoalPhase, GoalProgress, GoalView, GoalWaiting};
 
@@ -84,7 +87,8 @@ pub enum GoalReview {
 }
 
 /// Un goal della board. Fase e attesa non sono qui: si derivano (`GoalView`).
-/// Giro e chiusura li scrive solo la board (`closure`), mai un tool.
+/// Giro e chiusura li scrive solo la board (`closure`), i branch solo l'app
+/// (`branches`), mai un tool.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(default)]
 #[ts(export)]
@@ -98,6 +102,10 @@ pub struct Goal {
     pub done_when: Vec<String>,
     /// Registro delle decisioni, dalla piu' vecchia.
     pub decisions: Vec<GoalDecision>,
+    /// Branch `goal/<id>` per repository (chiave = `repo_key`) con la base da cui
+    /// sono nati. Li scrive solo l'app, all'avvio del primo task del goal in quel
+    /// repository: vuoto finche' nessun task e' partito (o senza git).
+    pub branches: BTreeMap<String, GoalBranch>,
     /// 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata.
     pub(in crate::board) round: u32,
     pub created_at: i64,
@@ -173,5 +181,6 @@ impl Goal {
         }
         let surplus = self.decisions.len().saturating_sub(DECISIONS_KEPT);
         self.decisions.drain(..surplus);
+        self.sanitize_branches();
     }
 }

@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Repository temporaneo con un commit su `main`; la cartella sparisce a fine test.
-struct TempRepo {
-    root: PathBuf,
+pub(super) struct TempRepo {
+    pub(super) root: PathBuf,
 }
 
 impl TempRepo {
     /// `None` se git non c'e' (il test non ha nulla da provare).
-    fn create(name: &str) -> Option<TempRepo> {
+    pub(super) fn create(name: &str) -> Option<TempRepo> {
         if !Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success()) {
             eprintln!("git is not installed: test skipped");
             return None;
@@ -30,11 +30,11 @@ impl TempRepo {
         Some(repo)
     }
 
-    fn worktree(&self, id: &str) -> PathBuf {
+    pub(super) fn worktree(&self, id: &str) -> PathBuf {
         self.root.join(".worktrees").join(id)
     }
 
-    fn git(&self, args: &[&str]) -> String {
+    pub(super) fn git(&self, args: &[&str]) -> String {
         git_in(&self.root, args)
     }
 
@@ -48,7 +48,7 @@ impl TempRepo {
     }
 
     /// Host con git vero e il workspace "ws-1" sulla cartella temporanea.
-    fn host(&self, mode: DeliveryMode) -> FakeHost {
+    pub(super) fn host(&self, mode: DeliveryMode) -> FakeHost {
         let h = FakeHost::with_delivery(mode, true);
         let mut workspace = ws("ws-1", "Proj", "windows");
         workspace.path = self.root.display().to_string();
@@ -66,13 +66,13 @@ impl Drop for TempRepo {
     }
 }
 
-fn git_in(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git_in(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git").args(args).current_dir(dir).output().expect("git parte");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn commit_in(dir: &Path, message: &str) {
+pub(super) fn commit_in(dir: &Path, message: &str) {
     let identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"];
     let args: Vec<&str> = identity.into_iter().chain(["commit", "--quiet", "--allow-empty", "-m", message]).collect();
     git_in(dir, &args);

@@ -3,6 +3,7 @@
 // sia dall'app sia dai test `node --test`.
 
 import type { DecisionSource } from "../bindings/DecisionSource.ts";
+import type { GoalView } from "../bindings/GoalView.ts";
 import type { BoardView, Task } from "./board.ts";
 
 /** Lunghezza massima di una nota (come il backend). */
@@ -51,4 +52,29 @@ export function goalCloseImpact(board: Pick<BoardView, "tasks" | "proposals">, g
 /** La chiusura è bloccata finché un task del goal è in corso. */
 export function closeBlocked(impact: Pick<CloseImpact, "running">): boolean {
   return impact.running.length > 0;
+}
+
+/** Una riga dei branch di un goal: repository, nome del branch e base da cui è nato. */
+export interface BranchRow {
+  repo: string;
+  label: string;
+  branch: string;
+  base: string;
+}
+
+/** Nome del repository: la root del workspace (chiave ".") o la cartella relativa. */
+export function repoLabel(repo: string): string {
+  return repo === "." ? "root del workspace" : repo;
+}
+
+/** Branch del goal per repository, con la root per prima e poi in ordine alfabetico. */
+export function goalBranchRows(goal: Pick<GoalView, "branches">): BranchRow[] {
+  return Object.entries(goal.branches ?? {})
+    .map(([repo, b]) => ({ repo, label: repoLabel(repo), branch: b.branch, base: b.base }))
+    .sort((a, b) => (a.repo === "." ? -1 : b.repo === "." ? 1 : a.repo.localeCompare(b.repo)));
+}
+
+/** I branch si eliminano solo a mano: goal chiuso senza consegna (`abandoned`) e almeno un branch. */
+export function canDeleteBranches(goal: Pick<GoalView, "branches" | "closed_at" | "outcome">): boolean {
+  return goal.closed_at !== undefined && goal.outcome === "abandoned" && Object.keys(goal.branches ?? {}).length > 0;
 }

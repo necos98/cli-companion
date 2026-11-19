@@ -213,6 +213,7 @@ pub fn run() {
             automation::task_move,
             automation::proposal_decide,
             automation::goal_close,
+            automation::goal_delete_branches,
             automation::goal_add_note,
             automation::settings_proposal_decide,
             automation::workspace_detect_repos,

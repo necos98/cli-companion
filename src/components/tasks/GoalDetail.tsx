@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import DetailSection from "./DetailSection";
 import GoalCloseBox from "./GoalCloseBox";
+import GoalBranches from "./GoalBranches";
 import GoalClosedInfo from "./GoalClosedInfo";
 import GoalDecisions from "./GoalDecisions";
 import GoalProgressLine from "./GoalProgressLine";
@@ -83,6 +84,7 @@ export default function GoalDetail({ workspaceId, goal, board, now, onBoard, onC
         <GoalDecisions workspaceId={workspaceId} goal={goal} open={open} now={now} onBoard={onBoard} />
         <GoalRounds tasks={tasks} onSelectTask={onSelectTask} />
         <GoalReviews tasks={tasks} onSelectTask={onSelectTask} />
+        <GoalBranches workspaceId={workspaceId} goal={goal} open={open} onBoard={onBoard} />
         {open && <GoalCloseBox workspaceId={workspaceId} goal={goal} board={board} onBoard={onBoard} />}
       </div>
     </aside>

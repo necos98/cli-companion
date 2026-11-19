@@ -297,6 +297,7 @@ impl AutomationState {
             wt: WorktreeInfo { path: wt.path.clone(), branch: task_branch(id), base: String::new(), setup_done: true },
             workspace: None,
             keep_unmerged: true,
+            goal_branch: None,
         };
         if self.run(host, |r| r.queue_orphan_cleanup(target)) {
             report.warnings.push(format!("{label}: {} belongs to no task, removing it", wt.path));

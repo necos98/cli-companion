@@ -62,6 +62,13 @@ impl Task {
         self.goal.as_deref()
     }
 
+    /// Il task lavora nel suo worktree, senza occupare il repository: un `plan`
+    /// (sola lettura) o un task di un goal in una cartella git (docs/GOALS.MD,
+    /// "Branch del goal"). Un task di un goal `no_git` lavora sul posto.
+    pub fn runs_in_own_worktree(&self) -> bool {
+        self.kind.isolated() || (self.goal.is_some() && !self.no_git)
+    }
+
     /// Giro del goal in cui il task e' entrato in coda; 0 senza goal.
     pub fn round(&self) -> u32 {
         self.round

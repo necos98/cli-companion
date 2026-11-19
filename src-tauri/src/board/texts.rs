@@ -5,10 +5,14 @@
 use super::{Task, TaskKind};
 use crate::workspaces::{Delivery, DeliveryMode, RepoConfig};
 use free::{free_delivery_steps, free_environment, FREE_CHANGES, FREE_DONE, FREE_LABEL, REVIEWER_FREE};
+use goal::GOAL_DONE;
 use in_place::{in_place_description, root_planner_environment};
+use pr::pr_publish_steps;
 
 mod free;
+mod goal;
 mod in_place;
+mod pr;
 mod skill;
 mod standard;
 
@@ -76,6 +80,8 @@ pub struct EnvInfo<'a> {
     pub branch: Option<&'a str>,
     /// Branch base (nome semplice, senza `origin/`), nelle modalita' con branch.
     pub base: Option<&'a str>,
+    /// `goal/<id>`, per un task di un goal in una cartella git.
+    pub goal_branch: Option<&'a str>,
     /// Configurazione del repository (setup gia' eseguito dall'app nel worktree).
     pub repo_cfg: Option<&'a RepoConfig>,
     /// Pianificatore sul posto in una cartella senza git: i repository git
@@ -89,7 +95,7 @@ pub struct EnvInfo<'a> {
 
 impl EnvInfo<'_> {
     fn worktree(&self) -> bool {
-        self.delivery.worktrees()
+        self.delivery.worktrees() || self.goal_branch.is_some()
     }
 
     /// La consegna come la leggono i worker: quella del workspace o la modalita' libera.
@@ -106,7 +112,8 @@ impl EnvInfo<'_> {
 /// il worker chiede le decisioni bloccanti con il tool invece che in testo semplice.
 pub fn instructions(e: &EnvInfo, workspace_rules: &str, ask_user: bool) -> String {
     let ask = if ask_user { ASK_WITH_TOOL } else { ASK_IN_TEXT };
-    let (changes, done) = if e.free { (FREE_CHANGES, FREE_DONE) } else { (GIT_CHANGES, GIT_DONE) };
+    let done = if e.goal_branch.is_some() { GOAL_DONE } else { GIT_DONE };
+    let (changes, done) = if e.free { (FREE_CHANGES, FREE_DONE) } else { (GIT_CHANGES, done) };
     let handoff = if e.handoff { format!("- {HANDOFF_NOTE}\n") } else { String::new() };
     let mut s = format!(
         "You are an automated cli-companion worker. The app does not deliver anything for you: you deliver the work yourself, \
@@ -133,8 +140,9 @@ pub fn instructions(e: &EnvInfo, workspace_rules: &str, ask_user: bool) -> Strin
 /// `reviewed_e2e`: almeno un task revisionato ha `e2e` (il paragrafo c'e' solo se il repository ha la configurazione).
 pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str, reviewed_e2e: bool) -> String {
     let mut s = format!(
-        "You are an automated cli-companion reviewer. Work only inside {dir}; never touch other folders.\n\n{REVIEWER_INSTRUCTIONS}",
-        dir = e.workdir
+        "You are an automated cli-companion reviewer. Work only inside {dir}; never touch other folders.\n\n{body}",
+        dir = e.workdir,
+        body = goal::reviewer_body(e)
     );
     s.truncate(s.trim_end().len());
     s.push_str("\n\n");
@@ -231,7 +239,11 @@ pub fn environment(e: &EnvInfo) -> String {
     }
     s.push_str(&format!("- Repository checkout: {}\n", e.repo_dir));
     s.push_str(&format!("- Your working folder: {}\n", e.workdir));
-    s.push_str(&format!("- Delivery mode: {}\n", mode_label(e.delivery)));
+    let mode = match e.goal_branch {
+        Some(goal) => goal::mode_label(goal, e.base.unwrap_or("<base>")),
+        None => mode_label(e.delivery).to_string(),
+    };
+    s.push_str(&format!("- Delivery mode: {mode}\n"));
     let reviewing = t.kind == TaskKind::Review;
     match (e.worktree(), &t.worktree) {
         (true, Some(w)) if reviewing => s.push_str(&format!(
@@ -251,7 +263,9 @@ pub fn environment(e: &EnvInfo) -> String {
         _ => s.push_str("- No dedicated worktree: you work directly in the repository checkout, on the branch that is currently checked out.\n"),
     }
     if let (Some(b), Some(base)) = (e.branch, e.base) {
-        if reviewing {
+        if let Some(goal) = e.goal_branch {
+            s.push_str(&goal::branch_line(reviewing, b, goal, base));
+        } else if reviewing {
             s.push_str(&format!("- Base branch: {base}\n"));
         } else {
             s.push_str(&format!("- Task branch: {b}; base branch: {base}\n"));
@@ -286,32 +300,6 @@ fn numbered(steps: &[String]) -> String {
     steps.iter().enumerate().map(|(i, st)| format!("{}. {st}\n", i + 1)).collect()
 }
 
-/// Passi PR comuni a worktree e in place: dal rebase al ramo remoto cancellato.
-fn pr_publish_steps(e: &EnvInfo, branch: &str, base: &str) -> Vec<String> {
-    let title = e.task.title.replace('"', "'");
-    let method = e.delivery.merge_method.as_str();
-    let mut v = vec![
-        "git fetch origin".to_string(),
-        format!("git rebase origin/{base}. Resolve conflicts, then repeat the verification the task asks for."),
-    ];
-    push_e2e_step(e, &mut v);
-    v.extend([
-        format!("git push -u origin {branch} (use --force-with-lease after a rebase)."),
-        format!(
-            "gh pr create --base {base} --head {branch} --title \"{title}\" --body \"<short summary of the work>\". \
-             If a PR for this branch already exists, reuse it."
-        ),
-        format!(
-            "gh pr merge <pr-url> --{method}. If the repository requires checks or reviews, use --auto and wait until \
-             `gh pr view <pr-url> --json state` reports MERGED. If the merge is not possible, call complete_task with status \
-             \"failed\", the reason and the PR link."
-        ),
-        "If the base branch advanced meanwhile, repeat the rebase and the push.".to_string(),
-        format!("git push origin --delete {branch} (ignore the error if the branch is already deleted)."),
-    ]);
-    v
-}
-
 /// Aggiunge il passo E2E se il task e' marcato `e2e`.
 fn push_e2e_step(e: &EnvInfo, steps: &mut Vec<String>) {
     if e.task.e2e {
@@ -323,6 +311,9 @@ fn push_e2e_step(e: &EnvInfo, steps: &mut Vec<String>) {
 pub fn delivery_steps(e: &EnvInfo) -> String {
     if e.free {
         return free_delivery_steps(e);
+    }
+    if let Some(goal) = e.goal_branch {
+        return goal::delivery_steps(e, goal);
     }
     let (branch, base) = (e.branch.unwrap_or("task/<id>"), e.base.unwrap_or("<base>"));
     let mut head = format!("Delivery: {}\n", mode_label(e.delivery));

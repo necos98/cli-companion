@@ -111,6 +111,17 @@ pub async fn goal_close(app: AppHandle, workspace_id: String, goal_id: String) -
     .await
 }
 
+/// "Elimina branch": cancella i branch `goal/<id>` di un goal abbandonato (errore
+/// se e' aperto o consegnato, o se git ne rifiuta uno).
+#[tauri::command]
+pub async fn goal_delete_branches(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        let (st, host) = (app.state::<AutomationState>(), TauriHost(app.clone()));
+        boards::goal_delete_branches(&st, &host, &workspace_id, &goal_id)
+    })
+    .await
+}
+
 /// Aggiunge una nota dell'utente al registro delle decisioni di un goal aperto.
 #[tauri::command]
 pub async fn goal_add_note(

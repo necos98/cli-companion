@@ -2,10 +2,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   GOAL_NOTE_MAX,
+  canDeleteBranches,
   closeBlocked,
   decisionSourceLabel,
   goalCloseImpact,
+  goalBranchRows,
   goalNoteError,
+  repoLabel,
 } from "../src/lib/goalDetail.ts";
 import { goalDependencyPool } from "../src/lib/taskForm.ts";
 
@@ -84,5 +87,29 @@ describe("dipendenze selezionabili per goal", () => {
       goalDependencyPool(tasks, goals, null).map((t) => t.id),
       ["c", "d"],
     );
+  });
+});
+
+describe("branch del goal", () => {
+  const br = (branch, base = "main") => ({ branch, base });
+  it("ordina per repository con la root per prima e le etichette", () => {
+    const rows = goalBranchRows({ branches: { web: br("goal/g1"), ".": br("goal/g1", "dev"), api: br("goal/g1") } });
+    assert.deepEqual(
+      rows.map((r) => r.repo),
+      [".", "api", "web"],
+    );
+    assert.equal(rows[0].label, "root del workspace");
+    assert.equal(rows[0].base, "dev");
+    assert.equal(repoLabel("api"), "api");
+  });
+  it("mappa vuota: nessuna riga e nessuna eliminazione", () => {
+    assert.deepEqual(goalBranchRows({ branches: {} }), []);
+    assert.equal(canDeleteBranches({ branches: {}, closed_at: 1, outcome: "abandoned" }), false);
+  });
+  it("eliminabili solo se il goal è abbandonato", () => {
+    const branches = { ".": br("goal/g1") };
+    assert.equal(canDeleteBranches({ branches }), false);
+    assert.equal(canDeleteBranches({ branches, closed_at: 1, outcome: "delivered" }), false);
+    assert.equal(canDeleteBranches({ branches, closed_at: 1, outcome: "abandoned" }), true);
   });
 });

@@ -265,6 +265,7 @@ impl Registry {
             task: t,
             branch: env.branch.as_deref(),
             base: env.base.as_deref(),
+            goal_branch: env.goal_branch.as_deref(),
             repo_cfg: ws.repos.get(&board::repo_key(t.repo.as_deref())),
             root_repos: env.root_plan.as_ref().map(|p| p.repos.as_slice()),
             free: env.free,

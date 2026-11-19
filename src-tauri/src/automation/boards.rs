@@ -12,6 +12,7 @@ use serde_json::json;
 
 mod agents;
 mod commands;
+mod goal_branches;
 mod lifecycle;
 mod session;
 
@@ -20,6 +21,7 @@ pub(super) use commands::{
     board_set, goal_add_note, goal_close, proposal_decide, task_action, task_create, task_move, task_update,
     task_update_check, workspace_of,
 };
+pub(super) use goal_branches::goal_delete_branches;
 #[cfg(test)]
 pub(super) use lifecycle::START_TIMEOUT_MS;
 pub(super) use session::{
@@ -342,7 +344,9 @@ impl Registry {
                 continue;
             }
             if let Some(task) = b.task(&id).cloned() {
-                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task };
+                let key = board::repo_key(task.repo.as_deref());
+                let goal_branch = task.goal().and_then(|g| b.goal_branch(g, &key)).cloned();
+                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task, goal_branch };
                 self.effects.push(Effect::StartTask(Box::new(job)));
             }
         }

@@ -840,6 +840,7 @@ fn env<'a>(d: &'a Delivery, task: &'a Task, cfg: Option<&'a RepoConfig>) -> EnvI
         repo_cfg: cfg,
         root_repos: None,
         free: false,
+        goal_branch: None,
         handoff: false,
     }
 }

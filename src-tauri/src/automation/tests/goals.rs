@@ -57,6 +57,7 @@ fn the_intake_proposes_a_goal_and_reads_it_back() {
 #[test]
 fn the_reviewer_reads_its_goal_and_its_proposal_inherits_it() {
     let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    h.goal_branch_exists("g");
     queue_in(&st, &h, vec![spec("a", &[]), review_spec("rev", &["a"])], json!({ "goal": goal_json("g") }));
     let a = session_of(&st, &h, "a");
     call(&st, &h, &a, "get_task", json!({})).unwrap();
@@ -84,6 +85,7 @@ fn the_reviewer_reads_its_goal_and_its_proposal_inherits_it() {
 #[test]
 fn a_goal_closes_by_itself_when_its_last_proposal_is_discarded() {
     let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    h.goal_branch_exists("g");
     queue_in(&st, &h, vec![spec("a", &[]), review_spec("rev", &["a"])], json!({ "goal": goal_json("g") }));
     let a = session_of(&st, &h, "a");
     call(&st, &h, &a, "complete_task", json!({ "status": "completed", "summary": "done a" })).unwrap();

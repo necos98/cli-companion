@@ -515,6 +515,10 @@ export const api = {
   /** "Chiudi goal": elimina i task in coda e falliti del goal, scarta le sue proposte e lo chiude. */
   goalClose: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_close", { workspaceId, goalId }),
 
+  /** "Elimina branch": cancella i branch `goal/<id>` di un goal chiuso senza consegna e li dimentica. */
+  goalDeleteBranches: (workspaceId: string, goalId: string) =>
+    invoke<BoardView>("goal_delete_branches", { workspaceId, goalId }),
+
   /** Nota dell'utente nel registro delle decisioni di un goal aperto. */
   goalAddNote: (workspaceId: string, goalId: string, text: string) =>
     invoke<BoardView>("goal_add_note", { workspaceId, goalId, text }),

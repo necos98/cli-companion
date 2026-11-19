@@ -1,6 +1,6 @@
 # Goal (proposta di design)
 
-> **Stato: in corso.** Le tappe T1, T2, T3 e T6 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
+> **Stato: in corso.** Le tappe T1, T2, T3, T4 e T6 sono consegnate (vedi "Tappe"); il resto non è implementato. Descrive
 > come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
 > una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
 
@@ -178,7 +178,7 @@ Ogni goal ha, per ogni repository in cui lavora, un branch `goal/<goal-id>`.
 **Creazione.** La fa l'app, all'avvio del primo task del goal in quel repository, nel percorso di avvio che già
 esegue git fuori dal lock. La base si risolve con la regola di oggi (BOARD.MD, "Branch base") e si scrive in
 `goal.branches`: da quel momento non cambia. In modalità `pr` il branch parte da `origin/<base>` dopo il fetch,
-altrimenti dal `<base>` locale.
+altrimenti dal `<base>` locale, con `git branch --no-track goal/<id> <partenza>` (il branch non segue la base).
 
 **Task del goal.** Girano **sempre in un worktree**, in ogni modalità di consegna, come già fanno i `plan`:
 `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>` creato da `goal/<goal-id>`. Hook `setup` e
@@ -197,9 +197,14 @@ workspace e sono una sola variante:
 > goal branch moved, rebase and try again. Never push, never open a pull request, never touch `<base>`: the goal is
 > delivered as a whole later.
 
-L'avanzamento deve essere solo fast-forward e senza checkout del branch del goal (per esempio un push locale
-`task/<id>:goal/<goal-id>`); il comando esatto e il suo comportamento quando l'utente ha il branch del goal in
-checkout vanno verificati in implementazione. Il passo E2E dei task marcati `e2e` resta dov'è oggi: dopo il rebase,
+L'avanzamento è solo fast-forward e senza checkout del branch del goal: `git fetch . task/<id>:goal/<goal-id>`,
+eseguito nel worktree del task (verificato a mano, git 2.55). Tre casi: se è un fast-forward il branch del goal
+avanza senza essere messo in checkout; se non lo è (il branch del goal si è mosso) è rifiutato con `! [rejected] …
+(non-fast-forward)` e non cambia nulla; se `goal/<id>` è in checkout nella copia dell'utente o in un altro worktree
+fallisce con `fatal: refusing to fetch into branch 'refs/heads/goal/<id>' checked out at '<path>'`, senza cambiare
+nulla e a prescindere da `receive.denyCurrentBranch`, e il worker chiude `failed` con il motivo. Non si usa
+`git push . task/<id>:goal/<id>`, che con `receive.denyCurrentBranch=updateInstead` o `ignore` potrebbe aggiornare un
+branch in checkout. Il passo E2E dei task marcati `e2e` resta dov'è oggi: dopo il rebase,
 prima dell'avanzamento.
 
 **Pulizia del task.** A `done`: worktree rimosso e `task/<id>` cancellato dopo aver verificato che è contenuto in
@@ -402,7 +407,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T1 | `fail_reason` e `blocked_by` (modello, vista, badge, `list_tasks`) — **consegnata** | — |
 | T2 | Goal: modello, `propose_tasks` con `goal`/`goal_id`, eredità dalle review, fase, chiusura a mano, archivio, `list_goals`/`get_goal`, skill `task-intake` — **consegnata** | — |
 | T3 | Interfaccia: "Serve a te", goal in corso, filtro e dettaglio del goal — **consegnata** | T1, T2 |
-| T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia | T2 |
+| T4 | Branch del goal: creazione, worktree dei task dal branch, integrazione, review sul branch, pulizia — **consegnata** | T2 |
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` | T3, T4 |
 | T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |
 | T7 | Correzione automatica con tetto di giri | T3, T4 |
@@ -422,6 +427,15 @@ Note sulla consegna di T2 (il contratto è in BOARD.MD, "Goal"):
 - la proposta di un worker (reviewer o planner) non può indicare `goal` né `goal_id`: il goal del reviewer lo
   eredita l'app, i task `plan` non ne hanno;
 - un goal chiuso non accetta note dell'utente.
+
+Note sulla consegna di T4 (il contratto è in BOARD.MD, "Branch del goal"):
+
+- la chiave di `goal.branches` per la root del workspace è `"."` (`repo_key`), per un repository la sua cartella
+  relativa alla root;
+- finché non c'è T5 la chiusura provvisoria resta com'è, ma il lavoro del goal **resta su `goal/<goal-id>`**: nulla
+  arriva sulla base. "Chiudi goal" non tocca i branch; "Elimina branch" (solo goal abbandonato) li cancella;
+- il riallineamento delle worktree riconosce solo i worktree `task/<id>` (esiste solo con la consegna a worktree):
+  un branch `goal/*` non è mai orfano e non si cancella da lì.
 
 ## 17. Punti aperti
 

@@ -60,9 +60,10 @@ pub use e2e::{
     E2E_ERROR_MAX, E2E_GATE_SKIPPED_NOTE, E2E_OUTPUT_TAIL_MAX,
 };
 pub use goal::{
-    parse_goal_id, parse_goal_spec, DecisionSource, Goal, GoalDecision, GoalOutcome, GoalPhase, GoalProgress,
-    GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX, DONE_WHEN_ITEM_MAX,
-    DONE_WHEN_MAX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT, MAX_OPEN_GOALS,
+    goal_branch_name, parse_goal_id, parse_goal_spec, DecisionSource, Goal, GoalBranch, GoalDecision, GoalOutcome,
+    GoalPhase, GoalProgress, GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX,
+    DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX, GOAL_BRANCH_PREFIX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_CLOSED_GOALS_KEPT,
+    MAX_OPEN_GOALS,
 };
 pub use handoff::Handoff;
 pub use lifecycle::{permits, LifecycleError, Op, Outcome, TaskAction, TaskEvent};

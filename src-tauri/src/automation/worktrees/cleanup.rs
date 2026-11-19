@@ -12,11 +12,30 @@ struct CleanupOutcome {
     warnings: Vec<String>,
 }
 
+/// Branch di un task di un goal: si cancella (`-D`, il lavoro e' gia' nel goal)
+/// solo se e' contenuto in `goal`; altrimenti resta, con un avviso.
+fn delete_goal_task_branch<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    root: &str,
+    branch: &str,
+    goal: &str,
+    warnings: &mut Vec<String>,
+) {
+    let contained = host.git(ws, root, &["merge-base", "--is-ancestor", branch, goal]).map(|o| o.ok).unwrap_or(false);
+    if !contained {
+        warnings.push(format!("branch {branch} kept: not contained in {goal}"));
+    } else if let Err(e) = git(host, ws, root, &["branch", "-D", branch]) {
+        warnings.push(format!("branch not deleted: {e}"));
+    }
+}
+
 /// Esegue i comandi di pulizia del repository (se ci sono), poi rimuove il
 /// worktree (con `--force` se l'impostazione lo chiede) e il branch del task:
 /// `-D` per `pr` (il merge e' squash/rebase lato server, la consegna l'ha
 /// confermata il worker), `-d` altrimenti (non cancella lavoro non unito);
-/// sempre `-d` se il target ha `keep_unmerged`.
+/// sempre `-d` se il target ha `keep_unmerged`. Per un task di un goal il branch
+/// si cancella (`-D`) solo se e' contenuto in `goal/<id>`, altrimenti resta.
 fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, target: &CleanupTarget) -> CleanupOutcome {
     let (wt, mut warnings) = (&target.wt, Vec::new());
     let root = repo_dir(ws, target.repo.as_deref());
@@ -44,9 +63,14 @@ fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, target: &CleanupTarget) -
     } else {
         let _ = git(host, ws, &root, &["worktree", "prune"]);
     }
-    let flag = if ws.delivery.mode == DeliveryMode::Pr && !target.keep_unmerged { "-D" } else { "-d" };
-    if let Err(e) = git(host, ws, &root, &["branch", flag, &wt.branch]) {
-        warnings.push(format!("branch not deleted: {e}"));
+    match &target.goal_branch {
+        Some(goal) => delete_goal_task_branch(host, ws, &root, &wt.branch, goal, &mut warnings),
+        None => {
+            let flag = if ws.delivery.mode == DeliveryMode::Pr && !target.keep_unmerged { "-D" } else { "-d" };
+            if let Err(e) = git(host, ws, &root, &["branch", flag, &wt.branch]) {
+                warnings.push(format!("branch not deleted: {e}"));
+            }
+        }
     }
     CleanupOutcome { removed: true, warnings }
 }

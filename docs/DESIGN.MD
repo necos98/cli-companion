@@ -769,20 +769,21 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `queue.rs`, `cascade.rs` | specifiche, proposte (accetta/scarta, con il loro goal), modifica, riordino, eliminazione anche a cascata (indice delle dipendenze inverse) |
 | `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", chiusura provvisoria), `phase.rs` (`GoalView`: fase e attesa derivate, pure), `archive.rs` (goal chiusi oltre il tetto) |
 | `spec.rs` | `TaskSpec`/`TaskPatch`, id (anche generati dal titolo), repository, grafo delle dipendenze, parsing di proposte e limiti |
-| `scheduler.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura) |
+| `goal/branches.rs` | branch del goal (`GoalBranch`, `goal_branch_name`, `Goal.branches` ripulito al caricamento, registrazione e "Elimina branch" lato board); test in `goal/branches/tests.rs` |
+| `scheduler.rs`, `scheduler/tests.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura); i task di un goal in una cartella git non occupano il repository (`Task::runs_in_own_worktree`) |
 | `agent.rs`, `agent_gate.rs` | `resolve_spec_agent` (l'agente e il modello di una specifica, via `registry::resolve_agent`) e `AgentGate`/`AgentUnavailableView` (i task in coda con l'agente non pronto, che lo scheduler salta e la vista spiega) |
 | `view.rs` | `BoardView` / `TaskView` per il frontend (`waiting_on`, `attention`, `allowed_actions`, `can_edit`, `can_reorder`, `cascade`, `limits`) e righe compatte di `list_tasks` |
 | `worker.rs` | `WorkerStatus`/`WorkerActivity`/`WorkerEnd` e la tabella di transizione pura applicata agli hook |
 | `report.rs`, `review.rs`, `e2e.rs` | `TaskReport`, task di review (verdetto, task rivisti), tipi E2E e `check_gate` (il blocco della consegna) |
 | `plan.rs` | regole dei task di pianificazione (`kind: "plan"`): tipo riservato all'app, niente `e2e`, report senza consegna, `TaskKind::isolated` |
 | `settings.rs` | proposte di impostazioni (`SettingsProposal`) |
-| `texts.rs`, `prompts/*.md` | istruzioni, ambiente e passi di consegna dati al worker; standard di ingegneria e istruzioni del reviewer e del pianificatore (inglese, `include_str!`) |
+| `texts.rs`, `texts/`, `prompts/*.md` | istruzioni, ambiente e passi di consegna dati al worker; standard di ingegneria e istruzioni del reviewer e del pianificatore (inglese, `include_str!`). `texts/goal.rs` (+ `texts/goal/tests.rs`): consegna, ambiente e riferimento del revisore per i task di un goal in una cartella git; `texts/pr.rs`: passi PR comuni a worktree e in place |
 | `persist.rs`, `legacy.rs`, `legacy_settings.rs`, `legacy_goals.rs`, `recovery.rs`, `archive.rs` | formato su disco (busta, migrazioni, righe degli archivi), migrazioni dei file (v0.11, impostazioni per agente, goal), recupero dopo un riavvio, selezione dei task da archiviare (mai quelli di un goal aperto) |
 
 - **Scheduler.** `schedule` non fa nulla con la coda in pausa o con il gate chiuso (workspace archiviato, oppure con
   fasce attive e fuori fascia); sceglie i `queued` con tutte le dipendenze `done`, nell'ordine dell'array. In modalità
   parallela (`pr`/`local_merge` con `parallel`) fino a `max_parallel` running, altrimenti uno per repository, comunque
-  entro `max_parallel` (un task `plan`, nel suo worktree, non occupa il repository). Salta anche i task il cui agente è nel `AgentGate` del contesto (non pronto nel target del
+  entro `max_parallel` (un task `plan` o di un goal in una cartella git, nel suo worktree, non occupa il repository). Salta anche i task il cui agente è nel `AgentGate` del contesto (non pronto nel target del
   workspace): restano `queued` e non occupano slot (vedi “Integrazioni: stato, risolutore e prontezza”).
 - **Azioni.** `permits` è la sola tabella di cosa si può fare a un task per stato; la usano le guardie delle operazioni,
   i messaggi di errore e `allowed_actions` della vista (BOARD.MD, "Azioni consentite").
@@ -795,7 +796,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
   conclusi").
 - **Goal.** La fase e l'attesa di un goal sono derivate (`goal/phase.rs`), mai scritte; la board scrive solo nascita,
   giro, note e chiusura. La chiusura provvisoria (`Board::close_finished_goals`) la chiama `automation` a ogni
-  pubblicazione, prima della vista e dell'archivio. Contratto in BOARD.MD, "Goal"; progetto in GOALS.MD.
+  pubblicazione, prima della vista e dell'archivio; il lavoro resta su `goal/<id>` fino alla consegna del goal (T5). Contratto in BOARD.MD, "Goal"; progetto in GOALS.MD.
 
 ### `automation/` — Task Manager: coda, scheduler e worker
 
@@ -824,7 +825,10 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   nel `Registry`. `boards/commands.rs`: logica dei comandi Tauri della UI. `boards/session.rs`: tool
   MCP delle sessioni (Intake, revisore e pianificatore).
 - `worktrees.rs`: tipi e helper condivisi di git (percorsi, `git`, verifica dei repository) e file
-  della board. `worktrees/start.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn).
+  della board. `boards/goal_branches.rs`: registrazione del branch del goal e "Elimina branch" (`goal_delete_branches`).
+  `worktrees/start.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn); `start/goal.rs`: avvio di un task
+  di un goal (creazione di `goal/<id>` e worktree da quel branch, sempre), `start/setup.rs`: hook del worktree appena creato.
+  I test del branch del goal sono in `tests/goal_branch.rs`.
   `worktrees/cleanup.rs`: pulizia a consegna avvenuta. `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
   sempre tramite `process.rs`), rilevamento dei repository, file di esclusione.
   `worktrees/reconcile.rs`: riallineamento delle worktree con le board (task `done` rimasti,

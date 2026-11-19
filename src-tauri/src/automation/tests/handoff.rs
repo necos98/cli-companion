@@ -17,7 +17,10 @@ fn queue_goal(st: &AutomationState, h: &FakeHost, tasks: Vec<Value>) {
 }
 
 fn host() -> (AutomationState, FakeHost) {
-    (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false))
+    let h = FakeHost::with_delivery(DeliveryMode::Commit, false);
+    // A goal task gets a worktree: the fake git needs the goal branch to exist once recorded.
+    h.goal_branch_exists("g");
+    (AutomationState::default(), h)
 }
 
 fn get_task(st: &AutomationState, h: &FakeHost, id: &str) -> Value {
