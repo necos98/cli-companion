@@ -122,11 +122,11 @@ export async function spawnBotFromMenu(ws: Workspace, entry: BotLaunch): Promise
 /**
  * Task Intake: ogni richiesta apre un nuovo tab del primo Bot abilitato con la
  * skill Task Intake (più chat in parallelo), con la stessa via del menu. Senza
- * un Bot così avvisa.
+ * un Bot così avvisa. Ritorna se l'avvio è partito.
  */
-export function openIntake(workspaceId: string): void {
+export function openIntake(workspaceId: string): boolean {
   const ws = workspacesStore.get(workspaceId);
-  if (!ws) return;
+  if (!ws) return false;
   const config = configStore.getState();
   const entry = botLaunchesFor(config, ws).find((b) => isIntakeLaunch(b.id, config.botSettings.agents));
   if (!entry) {
@@ -134,9 +134,10 @@ export function openIntake(workspaceId: string): void {
       "launch:intake-unavailable",
       "Task Intake non è disponibile: nessun Bot attivo ha la skill Task Intake (ripristinalo nelle impostazioni dei Bot).",
     );
-    return;
+    return false;
   }
   void spawnBotFromMenu(ws, entry);
+  return true;
 }
 
 // Un tab automatico chiuso va comunicato al backend una volta sola, da

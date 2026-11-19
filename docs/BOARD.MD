@@ -926,7 +926,7 @@ Sessione (workspace = quello del tab):
   nell'ordine della board (aperti e chiusi ancora sulla board; con `open_only: true` solo gli aperti).
   Errore: "open_only must be a boolean".
 - `get_goal { id }` → `{ goal: { id, title, request, done_when, decisions, round, created_at, closed_at?, outcome?,
-  review?, auto_deliver?, deliver_bot?, auto_fix, auto_rounds, report?, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
+  review?, auto_deliver?, deliver_bot?, auto_fix, auto_rounds, report?, follow_ups, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
   "unknown goal: <id>".
 - `update_task { id, title?, task?, depends_on?, repo?, bot?, agent?, model?, kind?, e2e? }` — solo `queued` o
   `failed`; `repo` solo senza worktree; il goal non cambia mai ("the goal of a task cannot be changed") e i nuovi
@@ -1282,7 +1282,8 @@ Il goal (obiettivo) è l'oggetto tracciato sopra i task: nasce da una proposta a
 una fase calcolata e una chiusura. Il progetto completo, con le tappe successive (branch del goal, consegna,
 correzione automatica, follow-up), è in [GOALS.MD](GOALS.MD); qui il contratto consegnato (tappa T2). Il codice è
 in `board/goal.rs` e `board/goal/` (puro, senza orologio). Il branch del goal (tappa T4) è in "Branch del goal" più sotto,
-la consegna (tappa T5) in "Consegna del goal", la correzione automatica (tappa T7) in "Correzione automatica del goal".
+la consegna (tappa T5) in "Consegna del goal", la correzione automatica (tappa T7) in "Correzione automatica del goal", i
+follow-up (tappa T8) in "Follow-up del goal".
 
 ```jsonc
 {
@@ -1307,13 +1308,15 @@ la consegna (tappa T5) in "Consegna del goal", la correzione automatica (tappa T
   "auto_rounds": [],          // i giri le cui correzioni ha accettato l'app (vedi "Correzione automatica del goal")
   "report": {                 // solo se chiuso "delivered" da un task di consegna (vedi "Consegna del goal")
     "summary": "...", "commits": ["abc1234"], "pr_urls": ["https://..."]
-  }
+  },
+  "follow_ups": [             // solo se chiuso: suggerimenti raccolti alla chiusura (vedi "Follow-up del goal")
+    { "text": "...", "source_task": "export-csv", "state": "open" }   // state: open | dismissed | promoted
+  ]
 }
 ```
 
-Il campo della tappa successiva (`follow_ups`) non esiste
-ancora; `auto_deliver`, `deliver_bot` e `report` sono della consegna (T5), `auto_fix` e `auto_rounds` della
-correzione automatica (T7): nessun tool MCP, proposta di task o di impostazioni li scrive, il `report` al
+`auto_deliver`, `deliver_bot` e `report` sono della consegna (T5), `auto_fix` e `auto_rounds` della
+correzione automatica (T7), `follow_ups` dei follow-up (T8): nessun tool MCP, proposta di task o di impostazioni li scrive, il `report` al
 caricamento si toglie da un goal che non è `delivered` (e si riporta nei limiti), `max_rounds` si riporta a 0..=3 e
 `auto_rounds` ai giri possibili (2..=4, senza doppioni, in ordine). Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
 tasks to an open goal with goal_id").
@@ -1446,6 +1449,27 @@ Con `auto_fix` e `auto_deliver` un goal va dalla proposta accettata alla base se
 **HUB.** `decide_hub_proposal` resta manuale e passa da `proposal_decide`: su una proposta già accettata in automatico
 risponde "proposal not found: <id>"; una proposta decisa (dall'utente o dall'HUB) mentre l'accettazione automatica è in
 coda non viene toccata: l'effetto trova la proposta sparita, registra l'errore nel log e non scrive nulla.
+
+### Follow-up del goal
+
+I `follow_ups` che i worker scrivono nei report e i suggerimenti delle review non si perdono: alla chiusura del goal
+(`Board::close`, in `board/goal/closure.rs`, quindi sia `delivered` sia `abandoned`, da sola o con "Chiudi goal") la
+board li copia in `Goal.follow_ups`, perché dopo la chiusura i task possono essere archiviati; i follow-up si
+archiviano con il goal. Il codice è in `board/goal/follow_up.rs` (puro).
+
+- **Raccolta**: per ogni task del goal, in ordine di coda, i `follow_ups` del suo report e, per una review con verdetto
+  `passed`, i suoi `findings` (i suggerimenti; quelli di una review con `issues` sono problemi, non follow-up). Ogni
+  voce è `{ text, source_task, state }` con `state` `open` | `dismissed` | `promoted`, tutte `open` alla raccolta.
+- **Senza doppioni**: il confronto è sul testo normalizzato (spazi ridotti a uno, senza differenze di maiuscole);
+  resta la prima voce, con il suo `source_task`. I testi vuoti si scartano.
+- **Tetto**: al massimo `MAX_FOLLOW_UPS` = 100 voci per goal (ognuna 1..=2000 caratteri, come nel report); le eccedenti si
+  scartano e lasciano una riga `warn` nel log ("N follow-ups over the limit of 100 were discarded").
+- **Al caricamento** un goal aperto non ha follow-up e uno chiuso li ha senza voci vuote, nei limiti.
+- **Stato**: lo cambia solo l'utente, dall'interfaccia (`goal_set_follow_up`), mai un tool MCP e mai l'app da sola;
+  nessuna voce diventa un task da sola. Da `open` si passa a `dismissed` o `promoted`; una voce già decisa non cambia
+  più ("follow-up <n> is already <stato>"); gli altri errori sono "a follow-up can only be dismissed or promoted",
+  "unknown follow-up: <n>" e "unknown goal: <id>". La voce si indica con la sua posizione in `Goal.follow_ups`.
+- **`get_goal`** li restituisce in sola lettura (`follow_ups`, vuoto su un goal aperto), così l'Intake può leggerli.
 
 ### Branch del goal
 
@@ -1793,6 +1817,8 @@ Argomenti camelCase lato JS.
   (facoltativo, `NewTaskSpec.goal`) è un goal aperto: il task vi entra al giro corrente (vedi "Goal").
 - `goal_close(workspace_id, goal_id) -> BoardView`: "Chiudi goal" (vedi "Goal").
 - `goal_add_note(workspace_id, goal_id, text) -> BoardView`: nota dell'utente nel registro delle decisioni.
+- `goal_set_follow_up(workspace_id, goal_id, index, state) -> BoardView`: scarta (`dismissed`) o manda all'Intake
+  (`promoted`) il follow-up `index` di un goal chiuso (vedi "Follow-up del goal").
 - `goal_delete_branches(workspace_id, goal_id) -> BoardView`: "Elimina branch" di un goal abbandonato (vedi "Branch del goal").
 - `goal_deliver(workspace_id, goal_id) -> BoardView`: "Consegna" / "Consegna comunque": crea il task di consegna del
   goal `ready`, anche se l'ultima review ha trovato problemi (vedi "Consegna del goal").
@@ -1885,8 +1911,14 @@ Testi in italiano.
   3 giri" e "Consegna automatica") e
   di impostazioni (card "Proposta di impostazioni", vedi "Proposte di impostazioni"), task che
   aspettano l'utente (domanda del worker, poi attenzione; clic → tab del worker), task falliti (motivo,
-  "Blocca: …" coi task in coda che bloccano, Riprova). Le azioni sono quelle di prima (Accetta/Scarta,
-  Applica/Scarta, Riprova). La voce è calcolata da `needsYou` (`src/lib/needsYou.ts`).
+  "Blocca: …" coi task in coda che bloccano, Riprova) e, per ultimi, i **follow-up aperti** dei goal chiusi negli ultimi
+  14 giorni (`openFollowUpGroups`, `src/lib/followUps.ts`): una card per goal, comprimibile, con per ogni voce "Manda
+  all'Intake" e "Scarta"; scartata o mandata l'ultima voce aperta il goal esce dal pannello. Le azioni sono quelle di
+  prima (Accetta/Scarta, Applica/Scarta, Riprova). La voce è calcolata da `needsYou` (`src/lib/needsYou.ts`).
+  "Manda all'Intake" prepara la richiesta (`followUpRequest`: il testo della voce con titolo e id del goal d'origine, in
+  inglese) e la **copia negli appunti**, perché il tab del Bot Intake non accetta un testo iniziale; apre il tab Task
+  Intake e un avviso dice di incollarla. La voce passa a `promoted` solo se appunti e Intake hanno funzionato (senza un
+  Bot con la skill `task-intake` resta `open`).
   Poi **Goal in corso** (solo se ci sono goal aperti: titolo, fase, giro dal secondo, avanzamento
   "3/5", un segno "Serve a te" se il goal aspetta l'utente; clic → dettaglio del goal nel Tasks Manager;
   ordine: prima chi aspetta, poi dal più vecchio). Poi **In corso N/M** (card: titolo, modello · tempo
@@ -1935,7 +1967,8 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   te", da `auto_rounds`), esito delle review, "Correzioni automatiche" (selettore no / 1 / 2 / 3 giri e giri usati,
   `goal_set_auto_fix`), "Consegna" (consegna automatica, Bot, task e pulsante di consegna), "Chiudi goal" con
   conferma in linea che elenca i task in coda/falliti e le proposte che verranno eliminati (con un
-  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data. Branch: per ogni
+  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data, rapporto di consegna e **Follow-up** (tutte le voci con il loro stato; le
+  aperte si scartano o si mandano all'Intake). Branch: per ogni
   repository `goal/<id>` con la base da cui è nato; per un goal abbandonato "Elimina branch" con conferma
   (`goal_delete_branches`).
 - **Dipendenze**: il grafo React Flow attuale, ripulito (nodi con i 4 stati).

@@ -14,6 +14,7 @@ mod agents;
 mod auto_fix;
 mod commands;
 mod delivery;
+mod follow_up;
 mod goal_branches;
 mod lifecycle;
 mod session;
@@ -25,6 +26,7 @@ pub(super) use commands::{
     task_update, task_update_check, workspace_of,
 };
 pub(super) use delivery::{goal_deliver, goal_set_delivery, run_auto_deliver};
+pub(super) use follow_up::goal_set_follow_up;
 pub(super) use goal_branches::{delete_branch, goal_delete_branches};
 #[cfg(test)]
 pub(super) use lifecycle::START_TIMEOUT_MS;

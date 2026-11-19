@@ -4,6 +4,8 @@
 
 import { displayStatus } from "./board.ts";
 import type { BoardView, Proposal, SettingsProposalView, Task } from "./board.ts";
+import { openFollowUpGroups } from "./followUps.ts";
+import type { FollowUpEntry } from "./followUps.ts";
 import { deliveryAction, findGoal, goalLabel, isGoalOpen } from "./goals.ts";
 import type { GoalView } from "./goals.ts";
 import { failureReason } from "./taskPanel.ts";
@@ -20,6 +22,8 @@ export type NeedsYouItem =
   | { kind: "settings"; proposal: SettingsProposalView }
   /** Goal pronto da consegnare; `label` è il pulsante ("Consegna" o "Consegna comunque"). */
   | { kind: "deliver"; goal: GoalView; label: string }
+  /** Follow-up aperti di un goal chiuso da poco (vedi `openFollowUpGroups`). */
+  | { kind: "follow_ups"; goal: GoalView; entries: FollowUpEntry[] }
   | { kind: "attention"; task: Task; goal: string | null; question: boolean }
   | {
       kind: "failed";
@@ -52,9 +56,10 @@ function blockedTitles(tasks: readonly Task[], taskId: string): string[] {
 
 /**
  * Proposte di task, proposte di impostazioni, goal pronti da consegnare, task in corso che aspettano l'utente (domande prima
- * dell'attenzione) e task falliti, nell'ordine della board dentro ogni gruppo.
+ * dell'attenzione), task falliti e, se si passa `now`, i follow-up aperti dei goal chiusi di recente (un elemento per
+ * goal), nell'ordine della board dentro ogni gruppo.
  */
-export function needsYou(board: Source): NeedsYouItem[] {
+export function needsYou(board: Source, now?: number): NeedsYouItem[] {
   const goals = board.goals ?? [];
   const items: NeedsYouItem[] = [];
   for (const proposal of board.proposals) {
@@ -88,6 +93,9 @@ export function needsYou(board: Source): NeedsYouItem[] {
       blocking: blockedTitles(board.tasks, task.id),
     });
   }
+  if (now !== undefined) {
+    for (const { goal, entries } of openFollowUpGroups(goals, now)) items.push({ kind: "follow_ups", goal, entries });
+  }
   return items;
 }
 
@@ -98,7 +106,8 @@ export function needsYouKey(item: NeedsYouItem): string {
     case "settings":
       return `${item.kind}:${item.proposal.id}`;
     case "deliver":
-      return `deliver:${item.goal.id}`;
+    case "follow_ups":
+      return `${item.kind}:${item.goal.id}`;
     default:
       return `${item.kind}:${item.task.id}`;
   }

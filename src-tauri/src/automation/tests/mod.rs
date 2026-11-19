@@ -25,6 +25,7 @@ mod deliver_flow;
 mod e2e;
 mod e2e_cancel;
 mod e2e_manual;
+mod follow_up;
 mod free_mode;
 mod goal_branch;
 mod goals;

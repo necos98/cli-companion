@@ -1,6 +1,7 @@
 //! Comandi Tauri dell'automazione, invocati dal frontend.
 
 use super::*;
+use crate::board::FollowUpState;
 
 /// Il frontend ha chiuso un tab automatico (utente, app o shell uscita).
 #[tauri::command]
@@ -132,6 +133,28 @@ pub async fn goal_add_note(
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
         boards::goal_add_note(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id, &text)
+    })
+    .await
+}
+
+/// Scarta (`dismissed`) o manda all'Intake (`promoted`) il follow-up `index` di un goal chiuso.
+#[tauri::command]
+pub async fn goal_set_follow_up(
+    app: AppHandle,
+    workspace_id: String,
+    goal_id: String,
+    index: usize,
+    state: FollowUpState,
+) -> Result<BoardView, String> {
+    crate::blocking(move || {
+        boards::goal_set_follow_up(
+            &app.state::<AutomationState>(),
+            &TauriHost(app.clone()),
+            &workspace_id,
+            &goal_id,
+            index,
+            state,
+        )
     })
     .await
 }

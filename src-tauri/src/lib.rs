@@ -218,6 +218,7 @@ pub fn run() {
             automation::goal_set_auto_fix,
             automation::goal_delete_branches,
             automation::goal_add_note,
+            automation::goal_set_follow_up,
             automation::settings_proposal_decide,
             automation::workspace_detect_repos,
             automation::e2e_run_repo,

@@ -63,10 +63,10 @@ pub use e2e::{
 };
 pub use goal::{
     auto_fix_decision, goal_branch_name, parse_goal_id, parse_goal_spec, Acceptance, AutoFix, AutoFixDecision,
-    AutoFixHold, DecisionSource, DeliveredGoal, Goal, GoalAdvance, GoalBranch, GoalDecision, GoalOutcome, GoalPhase,
-    GoalProgress, GoalReport, GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal, DECISIONS_KEPT, DECISION_MAX,
-    DEFAULT_DELIVER_BOT, DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX, GOAL_BRANCH_PREFIX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX,
-    MAX_AUTO_FIX_ROUNDS, MAX_CLOSED_GOALS_KEPT, MAX_OPEN_GOALS,
+    AutoFixHold, DecisionSource, DeliveredGoal, FollowUp, FollowUpState, Goal, GoalAdvance, GoalBranch, GoalDecision,
+    GoalOutcome, GoalPhase, GoalProgress, GoalReport, GoalReview, GoalSpec, GoalView, GoalWaiting, ProposalGoal,
+    DECISIONS_KEPT, DECISION_MAX, DEFAULT_DELIVER_BOT, DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX, GOAL_BRANCH_PREFIX,
+    GOAL_REQUEST_MAX, GOAL_TITLE_MAX, MAX_AUTO_FIX_ROUNDS, MAX_CLOSED_GOALS_KEPT, MAX_FOLLOW_UPS, MAX_OPEN_GOALS,
 };
 pub use handoff::Handoff;
 pub use lifecycle::{permits, LifecycleError, Op, Outcome, TaskAction, TaskEvent};

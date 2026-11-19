@@ -25,6 +25,7 @@ import type { ConnectorRouteInput } from "../bindings/ConnectorRouteInput.ts";
 import type { ConnectorStatus } from "../bindings/ConnectorStatus.ts";
 import type { Delivery } from "../bindings/Delivery.ts";
 import type { E2eEvent as E2eUpdateEvent } from "../bindings/E2eEvent.ts";
+import type { FollowUpState } from "../bindings/FollowUpState.ts";
 import type { HubActionRequest } from "../bindings/HubActionRequest.ts";
 import type { HubAttachment } from "../bindings/HubAttachment.ts";
 import type { HubEvent } from "../bindings/HubEvent.ts";
@@ -541,6 +542,10 @@ export const api = {
   /** Nota dell'utente nel registro delle decisioni di un goal aperto. */
   goalAddNote: (workspaceId: string, goalId: string, text: string) =>
     invoke<BoardView>("goal_add_note", { workspaceId, goalId, text }),
+
+  /** Scarta (`dismissed`) o manda all'Intake (`promoted`) il follow-up `index` di un goal chiuso. */
+  goalSetFollowUp: (workspaceId: string, goalId: string, index: number, state: FollowUpState) =>
+    invoke<BoardView>("goal_set_follow_up", { workspaceId, goalId, index, state }),
 
   /** Applica o scarta una proposta di modifica alle impostazioni. */
   settingsProposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>

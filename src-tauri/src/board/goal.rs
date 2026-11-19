@@ -5,7 +5,8 @@
 //! nuovi e da chi possono dipendere), `closure` (chiusura, note, giri),
 //! `phase` (fase e attesa, derivate: mai scritte su disco), `auto_fix`
 //! (correzione automatica con tetto di giri), `delivery` (consegna:
-//! impostazioni, rapporto e task di consegna), `advance` (chiusura, consegna e
+//! impostazioni, rapporto e task di consegna), `follow_up` (suggerimenti raccolti
+//! alla chiusura), `advance` (chiusura, consegna e
 //! correzione automatiche al publish) e `archive` (goal chiusi oltre il
 //! tetto). Funzioni pure, tempo passato dal chiamante.
 
@@ -20,6 +21,7 @@ mod auto_fix;
 mod branches;
 mod closure;
 mod delivery;
+mod follow_up;
 mod input;
 mod membership;
 mod phase;
@@ -32,6 +34,7 @@ pub use archive::MAX_CLOSED_GOALS_KEPT;
 pub use auto_fix::{auto_fix_decision, Acceptance, AutoFix, AutoFixDecision, AutoFixHold, MAX_AUTO_FIX_ROUNDS};
 pub use branches::{goal_branch_name, GoalBranch, GOAL_BRANCH_PREFIX};
 pub use delivery::{GoalReport, DEFAULT_DELIVER_BOT};
+pub use follow_up::{FollowUp, FollowUpState, MAX_FOLLOW_UPS};
 pub use input::{parse_goal_id, parse_goal_spec, GoalSpec, ProposalGoal};
 pub use phase::{GoalPhase, GoalProgress, GoalView, GoalWaiting};
 
@@ -149,6 +152,8 @@ pub struct Goal {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub(in crate::board) report: Option<GoalReport>,
+    /// Suggerimenti raccolti dai task alla chiusura (`follow_up`); solo se chiuso.
+    pub(in crate::board) follow_ups: Vec<FollowUp>,
 }
 
 impl Goal {
@@ -216,5 +221,6 @@ impl Goal {
         self.sanitize_branches();
         self.sanitize_delivery();
         self.sanitize_auto_fix();
+        self.sanitize_follow_ups();
     }
 }

@@ -106,15 +106,18 @@ impl Board {
     }
 
     /// Scrive la chiusura del goal, con l'esito della sua ultima review e, se e'
-    /// stato consegnato da un task di consegna, il suo rapporto.
+    /// stato consegnato da un task di consegna, il suo rapporto, piu' i follow-up
+    /// dei suoi task (`follow_up`).
     pub(super) fn close(&mut self, id: &str, outcome: GoalOutcome, report: Option<GoalReport>, now: i64) {
         let tasks: Vec<&Task> = self.goal_tasks(id).collect();
         let review = last_review_of(&tasks);
+        let follow_ups = self.collect_follow_ups(id);
         if let Some(goal) = self.goal_mut(id) {
             goal.closed_at = Some(now);
             goal.outcome = Some(outcome);
             goal.review = Some(review);
             goal.report = report;
+            goal.follow_ups = follow_ups;
         }
     }
 }

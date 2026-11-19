@@ -5,6 +5,7 @@ import { needsYou, needsYouKey } from "../../lib/needsYou";
 import type { NeedsYouItem } from "../../lib/needsYou";
 import type { TaskAgents } from "../../lib/taskAgent";
 import AttentionCard from "./AttentionCard";
+import FollowUpsCard from "./FollowUpsCard";
 import PanelFailedCard from "./PanelFailedCard";
 import PanelSection from "./PanelSection";
 import ProposalCard from "./ProposalCard";
@@ -15,6 +16,8 @@ interface NeedsYouSectionProps {
   workspaceId: string;
   board: BoardView;
   agents: TaskAgents;
+  /** Istante corrente: decide quali goal chiusi hanno ancora i follow-up in vista. */
+  now: number;
   onBoard: (board: BoardView) => void;
   /** Riprova un task fallito. Rigetta con l'errore del comando. */
   onRetry: (taskId: string) => Promise<void>;
@@ -22,17 +25,18 @@ interface NeedsYouSectionProps {
   onFocusTab: (tabId: string) => void;
 }
 
-/** Sezione "SERVE A TE" del pannello: proposte, goal pronti, domande, attenzione e falliti in un'unica lista. Assente se vuota. */
+/** Sezione "SERVE A TE" del pannello: proposte, goal pronti, domande, attenzione, falliti e follow-up dei goal chiusi di recente in un'unica lista. Assente se vuota. */
 export default function NeedsYouSection({
   workspaceId,
   board,
   agents,
+  now,
   onBoard,
   onRetry,
   onOpenManager,
   onFocusTab,
 }: NeedsYouSectionProps) {
-  const items = useMemo(() => needsYou(board), [board]);
+  const items = useMemo(() => needsYou(board, now), [board, now]);
   if (items.length === 0) return null;
 
   const render = (item: NeedsYouItem) => {
@@ -60,6 +64,8 @@ export default function NeedsYouSection({
         );
       case "deliver":
         return <ReadyGoalCard workspaceId={workspaceId} goal={item.goal} label={item.label} onBoard={onBoard} />;
+      case "follow_ups":
+        return <FollowUpsCard workspaceId={workspaceId} goal={item.goal} entries={item.entries} onBoard={onBoard} />;
       case "attention": {
         const { task } = item;
         return (

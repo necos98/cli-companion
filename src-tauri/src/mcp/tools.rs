@@ -217,7 +217,7 @@ fn list_goals_tool() -> Value {
 fn get_goal_tool() -> Value {
     tool(
         "get_goal",
-        "One goal: request, done_when, decisions, round, phase, waiting, progress and its tasks.",
+        "One goal: request, done_when, decisions, round, phase, waiting, progress, tasks, follow_ups.",
         json!({ "id": { "type": "string" } }),
         &["id"],
     )

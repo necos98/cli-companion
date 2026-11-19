@@ -1,8 +1,9 @@
 # Goal (proposta di design)
 
-> **Stato: in corso.** Le tappe T1, T2, T3, T4, T5, T6 e T7 sono consegnate (vedi "Tappe"); il resto (T8) non è implementato. Descrive
-> come aggiungere al Tasks Manager il **goal** (obiettivo) come oggetto tracciato sopra i task, con un branch suo e
-> una consegna sua. Fa fede [BOARD.MD](BOARD.MD) per tutto ciò che esiste oggi (per i goal: "Goal").
+> **Stato: implementato.** Tutte le tappe (T1–T8) sono consegnate (vedi "Tappe"): il goal è un oggetto tracciato sopra i
+> task, con un branch suo, una consegna sua, correzioni automatiche e follow-up raccolti alla chiusura. Il contratto di
+> ciò che esiste oggi è in [BOARD.MD](BOARD.MD) (per i goal: "Goal", "Branch del goal", "Consegna del goal",
+> "Correzione automatica del goal" e "Follow-up del goal"); questo documento resta la motivazione e il disegno.
 
 Documenti collegati: [BOARD.MD](BOARD.MD) (task, proposte, scheduler, consegna, tool MCP, review),
 [DESIGN.MD](DESIGN.MD) (mappa dei moduli).
@@ -411,7 +412,7 @@ Ogni tappa è consegnabile da sola e lascia l'app coerente.
 | T5 | Consegna del goal: `kind: deliver`, pulsante, `auto_deliver`, rapporto, chiusura `delivered` — **consegnata** | T3, T4 |
 | T6 | Passaggio di consegne: `dependencies` e `goal` in `get_task`, registro delle decisioni — **consegnata** | T2 |
 | T7 | Correzione automatica con tetto di giri — **consegnata** | T3, T4 |
-| T8 | Follow-up alla chiusura | T3 |
+| T8 | Follow-up alla chiusura — **consegnata** | T3 |
 
 Fra T2 e T4 un goal si chiudeva da solo quando tutti i suoi task erano `done` (regola provvisoria): con T5 è
 sostituita dalla chiusura alla consegna (`Board::advance_goals`, vedi "Note sulla consegna di T5"). T4 e T5 conviene
@@ -479,6 +480,18 @@ Note sulla consegna di T7 (il contratto è in BOARD.MD, "Correzione automatica d
 - alzare i giri dal dettaglio fa partire una correzione ferma al tetto: è una scelta dell'utente;
 - i "repository già usati dal goal" sono quelli dei suoi task (chiave `repo_key`), non solo quelli con un branch: così
   vale anche in una cartella senza git.
+
+Note sulla consegna di T8 (il contratto è in BOARD.MD, "Follow-up del goal"):
+
+- la raccolta è in `Board::close`, il punto unico di ogni chiusura (`delivered` e `abandoned`, da sola o con "Chiudi
+  goal"); il tetto è 100 voci e le eccedenti lasciano una riga nel log;
+- `goal_set_follow_up` identifica la voce con la sua posizione in `follow_ups` e accetta solo `dismissed` e `promoted`
+  da una voce `open`; nessun tool MCP lo chiama, `get_goal` le restituisce in sola lettura;
+- "Manda all'Intake" non può passare il testo al tab (l'avvio di un Bot non prende un testo iniziale): la richiesta,
+  scritta in inglese con titolo e id del goal d'origine, va negli appunti e l'utente la incolla nel tab che si apre; lo
+  stato diventa `promoted` solo se appunti e Intake hanno funzionato;
+- in "Serve a te" compaiono i follow-up `open` dei goal chiusi negli ultimi 14 giorni (`FOLLOW_UP_WINDOW_DAYS`), una
+  card per goal comprimibile; il dettaglio del goal chiuso li mostra tutti con il loro stato.
 
 ## 17. Punti aperti
 

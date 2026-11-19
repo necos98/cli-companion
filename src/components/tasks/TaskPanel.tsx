@@ -225,6 +225,7 @@ export default function TaskPanel({
               workspaceId={workspaceId}
               board={board}
               agents={agents}
+              now={now}
               onBoard={onBoard}
               onRetry={retry}
               onOpenManager={onOpenManager}

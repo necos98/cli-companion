@@ -11,7 +11,7 @@ const PR_URL_MAX: usize = 500;
 const LIST_MAX: usize = 100;
 /// Voci massime di `commits` e `pr_urls` (uno per repository).
 pub const DELIVERED_MAX: usize = 20;
-const LIST_ITEM_MAX: usize = 2000;
+pub(in crate::board) const LIST_ITEM_MAX: usize = 2000;
 const FILES_MAX: usize = 500;
 const FILE_MAX: usize = 512;
 const TESTS_MAX: usize = 50;

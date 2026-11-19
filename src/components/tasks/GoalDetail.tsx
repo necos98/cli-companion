@@ -4,6 +4,7 @@ import GoalCloseBox from "./GoalCloseBox";
 import GoalAutoFix from "./GoalAutoFix";
 import GoalBranches from "./GoalBranches";
 import GoalClosedInfo from "./GoalClosedInfo";
+import GoalFollowUps from "./GoalFollowUps";
 import GoalDelivery from "./GoalDelivery";
 import GoalDeliveryReport from "./GoalDeliveryReport";
 import GoalDecisions from "./GoalDecisions";
@@ -98,6 +99,7 @@ export default function GoalDetail({ workspaceId, goal, board, now, onBoard, onC
           />
         )}
         {!open && <GoalDeliveryReport goal={goal} />}
+        {!open && <GoalFollowUps workspaceId={workspaceId} goal={goal} onBoard={onBoard} />}
         <GoalBranches workspaceId={workspaceId} goal={goal} open={open} onBoard={onBoard} />
         {open && <GoalCloseBox workspaceId={workspaceId} goal={goal} board={board} onBoard={onBoard} />}
       </div>
