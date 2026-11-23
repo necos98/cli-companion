@@ -432,8 +432,8 @@ cambia più (vedi "Branch del goal").
 
 ### Worktree (solo modalità parallele)
 
-Fanno eccezione i task di un goal in una cartella git: hanno il worktree in ogni modalità, da `goal/<id>` (vedi
-"Branch del goal"). Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
+Fanno eccezione i task di un goal in una cartella git, salvo un goal `in_place`: hanno il worktree in ogni modalità, da
+`goal/<id>` (vedi "Branch del goal"). Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
 `info/exclude`, hook del repo (`copy_ignored`, `setup`) dopo la creazione, `setup_done`,
 riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 - Gli **hook** `setup` e `cleanup` girano con il runner dei processi dell'app (`automation/process.rs`,
@@ -477,7 +477,7 @@ riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 
 ### Modalità in place
 
-Per i task sciolti (un task di un goal ha sempre il worktree, vedi "Branch del goal"). Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
+Per i task sciolti e per quelli di un goal `in_place` (gli altri task di un goal hanno il worktree, vedi "Branch del goal"). Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
 nulla (niente fetch, niente worktree); nelle modalità con branch legge soltanto la base
 (`base_branch` del repo, default di `origin` per `pr`, branch corrente) per scriverla nelle
 istruzioni. In `pr`/`local_merge` seriali il worker crea il branch
@@ -625,8 +625,9 @@ Funzione pura dopo ogni modifica (come oggi):
    mai insieme, nemmeno in modalità parallela. In modalità parallela (`pr`/`local_merge` con `parallel`) fino a `max_parallel`
    running nella board; altrimenti **1 running per repository** (chiave `repo`), comunque
    entro `max_parallel`. Un task `plan`, che gira sempre nel suo worktree, non occupa il repository; nemmeno un task
-   di un goal in una cartella git (`Task::runs_in_own_worktree`), che vale fino a `max_parallel` in ogni modalità.
-   Un task di un goal `no_git` lavora sul posto: resta esclusivo per cartella.
+   di un goal in una cartella git con i worktree (`Board::runs_in_own_worktree`), che vale fino a `max_parallel` in ogni
+   modalità. Un task di un goal `no_git` o `in_place` lavora sul posto: resta esclusivo per cartella, come uno sciolto
+   (anche se la consegna del workspace è poi passata ai worktree: `Board::in_place_goal`).
 4. Ogni scelto passa a `running` (`worker_status = starting`, `attempts += 1`,
    `started_at`), l'avvio vero (git + spawn) gira fuori dal lock su un thread separato.
 
@@ -1302,6 +1303,7 @@ follow-up (tappa T8) in "Follow-up del goal".
   "branches": {               // repository -> branch del goal (vuoto finché nessun task è partito), vedi "Branch del goal"
     ".": { "branch": "goal/export-ordini", "base": "main" }
   },
+  "in_place": false,           // fissato alla nascita dal workspace: true = task sul posto, uno alla volta, senza branch (vedi "Branch del goal"); assente = false
   "auto_deliver": false,      // consegna automatica quando il goal è pronto (default false; lo cambia solo l'utente)
   "deliver_bot": "general",   // Bot che esegue la consegna; omesso = "general"; lo cambia solo l'utente
   "auto_fix": { "max_rounds": 0 },  // giri di correzione accettati dall'app: 0..=3, 0 = di serie (lo cambia solo l'utente)
@@ -1485,11 +1487,21 @@ fidato).
   `origin/<base>` dopo il fetch, altrimenti dal `<base>` locale. Un branch già esistente ma senza voce nel goal si
   riusa; se la voce c'è e il branch è sparito l'avvio fallisce ("the goal branch goal/<id> no longer exists in
   <dir>: the app does not recreate it silently. …"), mai ricreato in silenzio.
-- **Task del goal**: in una cartella git girano **sempre** in un worktree `<repoDir>/.worktrees/<task-id>`, branch
+- **Task del goal**: in una cartella git girano, per un goal con i worktree, in un worktree `<repoDir>/.worktrees/<task-id>`, branch
   `task/<task-id>` creato da `goal/<goal-id>`, in ogni modalità di consegna (anche `push`/`commit`), con gli hook
   `copy_ignored` e `setup` come negli altri worktree. Niente verifica "checkout sulla base" di `local_merge`; la
   copia di lavoro dell'utente non si tocca e il branch del goal non si mette mai in checkout. Il retry riusa
   worktree e branch. In una cartella senza git lavorano in modalità libera, senza branch.
+- **Goal `in_place`**: la configurazione di consegna del workspace decide **alla nascita del goal** (accettazione della
+  proposta che lo crea, `proposal_decide`): senza worktree paralleli (`!Delivery::worktrees()`: `parallel` spento, o
+  modalità senza branch) `Goal.in_place` è `true`, e non cambia più, quindi un cambio di configurazione non tocca i goal
+  già avviati. I task di un goal `in_place` si comportano come quelli sciolti del workspace: sul posto nel checkout (vedi
+  "Modalità in place"), **uno alla volta per repository** (occupano il repository nello scheduler) e ciascuno consegna con
+  i passi in place della modalità. Nessun `goal/<id>`: `Goal.branches` resta vuoto come per una cartella senza git, la
+  review e le istruzioni usano il testo dei task sciolti (base del repository, nessun `goal_branch`), e un goal `ready` si
+  chiude `delivered` da solo (nulla da consegnare: nessun task di consegna, nessun pulsante "Consegna"). Con i worktree
+  paralleli il goal nasce con `in_place: false` e va come descritto sopra. Il campo manca nei file scritti prima di
+  questa versione (default `false`: quei goal restano coi loro branch) e una versione precedente lo ignora.
 - **Integrazione**: vedi "Istruzioni di consegna" (rebase su `goal/<id>` e `git fetch . task/<id>:goal/<id>`).
 - **Review del goal**: il worktree parte da `goal/<id>`; per il reviewer lo stato integrato è `goal/<id>` e il diff
   dell'intero goal è `<base>...goal/<id>`, al posto di `origin/<base>`. Le review sciolte non cambiano.

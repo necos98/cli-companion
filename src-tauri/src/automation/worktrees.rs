@@ -55,6 +55,9 @@ pub struct StartJob {
     /// Solo un task di consegna: i branch del goal in ogni suo repository (chiave
     /// del repository), cioe' i repository da consegnare. Vuoto per gli altri task.
     pub goal_branches: BTreeMap<String, GoalBranch>,
+    /// Il goal del task e' `in_place`: il task lavora sul posto, come uno sciolto
+    /// (nessun branch ne' worktree del goal).
+    pub goal_in_place: bool,
 }
 
 /// Worktree da rimuovere (task concluso o eliminato, o orfana).

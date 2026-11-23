@@ -2,7 +2,8 @@
 //! dell'ambiente di un terminale aperto dal frontend.
 
 use super::health;
-use super::launch::launch_env;
+use super::launch::{launch_env, Patience};
+use super::process;
 use super::settings::{self, HeadroomSettings};
 use crate::store::data_dir;
 use crate::workspaces::WorkspaceStore;
@@ -19,11 +20,22 @@ pub struct HeadroomStatus {
     /// Base URL che riceverebbe `ANTHROPIC_BASE_URL`.
     pub url: String,
     pub dashboard_url: String,
+    /// Il proxy che serve la porta e' quello avviato dall'app.
+    pub managed: bool,
+    /// L'app ha un proxy vivo che non risponde ancora (sta caricando).
+    pub starting: bool,
 }
 
 fn status_of(settings: &HeadroomSettings, reachable: bool) -> HeadroomStatus {
     let url = settings.base_url();
-    HeadroomStatus { reachable, dashboard_url: format!("{url}/dashboard"), url }
+    let owned = process::owns_running(settings.port);
+    HeadroomStatus {
+        reachable,
+        dashboard_url: format!("{url}/dashboard"),
+        url,
+        managed: reachable && owned,
+        starting: !reachable && owned,
+    }
 }
 
 #[tauri::command]
@@ -33,12 +45,41 @@ pub fn headroom_settings_get() -> HeadroomSettings {
 
 #[tauri::command]
 pub async fn headroom_settings_set(app: AppHandle, settings: HeadroomSettings) -> Result<HeadroomSettings, String> {
+    let before = settings::current();
     let saved = settings::save(&data_dir(&app)?, settings)?;
     health::invalidate();
     if !saved.enabled {
         close_dashboard(&app);
     }
+    if !saved.enabled || saved.port != before.port || saved.executable != before.executable {
+        process::stop_owned();
+    }
+    if saved.enabled && saved.auto_start {
+        process::start_nonblocking(&saved);
+    }
     Ok(saved)
+}
+
+/// All'avvio dell'app: con Headroom attivo e `auto_start` avvia il proxy in background.
+pub fn start_if_auto() {
+    let current = settings::current();
+    if current.enabled && current.auto_start {
+        process::start_nonblocking(&current);
+    }
+}
+
+/// Avvia ora il proxy (a richiesta dell'utente) e restituisce lo stato aggiornato.
+#[tauri::command]
+pub async fn headroom_start_proxy() -> Result<HeadroomStatus, String> {
+    crate::blocking(|| {
+        let current = settings::current();
+        if !current.enabled {
+            return Err("Headroom non è attivo: abilitalo in Impostazioni › Integrazioni.".to_string());
+        }
+        process::ensure_running(&current).map_err(|e| format!("Impossibile avviare il proxy di Headroom: {e}"))?;
+        Ok(status_of(&current, health::is_reachable(current.port)))
+    })
+    .await
 }
 
 /// Etichetta della finestra della dashboard (nessuna capability: pagina remota, niente IPC).
@@ -103,7 +144,7 @@ pub async fn headroom_stage_env(
             return Err("Identificativo del tab non valido.".to_string());
         }
         let ws = app.state::<WorkspaceStore>().find(&workspace_id).ok_or("Workspace non trovato.")?;
-        let launch = launch_env(&agent_id, ws.kind);
+        let launch = launch_env(&agent_id, ws.kind, Patience::NoWait);
         if !launch.env.is_empty() {
             crate::pty::stage_env(&app, &tab_id, launch.env);
         }
@@ -118,9 +159,9 @@ mod tests {
 
     #[test]
     fn status_urls_follow_the_port() {
-        let s = status_of(&HeadroomSettings { enabled: true, port: 9000 }, true);
+        let s = status_of(&HeadroomSettings { enabled: true, port: 9000, ..HeadroomSettings::default() }, false);
         assert_eq!(s.url, "http://127.0.0.1:9000");
         assert_eq!(s.dashboard_url, "http://127.0.0.1:9000/dashboard");
-        assert!(s.reachable);
+        assert!(!s.reachable && !s.managed && !s.starting);
     }
 }

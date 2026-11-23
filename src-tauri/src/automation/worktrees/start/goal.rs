@@ -1,6 +1,7 @@
 //! Avvio di un task di un goal in una cartella git (docs/GOALS.MD, "Branch del
 //! goal"): il branch `goal/<id>` del repository (creato dal primo task e
-//! registrato nella board) e il worktree del task, sempre, da quel branch. La
+//! registrato nella board) e il worktree del task, da quel branch (salvo un goal
+//! `in_place`, che non passa di qui). La
 //! copia di lavoro dell'utente non si tocca e il branch del goal non si mette
 //! mai in checkout. Gira fuori dal lock, su un thread dell'host.
 

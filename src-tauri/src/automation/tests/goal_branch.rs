@@ -58,13 +58,7 @@ fn started(st: &AutomationState, h: &FakeHost, id: &str) -> bool {
 
 #[test]
 fn the_first_goal_task_creates_the_goal_branch_and_works_in_a_worktree_from_it() {
-    for (mode, parallel) in [
-        (DeliveryMode::Commit, false),
-        (DeliveryMode::Push, false),
-        (DeliveryMode::LocalMerge, false),
-        (DeliveryMode::LocalMerge, true),
-        (DeliveryMode::Pr, true),
-    ] {
+    for (mode, parallel) in [(DeliveryMode::LocalMerge, true), (DeliveryMode::Pr, true)] {
         let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, parallel));
         queue_goal(&st, &h, "g", vec![spec("a", &[])]);
         let git = h.git_log();
@@ -89,7 +83,7 @@ fn the_first_goal_task_creates_the_goal_branch_and_works_in_a_worktree_from_it()
 
 #[test]
 fn the_second_task_of_the_goal_reuses_the_branch_and_its_base() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     h.goal_branch_exists("g");
     // Il base del workspace cambia (checkout dell'utente su un altro branch): il goal resta sul suo.
@@ -120,7 +114,7 @@ fn in_pr_mode_the_goal_branch_starts_from_origin_after_the_fetch() {
 
 #[test]
 fn an_existing_goal_branch_that_is_not_recorded_is_reused() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     h.goal_branch_exists("g");
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     assert_eq!(count(&h, "branch --no-track goal/g"), 0, "{:?}", h.git_log());
@@ -129,7 +123,7 @@ fn an_existing_goal_branch_that_is_not_recorded_is_reused() {
 
 #[test]
 fn a_git_branch_failure_is_fatal_unless_the_branch_exists_now() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     h.git_rule("branch --no-track goal/g main", false, "", "fatal: cannot lock ref");
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     let a = task(&st, &h, "a");
@@ -164,7 +158,7 @@ fn retry_reuses_the_worktree_and_never_touches_the_goal_branch() {
 
 #[test]
 fn two_goals_in_the_same_repository_get_their_own_branch_and_run_together() {
-    for (mode, parallel) in [(DeliveryMode::Commit, false), (DeliveryMode::Pr, true)] {
+    for (mode, parallel) in [(DeliveryMode::LocalMerge, true), (DeliveryMode::Pr, true)] {
         let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, parallel));
         queue_goal(&st, &h, "g1", vec![spec("a", &[])]);
         queue_goal(&st, &h, "g2", vec![spec("b", &[])]);
@@ -179,12 +173,7 @@ fn two_goals_in_the_same_repository_get_their_own_branch_and_run_together() {
 }
 
 #[test]
-fn goal_tasks_run_in_parallel_in_place_modes_without_a_checkout_on_the_base() {
-    for mode in [DeliveryMode::Commit, DeliveryMode::LocalMerge] {
-        let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, false));
-        queue_goal(&st, &h, "g", vec![spec("a", &[]), spec("b", &[]), spec("c", &[])]);
-        assert!(["a", "b", "c"].iter().all(|id| started(&st, &h, id)), "{mode:?}");
-    }
+fn goal_tasks_run_in_parallel_without_a_checkout_on_the_base() {
     // Con i worktree in `local_merge` un task sciolto vuole il checkout sul base; uno di un goal no.
     let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     set_base_branch(&h, "main");
@@ -197,15 +186,17 @@ fn goal_tasks_run_in_parallel_in_place_modes_without_a_checkout_on_the_base() {
 
 #[test]
 fn a_loose_task_is_still_exclusive_while_a_goal_runs_in_the_same_repository() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
+    // Il goal ha i suoi worktree; poi il workspace passa in place: i task sciolti occupano il repository.
+    h.set_delivery(DeliveryMode::Commit, false);
     queue(&st, &h, vec![spec("l1", &[]), spec("l2", &[])]);
     assert!(started(&st, &h, "a") && started(&st, &h, "l1") && !started(&st, &h, "l2"));
 }
 
 #[test]
 fn a_recorded_goal_branch_that_vanished_fails_the_start() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     // `goal/g` non esiste piu' (il git finto lo dice): b non lo ricrea.
     queue_into(&st, &h, "g", vec![spec("b", &[])]);
@@ -277,7 +268,7 @@ fn the_goal_review_works_in_a_worktree_from_the_goal_branch() {
 
 #[test]
 fn a_goal_task_branch_is_deleted_at_done_only_when_the_goal_contains_it() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     h.dirs.lock().unwrap().push(WORKTREE_A.to_string());
     let w = session_of(&st, &h, "a");
@@ -292,7 +283,7 @@ fn a_goal_task_branch_is_deleted_at_done_only_when_the_goal_contains_it() {
 
 #[test]
 fn a_goal_task_branch_not_contained_in_the_goal_is_kept_with_a_warning() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     h.dirs.lock().unwrap().push(WORKTREE_A.to_string());
     h.git_rule("merge-base --is-ancestor", false, "", "");
@@ -307,7 +298,7 @@ fn a_goal_task_branch_not_contained_in_the_goal_is_kept_with_a_warning() {
 
 #[test]
 fn a_failed_goal_task_keeps_its_worktree_and_branch() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     h.dirs.lock().unwrap().push(WORKTREE_A.to_string());
     let w = session_of(&st, &h, "a");
@@ -319,7 +310,7 @@ fn a_failed_goal_task_keeps_its_worktree_and_branch() {
 
 /// Un goal "g" abbandonato (il suo task `a` fallito e tolto) con il branch registrato.
 fn abandoned_goal() -> (AutomationState, FakeHost) {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "g", vec![spec("a", &[])]);
     finish(&st, &h, &session_of(&st, &h, "a"), "failed");
     boards::goal_close(&st, &h, "ws-1", "g").unwrap();
@@ -359,7 +350,7 @@ fn delete_branches_reports_what_git_refuses_and_keeps_the_entry() {
 
 #[test]
 fn delete_branches_refuses_open_and_delivered_goals_and_unknown_workspaces() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_goal(&st, &h, "open", vec![spec("a", &[])]);
     let err = boards::goal_delete_branches(&st, &h, "ws-1", "open").unwrap_err();
     assert_eq!(err, "goal open is open: close it first");
@@ -385,7 +376,7 @@ fn delete_branches_refuses_open_and_delivered_goals_and_unknown_workspaces() {
 fn the_goal_branch_flow_works_with_real_git() {
     use super::reconcile_git::{commit_in, git_in, TempRepo};
     let Some(repo) = TempRepo::create("goal-branch") else { return };
-    let (st, h) = (AutomationState::default(), repo.host(DeliveryMode::Commit));
+    let (st, h) = (AutomationState::default(), repo.host(DeliveryMode::LocalMerge));
     queue_goal(&st, &h, "g", vec![spec("a", &[]), spec("b", &["a"])]);
     let main = repo.git(&["rev-parse", "main"]);
     assert_eq!((repo.git(&["rev-parse", "goal/g"]), repo.git(&["rev-parse", "task/a"])), (main.clone(), main));
@@ -407,4 +398,62 @@ fn the_goal_branch_flow_works_with_real_git() {
     // Il task successivo parte dal goal e vede il lavoro del primo.
     assert!(repo.worktree("b").join("feature.txt").is_file());
     assert_eq!(goal_of(&st, &h, "g").branches.get("."), Some(&gb("main")));
+}
+
+#[test]
+fn goal_tasks_in_an_in_place_workspace_run_one_at_a_time_in_place_without_a_goal_branch() {
+    use crate::board::{GoalOutcome, GoalPhase};
+    for mode in [DeliveryMode::Commit, DeliveryMode::Push, DeliveryMode::Pr, DeliveryMode::LocalMerge] {
+        // `parallel` spento: anche `pr` e `local_merge` lavorano sul checkout principale.
+        let (st, h) = (AutomationState::default(), FakeHost::with_delivery(mode, false));
+        queue_goal(&st, &h, "g", vec![spec("a", &[]), spec("b", &[]), spec("c", &["a"])]);
+        assert!(goal_of(&st, &h, "g").in_place, "{mode:?}");
+        // Uno alla volta, come i task sciolti: b aspetta a.
+        assert!(started(&st, &h, "a") && !started(&st, &h, "b"), "{mode:?}");
+        assert_eq!(h.spawns()[0].cwd.as_deref(), Some("C:\\p"), "{mode:?}");
+        assert_eq!(task(&st, &h, "a")["worktree"], Value::Null, "{mode:?}");
+        finish(&st, &h, &session_of(&st, &h, "a"), "completed");
+        assert!(started(&st, &h, "b"), "{mode:?}");
+        // Nessun branch del goal, nessun worktree.
+        assert!(!h.git_log().iter().any(|l| l.contains("goal/") || l.contains("worktree add")), "{mode:?}");
+        assert!(goal_of(&st, &h, "g").branches.is_empty(), "{mode:?}");
+        // Il goal si chiude da solo, senza Consegna, quando i task sono finiti.
+        while let Some(id) = ["a", "b", "c"].into_iter().find(|id| {
+            let t = task(&st, &h, id);
+            t["session"].is_string() && t["status"] != "done"
+        }) {
+            finish(&st, &h, &session_of(&st, &h, id), "completed");
+        }
+        let g = view(&st, &h).goals.into_iter().find(|g| g.goal.id == "g").unwrap();
+        assert_eq!((g.phase, g.goal.outcome()), (GoalPhase::Closed, Some(GoalOutcome::Delivered)), "{mode:?}");
+    }
+}
+
+#[test]
+fn a_worktree_workspace_gives_its_goals_branches_and_in_place_false() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
+    queue_goal(&st, &h, "g", vec![spec("a", &[]), spec("b", &[])]);
+    assert!(!goal_of(&st, &h, "g").in_place);
+    assert!(started(&st, &h, "a") && started(&st, &h, "b"));
+    assert_eq!(goal_of(&st, &h, "g").branches.get("."), Some(&gb("main")));
+}
+
+#[test]
+fn an_existing_goal_with_branches_is_unchanged_when_the_workspace_switches_to_in_place() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
+    queue_goal(&st, &h, "g", vec![spec("a", &[])]);
+    h.goal_branch_exists("g");
+    assert!(started(&st, &h, "a"));
+    // L'utente passa il workspace a `commit` senza worktree: il goal resta com'e'.
+    h.set_delivery(DeliveryMode::Commit, false);
+    queue_into(&st, &h, "g", vec![spec("b", &[]), spec("c", &[])]);
+    let g = goal_of(&st, &h, "g");
+    assert!(!g.in_place);
+    assert_eq!(g.branches.get("."), Some(&gb("main")));
+    // I nuovi task del goal vanno nel loro worktree, in parallelo con a.
+    assert!(started(&st, &h, "b") && started(&st, &h, "c"));
+    assert!(has_git(&h, "C:\\p|worktree add C:\\p\\.worktrees\\b -b task/b goal/g"), "{:?}", h.git_log());
+    // Un goal nuovo, invece, nasce in place.
+    queue_goal(&st, &h, "g2", vec![spec("d", &[])]);
+    assert!(goal_of(&st, &h, "g2").in_place);
 }

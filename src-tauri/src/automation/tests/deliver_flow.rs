@@ -55,7 +55,7 @@ fn a_delivered_goal_closes_with_its_report_a_notice_and_its_branches_go_after_th
 
 #[test]
 fn the_report_fields_of_a_delivery_are_only_for_delivery_tasks() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     queue(&st, &h, vec![spec("loose", &[])]);
     let work = session_of(&st, &h, "loose");
     let err = call(&st, &h, &work, "complete_task", delivered_report()).unwrap_err();
@@ -67,7 +67,7 @@ fn the_report_fields_of_a_delivery_are_only_for_delivery_tasks() {
 
 #[test]
 fn a_failed_delivery_keeps_the_goal_delivering_and_the_retry_reuses_the_worktree() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     call(&st, &h, &w, "complete_task", json!({ "status": "failed", "summary": "rebase conflict in a.txt" })).unwrap();
     let g = goal_view(&st, &h, "g");
     assert_eq!((g.phase, g.goal.is_open(), g.waiting), (GoalPhase::Delivering, true, vec![GoalWaiting::Failed]));
@@ -90,7 +90,7 @@ fn a_failed_delivery_keeps_the_goal_delivering_and_the_retry_reuses_the_worktree
 
 #[test]
 fn removing_a_delivery_task_removes_its_worktrees_and_keeps_the_branches() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     call(&st, &h, &w, "complete_task", json!({ "status": "failed", "summary": "no" })).unwrap();
     h.dirs.lock().unwrap().push(GOAL_WT.to_string());
     boards::task_action(&st, &h, "ws-1", "deliver-g", TaskAction::Delete).unwrap();
@@ -102,7 +102,7 @@ fn removing_a_delivery_task_removes_its_worktrees_and_keeps_the_branches() {
 
 #[test]
 fn closing_the_goal_removes_the_failed_delivery_worktrees_and_keeps_the_branches() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     call(&st, &h, &w, "complete_task", json!({ "status": "failed", "summary": "no" })).unwrap();
     tab_closed(&st, &h, &w);
     h.dirs.lock().unwrap().push(GOAL_WT.to_string());
@@ -115,7 +115,7 @@ fn closing_the_goal_removes_the_failed_delivery_worktrees_and_keeps_the_branches
 
 #[test]
 fn a_finished_delivery_whose_tab_is_gone_is_cleaned_by_the_reconciliation() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     h.dirs.lock().unwrap().push(GOAL_WT.to_string());
     call(&st, &h, &w, "complete_task", delivered_report()).unwrap();
     st.registry().workers.get_mut(&w).unwrap().tab_open = false;
@@ -126,7 +126,7 @@ fn a_finished_delivery_whose_tab_is_gone_is_cleaned_by_the_reconciliation() {
 
 #[test]
 fn every_repository_of_the_goal_gets_a_worktree_and_is_cleaned() {
-    let (st, h) = (AutomationState::default(), host_with_api(DeliveryMode::Commit, 2, 1));
+    let (st, h) = (AutomationState::default(), host_with_api(DeliveryMode::LocalMerge, 2, 1));
     let api = |id: &str| {
         let mut s = spec(id, &[]);
         s["repo"] = json!("api");
@@ -155,7 +155,7 @@ fn every_repository_of_the_goal_gets_a_worktree_and_is_cleaned() {
 
 #[test]
 fn only_the_repositories_with_commits_are_delivered() {
-    let (st, h) = (AutomationState::default(), host_with_api(DeliveryMode::Commit, 2, 0));
+    let (st, h) = (AutomationState::default(), host_with_api(DeliveryMode::LocalMerge, 2, 0));
     let mut b = spec("b", &[]);
     b["repo"] = json!("api");
     accept_goal(&st, &h, "g", vec![spec("a", &[]), b], Some(true));
@@ -168,7 +168,7 @@ fn only_the_repositories_with_commits_are_delivered() {
 
 #[test]
 fn the_delivery_kind_is_reserved_to_the_app() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue(&st, &h, vec![spec("a", &[])]);
     let mut deliver = spec("d", &[]);
     deliver["kind"] = json!("deliver");
@@ -183,7 +183,7 @@ fn the_delivery_kind_is_reserved_to_the_app() {
 
 #[test]
 fn a_goal_in_a_folder_without_git_closes_by_itself_without_a_delivery() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     h.git_rule("rev-parse --is-inside-work-tree", false, "", "fatal: not a git repository");
     accept_goal(&st, &h, "g", vec![spec("a", &[])], Some(true));
     complete_work(&st, &h, "a");
@@ -222,7 +222,7 @@ fn the_goal_branch_is_never_deleted_by_the_generic_cleanup() {
 
 #[test]
 fn a_delivery_task_has_no_generic_cleanup_target() {
-    let (st, _h, _) = started_delivery(DeliveryMode::Commit);
+    let (st, _h, _) = started_delivery(DeliveryMode::LocalMerge);
     let delivery = st.registry().boards.get("ws-1").unwrap().task("deliver-g").unwrap().clone();
     assert!(delivery.worktree.is_some());
     assert!(CleanupTarget::for_task("ws-1", delivery).is_none(), "a delivery has its own cleanup");
@@ -230,7 +230,7 @@ fn a_delivery_task_has_no_generic_cleanup_target() {
 
 #[test]
 fn the_deliverer_reads_its_goal_and_its_tasks_but_nothing_else() {
-    let (st, h, w) = started_delivery(DeliveryMode::Commit);
+    let (st, h, w) = started_delivery(DeliveryMode::LocalMerge);
     assert_eq!(call(&st, &h, &w, "whoami", json!({})).unwrap()["role"], "deliverer");
     let goal = call(&st, &h, &w, "get_goal", json!({ "id": "g" })).unwrap();
     assert_eq!(goal["goal"]["request"], goal_json("g")["request"]);
@@ -247,7 +247,7 @@ fn the_deliverer_reads_its_goal_and_its_tasks_but_nothing_else() {
 fn the_delivery_flow_works_with_real_git() {
     use super::reconcile_git::{commit_in, git_in, TempRepo};
     let Some(repo) = TempRepo::create("deliver-flow") else { return };
-    let (st, h) = (AutomationState::default(), repo.host(DeliveryMode::Commit));
+    let (st, h) = (AutomationState::default(), repo.host(DeliveryMode::LocalMerge));
     accept_goal(&st, &h, "g", vec![spec("a", &[])], None);
     // Il worker del task integra nel goal come dicono le istruzioni.
     let wt = repo.worktree("a");

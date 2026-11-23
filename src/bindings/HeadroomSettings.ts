@@ -8,4 +8,12 @@ enabled: boolean,
 /**
  * Porta del proxy sull'host locale (1..=65535).
  */
-port: number, };
+port: number, 
+/**
+ * L'app avvia il proxy da sola (e lo ferma all'uscita o alla disattivazione).
+ */
+auto_start: boolean, 
+/**
+ * Eseguibile di `headroom`; vuoto = risolto in automatico.
+ */
+executable: string, };

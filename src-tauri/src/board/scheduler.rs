@@ -22,10 +22,11 @@ pub struct SchedCtx {
 /// In modalita' parallela (worktree) fino a `max_parallel` running nella
 /// board; altrimenti un solo running per repository, comunque entro
 /// `max_parallel`. Un task che lavora nel suo worktree (`plan`, o task di un
-/// goal in una cartella git: `Task::runs_in_own_worktree`) non occupa il
-/// repository, in nessuna modalita'. Un task `no_git` lavora sul posto nella
-/// cartella: anche in parallelo due task della stessa cartella non girano
-/// insieme. I task il cui agente non e' pronto (`gate`) restano in coda e non
+/// goal in una cartella git: `Board::runs_in_own_worktree`) non occupa il
+/// repository, in nessuna modalita'. Un task `no_git`, o di un goal `in_place`
+/// (nato in un workspace senza worktree paralleli), lavora sul posto nella
+/// cartella come uno sciolto: anche in parallelo due task della stessa cartella
+/// non girano insieme. I task il cui agente non e' pronto (`gate`) restano in coda e non
 /// occupano ne' il repository ne' un posto: ne partono altri.
 pub fn schedule(board: &Board, ctx: &SchedCtx, gate: &AgentGate) -> Vec<String> {
     if board.paused || !ctx.gate_open {
@@ -35,7 +36,7 @@ pub fn schedule(board: &Board, ctx: &SchedCtx, gate: &AgentGate) -> Vec<String> 
     let mut running = 0usize;
     for t in board.tasks.iter().filter(|t| t.status() == TaskStatus::Running) {
         running += 1;
-        if !t.runs_in_own_worktree() {
+        if !board.runs_in_own_worktree(t) {
             busy.insert(repo_key(t.repo.as_deref()));
         }
     }
@@ -48,8 +49,8 @@ pub fn schedule(board: &Board, ctx: &SchedCtx, gate: &AgentGate) -> Vec<String> 
         if gate.is_blocked(&t.agent) {
             continue;
         }
-        let exclusive = !parallel || t.no_git;
-        if exclusive && !t.runs_in_own_worktree() && !busy.insert(repo_key(t.repo.as_deref())) {
+        let exclusive = !parallel || t.no_git || board.in_place_goal(t);
+        if exclusive && !board.runs_in_own_worktree(t) && !busy.insert(repo_key(t.repo.as_deref())) {
             continue;
         }
         chosen.push(t.id.clone());

@@ -292,6 +292,22 @@ vanno scritte qui sotto, per versione, prima del tag.
   Le skill aggiornate (`task-intake` e le altre del flusso) arrivano con l'aggiornamento del
   pacchetto dell'agente (prontezza «da aggiornare» finché non lo si aggiorna).
 
+### v0.26.1: avvio automatico del proxy Headroom e goal secondo la consegna
+
+- **Il proxy Headroom parte da solo.** Con Headroom attivo e «Avvia il proxy automaticamente»
+  acceso (di serie), l'app lancia `headroom proxy` sulla porta scelta all'avvio e quando si
+  attiva l'integrazione; l'eseguibile si può indicare a mano se non è nel `PATH`. L'output va in
+  `logs/headroom-proxy.log`. Il proxy impiega circa un minuto a rispondere: la scheda mostra
+  «Proxy in avvio…», i worker lo aspettano fino a 120 s, i terminali interattivi aperti nel
+  frattempo partono diretti con un avviso e lo usano dalla sessione successiva. L'app ferma il
+  proxy che ha avviato quando si chiude o quando si spegne l'integrazione; un proxy avviato a
+  mano o da altri non viene mai toccato.
+- **I goal seguono la configurazione di consegna.** Con `parallel: false` (e sempre con le
+  modalità commit e push) un goal nuovo lavora in place: i suoi task partono uno alla volta sul
+  branch corrente e consegnano subito con la modalità del workspace, senza branch `goal/` né
+  worktree; il goal si chiude appena pronto, senza «Consegna». Con worktree attive resta il
+  comportamento della v0.26.0. I goal già esistenti non cambiano.
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali

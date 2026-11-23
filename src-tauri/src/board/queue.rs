@@ -202,9 +202,15 @@ impl Board {
             self.check_goal_target(g, Some(id))?;
         }
         let specs = self.check_specs(&specs, &HashSet::new(), goal.as_ref().map(ProposalGoal::id), ctx)?;
+        let new_goal = matches!(goal, Some(ProposalGoal::New(_)));
         let membership = goal.map(|g| self.enter_goal(g, correction, now)).transpose()?;
         if let Some((goal, round)) = &membership {
             self.apply_acceptance(goal, *round, specs.len(), acceptance, now);
+            if new_goal && acceptance.in_place {
+                if let Some(g) = self.goal_mut(goal) {
+                    g.in_place = true;
+                }
+            }
         }
         self.proposals.retain(|p| p.id != id);
         Ok(self.push_specs(specs, membership.as_ref().map(|(g, round)| (g.as_str(), *round)), now))

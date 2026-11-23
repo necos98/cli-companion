@@ -173,7 +173,7 @@ pub async fn proposal_decide(
     auto_fix: Option<u8>,
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
-        let acceptance = board::Acceptance { auto_deliver, auto_fix, automatic: false };
+        let acceptance = board::Acceptance { auto_deliver, auto_fix, automatic: false, in_place: false };
         boards::proposal_decide_with(
             &app.state::<AutomationState>(),
             &TauriHost(app.clone()),

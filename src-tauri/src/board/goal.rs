@@ -120,6 +120,11 @@ pub struct Goal {
     /// sono nati. Li scrive solo l'app, all'avvio del primo task del goal in quel
     /// repository: vuoto finche' nessun task e' partito (o senza git).
     pub branches: BTreeMap<String, GoalBranch>,
+    /// Deciso alla nascita del goal dalla configurazione del workspace (consegna
+    /// senza worktree paralleli): i task girano nella cartella, uno alla volta,
+    /// come quelli sciolti, e il goal non ha mai branch (come senza git). Falso
+    /// per i goal nati prima: restano nei loro worktree.
+    pub in_place: bool,
     /// Il task di consegna si crea da solo quando il goal e' pronto (e l'ultima
     /// review non ha trovato problemi). Lo cambia solo l'utente, mai un tool.
     pub(in crate::board) auto_deliver: bool,

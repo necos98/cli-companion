@@ -368,7 +368,15 @@ impl Registry {
                     Some(goal) if task.kind == TaskKind::Deliver => goal.branches.clone(),
                     _ => Default::default(),
                 };
-                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task, goal_branch, goal_branches };
+                let goal_in_place = task.goal().and_then(|g| b.goal(g)).is_some_and(|g| g.in_place);
+                let job = StartJob {
+                    ws: ws.clone(),
+                    attempt: task.attempts(),
+                    task,
+                    goal_branch,
+                    goal_branches,
+                    goal_in_place,
+                };
                 self.effects.push(Effect::StartTask(Box::new(job)));
             }
         }

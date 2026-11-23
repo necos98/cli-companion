@@ -167,7 +167,7 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
 | `store/` | persistenza JSON comune: busta versionata, migrazioni, backup, avvisi (`StoreWarning`), `write_atomic` |
 | `workspaces/` | il `Workspace` (target, avvii, impostazioni dei worker, consegna, repository, archiviazione), il suo store in memoria e `workspaces.json`, i comandi Tauri, le patch di impostazioni proposte dagli agenti |
 | `agents/` | contratti (`contracts/`), registro, rilevamento, pacchetti/plugin, preset, regole dei worker; `claude_code/` è l'unica integrazione |
-| `headroom/` | proxy Headroom di compressione del contesto: impostazioni globali (`headroom.json`), controllo `/health` con cache breve, `launch_env` (la decisione che aggiunge `ANTHROPIC_BASE_URL` ai lanci di Claude Code su Windows) e comandi Tauri |
+| `headroom/` | proxy Headroom di compressione del contesto: impostazioni globali (`headroom.json`), controllo `/health` con cache breve, `process` (il proxy avviato dall'app con `auto_start`: un solo figlio condiviso (lock mai tenuto durante l'attesa di `/health`, fino a 120 s per i worker; i terminali interattivi non attendono), log in `logs/headroom-proxy.log`, fermato all'uscita o alla disattivazione, mai un proxy altrui), `launch_env` (la decisione che aggiunge `ANTHROPIC_BASE_URL` ai lanci di Claude Code su Windows) e comandi Tauri |
 | `board/` | la coda dei task di un workspace: modello, ciclo di vita, scheduler, vista, formato su disco, recupero, archivio (pura) |
 | `automation/` | registro di worker e board, scheduler a timer, avvio e pulizia dei worktree, E2E, RPC dei tool MCP, autenticazione per sessione, salvataggio delle board |
 | `pty/` | una shell per tab in un PTY, con output su un `Channel` |
@@ -782,7 +782,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 | `goal.rs`, `goal/` | goal (obiettivi): modello (`Goal`, registro delle decisioni, chiusura), `input.rs` (`goal`/`goal_id` di `propose_tasks` e limiti), `membership.rs` (a quale goal vanno i task, eredità dalla review, dipendenze ammesse), `closure.rs` (nascita e giri all'accettazione, note, "Chiudi goal", scrittura della chiusura), `phase.rs` (`GoalView`: fase, attesa e `last_review` derivate, pure), `advance.rs` (`Board::advance_goals`: chiusure automatiche e consegne da avviare, al publish), `delivery.rs` + `delivery/task.rs` (`auto_deliver`, `deliver_bot`, `GoalReport`, `set_goal_delivery`, `create_deliver_task`), `auto_fix.rs` (`AutoFix`, `auto_fix_decision`, `AutoFixHold`, `Acceptance`, `set_goal_auto_fix`: correzione automatica con tetto di giri), `follow_up.rs` (`FollowUp`, raccolta alla chiusura, `set_follow_up_state`), `archive.rs` (goal chiusi oltre il tetto) |
 | `spec.rs` | `TaskSpec`/`TaskPatch`, id (anche generati dal titolo), repository, grafo delle dipendenze, parsing di proposte e limiti |
 | `goal/branches.rs` | branch del goal (`GoalBranch`, `goal_branch_name`, `Goal.branches` ripulito al caricamento, registrazione e "Elimina branch" lato board); test in `goal/branches/tests.rs` |
-| `scheduler.rs`, `scheduler/tests.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura); i task di un goal in una cartella git non occupano il repository (`Task::runs_in_own_worktree`) |
+| `scheduler.rs`, `scheduler/tests.rs` | `schedule(board, ctx)`: quali task avviare adesso (funzione pura); i task di un goal in una cartella git non occupano il repository (`Board::runs_in_own_worktree`), salvo i goal `in_place` (workspace senza worktree paralleli alla nascita del goal: sul posto, uno alla volta, senza branch) |
 | `agent.rs`, `agent_gate.rs` | `resolve_spec_agent` (l'agente e il modello di una specifica, via `registry::resolve_agent`) e `AgentGate`/`AgentUnavailableView` (i task in coda con l'agente non pronto, che lo scheduler salta e la vista spiega) |
 | `view.rs` | `BoardView` / `TaskView` per il frontend (`waiting_on`, `attention`, `allowed_actions`, `can_edit`, `can_reorder`, `cascade`, `limits`) e righe compatte di `list_tasks` |
 | `worker.rs` | `WorkerStatus`/`WorkerActivity`/`WorkerEnd` e la tabella di transizione pura applicata agli hook |
@@ -796,7 +796,7 @@ Il contratto con il frontend e con i tool MCP è [BOARD.MD](BOARD.MD). File:
 - **Scheduler.** `schedule` non fa nulla con la coda in pausa o con il gate chiuso (workspace archiviato, oppure con
   fasce attive e fuori fascia); sceglie i `queued` con tutte le dipendenze `done`, nell'ordine dell'array. In modalità
   parallela (`pr`/`local_merge` con `parallel`) fino a `max_parallel` running, altrimenti uno per repository, comunque
-  entro `max_parallel` (un task `plan` o di un goal in una cartella git, nel suo worktree, non occupa il repository). Salta anche i task il cui agente è nel `AgentGate` del contesto (non pronto nel target del
+  entro `max_parallel` (un task `plan` o di un goal con i worktree in una cartella git, nel suo worktree, non occupa il repository; un task di un goal `in_place` lavora sul posto ed è esclusivo come uno sciolto). Salta anche i task il cui agente è nel `AgentGate` del contesto (non pronto nel target del
   workspace): restano `queued` e non occupano slot (vedi “Integrazioni: stato, risolutore e prontezza”).
 - **Azioni.** `permits` è la sola tabella di cosa si può fare a un task per stato; la usano le guardie delle operazioni,
   i messaggi di errore e `allowed_actions` della vista (BOARD.MD, "Azioni consentite").
@@ -844,7 +844,7 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
 - `worktrees.rs`: tipi e helper condivisi di git (percorsi, `git`, verifica dei repository) e file
   della board. `boards/goal_branches.rs`: registrazione del branch del goal e "Elimina branch" (`goal_delete_branches`).
   `worktrees/start.rs`: avvio di un task (base, `git fetch`, worktree, setup, spawn); `start/goal.rs`: avvio di un task
-  di un goal (creazione di `goal/<id>` e worktree da quel branch, sempre), `start/setup.rs`: hook del worktree appena creato.
+  di un goal (creazione di `goal/<id>` e worktree da quel branch; non per un goal `in_place`, che va in `place_in_repo` come uno sciolto), `start/setup.rs`: hook del worktree appena creato.
   I test del branch del goal sono in `tests/goal_branch.rs`.
   `worktrees/cleanup.rs`: pulizia a consegna avvenuta. Consegna del goal: `deliver.rs` (`get_task` e RPC del `deliverer`, `DeliverTarget`: i repository da consegnare calcolati all'avvio), `boards/delivery.rs` (creazione del task di consegna, `goal_deliver`, `goal_set_delivery`, consegna automatica, notifica "Goal consegnato", chiusura senza worker), `boards/auto_fix.rs` (accettazione automatica delle correzioni, `goal_set_auto_fix`), `boards/follow_up.rs` (`goal_set_follow_up`), `worktrees/start/deliver.rs` (avvio: commit oltre la base, worktree sul branch del goal), `worktrees/delivery_cleanup.rs` (`DeliveryCleanup`). `worktrees/real.rs`: lato reale di git (timeout 120 s, WSL via `wsl.exe -e`,
   sempre tramite `process.rs`), rilevamento dei repository, file di esclusione.

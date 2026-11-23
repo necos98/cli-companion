@@ -23,6 +23,20 @@ impl Board {
         self.goals.iter_mut().find(|g| g.id == id)
     }
 
+    /// Il task `t` della board lavora nel suo worktree, senza occupare il
+    /// repository: un `plan` (sola lettura) o un task di un goal in una cartella
+    /// git, con i worktree (docs/GOALS.MD, "Branch del goal"). Un task di un goal
+    /// `no_git` o `in_place` lavora sul posto, come uno sciolto.
+    pub fn runs_in_own_worktree(&self, t: &Task) -> bool {
+        t.kind.isolated() || (!t.no_git && t.goal().is_some() && !self.in_place_goal(t))
+    }
+
+    /// Il task e' di un goal `in_place` (fissato alla nascita del goal): resta
+    /// esclusivo sul repository anche se la consegna del workspace e' cambiata.
+    pub fn in_place_goal(&self, t: &Task) -> bool {
+        t.goal().and_then(|g| self.goal(g)).is_some_and(|g| g.in_place)
+    }
+
     /// I task del goal `id`, in ordine di coda.
     pub fn goal_tasks<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Task> + 'a {
         self.tasks.iter().filter(move |t| t.goal() == Some(id))

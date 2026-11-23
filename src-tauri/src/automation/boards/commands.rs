@@ -187,9 +187,11 @@ pub(in crate::automation) fn proposal_decide_with<H: Host>(
     ws_id: &str,
     proposal_id: &str,
     accept: bool,
-    acceptance: Acceptance,
+    mut acceptance: Acceptance,
 ) -> Result<BoardView, String> {
     let ws = workspace_of(host, ws_id)?;
+    // Un goal nuovo eredita la consegna del workspace di adesso e la tiene.
+    acceptance.in_place = !ws.delivery.worktrees();
     let mut kinds = FolderKinds::new();
     if accept {
         // Nuova validazione: la modalita' di consegna o i repository possono essere cambiati.

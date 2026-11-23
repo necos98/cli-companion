@@ -211,6 +211,7 @@ export const api = {
   headroomSettingsGet: () => invoke<HeadroomSettings>("headroom_settings_get"),
   headroomSettingsSet: (settings: HeadroomSettings) => invoke<HeadroomSettings>("headroom_settings_set", { settings }),
   headroomStatus: () => invoke<HeadroomStatus>("headroom_status"),
+  headroomStartProxy: () => invoke<HeadroomStatus>("headroom_start_proxy"),
   headroomOpenDashboard: () => invoke<void>("headroom_open_dashboard"),
   /** Prepara l'ambiente Headroom di un tab con avvio integrato (anche al ripristino); restituisce l'avviso, se c'è. */
   headroomStageEnv: (workspaceId: string, agentId: string, tabId: string) =>

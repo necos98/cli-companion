@@ -13,7 +13,7 @@ const NOT_AVAILABLE: &str = "is not available to automated sessions";
 /// task `a` (concluso, ma ancora un worker per `dispatch`), il revisore e il
 /// pianificatore e chi consegna un goal.
 fn callers() -> (AutomationState, FakeHost, [(Role, String); 5]) {
-    let (st, h, reviewer_tab) = reviewer(DeliveryMode::Commit, false);
+    let (st, h, reviewer_tab) = reviewer(DeliveryMode::LocalMerge, true);
     let worker_tab = session_of_done(&st, &h);
     let (_, planner_tab) = started_plan(&st, &h);
     let deliverer_tab = started_deliverer(&st, &h);

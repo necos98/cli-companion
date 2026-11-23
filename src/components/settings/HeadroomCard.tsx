@@ -17,10 +17,15 @@ export default function HeadroomCard() {
   const [port, setPort] = useState(String(settings.port));
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<HeadroomStatus | null>(null);
+  const [executable, setExecutable] = useState(settings.executable);
   const [checking, setChecking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const busy = checking || starting;
 
   // La porta salvata (o riletta dal backend) vince sul testo in modifica.
   useEffect(() => setPort(String(settings.port)), [settings.port]);
+
+  useEffect(() => setExecutable(settings.executable), [settings.executable]);
 
   const verify = useCallback(() => {
     setChecking(true);
@@ -37,6 +42,29 @@ export default function HeadroomCard() {
     else setStatus(null);
   }, [settings.enabled, settings.port, verify]);
 
+  const startProxy = () => {
+    setStarting(true);
+    setError(null);
+    api
+      .headroomStartProxy()
+      .then(setStatus)
+      .catch((e) => setError(errorMessage(e)))
+      .finally(() => setStarting(false));
+  };
+
+  // Il proxy carica il modello e risponde dopo circa un minuto: finché sta partendo si rilegge lo stato.
+  const waiting = starting || !!status?.starting;
+  useEffect(() => {
+    if (!waiting) return;
+    const id = setInterval(() => {
+      api
+        .headroomStatus()
+        .then(setStatus)
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(id);
+  }, [waiting]);
+
   const save = async (next: HeadroomSettings) => {
     try {
       await saveHeadroomSettings(next);
@@ -51,7 +79,13 @@ export default function HeadroomCard() {
     const text = port.trim();
     const value = Number(text);
     if (text === "" || value === settings.port) setPort(String(settings.port));
-    else void save({ enabled: settings.enabled, port: value });
+    else void save({ ...settings, port: value });
+  };
+
+  const commitExecutable = () => {
+    const value = executable.trim();
+    if (value === settings.executable) setExecutable(settings.executable);
+    else void save({ ...settings, executable: value });
   };
 
   return (
@@ -62,10 +96,20 @@ export default function HeadroomCard() {
         <input
           type="checkbox"
           checked={settings.enabled}
-          onChange={(e) => void save({ enabled: e.target.checked, port: settings.port })}
+          onChange={(e) => void save({ ...settings, enabled: e.target.checked })}
           className="h-3.5 w-3.5 accent-primary"
         />
         Usa Headroom per Claude Code
+      </label>
+
+      <label className="flex items-center gap-2 text-[13px]">
+        <input
+          type="checkbox"
+          checked={settings.auto_start}
+          onChange={(e) => void save({ ...settings, auto_start: e.target.checked })}
+          className="h-3.5 w-3.5 accent-primary"
+        />
+        Avvia il proxy automaticamente
       </label>
 
       <div className="flex items-center gap-2">
@@ -85,19 +129,35 @@ export default function HeadroomCard() {
         />
       </div>
 
+      <div className="flex items-center gap-2">
+        <label htmlFor="headroom-executable" className="text-xs">
+          Eseguibile
+        </label>
+        <Input
+          id="headroom-executable"
+          value={executable}
+          placeholder="headroom"
+          onChange={(e) => setExecutable(e.target.value)}
+          onBlur={commitExecutable}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          className="h-8 flex-1"
+        />
+      </div>
+
       {error && <p className="whitespace-pre-wrap text-xs text-destructive">{error}</p>}
 
       {settings.enabled && (
         <div className="flex items-center gap-2 text-xs">
-          {checking && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          {status && !checking && (
-            <span className={status.reachable ? "text-foreground" : "text-muted-foreground"}>
-              {status.reachable ? `Proxy in ascolto su ${status.url}` : "Proxy non raggiungibile"}
-            </span>
-          )}
-          <Button size="sm" variant="outline" disabled={checking} onClick={verify}>
+          {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {status && !busy && <StatusText status={status} />}
+          <Button size="sm" variant="outline" disabled={busy} onClick={verify}>
             Verifica
           </Button>
+          {status && !status.reachable && !status.starting && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={startProxy}>
+              Avvia proxy
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={openHeadroomDashboard}>
             Apri dashboard
           </Button>
@@ -105,11 +165,24 @@ export default function HeadroomCard() {
       )}
 
       <p className="text-[11px] text-muted-foreground">
-        Solo per le sessioni Claude Code su Windows. Avvia tu il proxy (
-        <code className="font-mono">headroom proxy</code> o <code className="font-mono">headroom deploy</code>); se non
-        risponde le sessioni partono senza. Con Headroom acceso la sua dashboard si apre in una finestra dedicata dalla
-        barra dei mondi o dal piede della sidebar.
+        Solo per le sessioni Claude Code su Windows. Con l&apos;avvio automatico l&apos;app lancia{" "}
+        <code className="font-mono">headroom proxy</code> (senza rate limit) e lo ferma all&apos;uscita o quando
+        disattivi Headroom, senza mai toccare un proxy avviato altrove. L&apos;avvio richiede circa un minuto: i worker
+        lo aspettano, i terminali interattivi aperti nel frattempo partono senza; il log è in{" "}
+        <code className="font-mono">logs/headroom-proxy.log</code> nella cartella dati dell&apos;app. Senza avvio
+        automatico avvia il proxy tu; se non risponde le sessioni partono senza. La dashboard si apre in una finestra
+        dedicata dalla barra dei mondi o dal piede della sidebar.
       </p>
     </Section>
+  );
+}
+
+function StatusText({ status }: { status: HeadroomStatus }) {
+  if (status.starting) return <span>Proxy in avvio su {status.url}… (può richiedere circa un minuto)</span>;
+  if (!status.reachable) return <span className="text-muted-foreground">Proxy non raggiungibile</span>;
+  return (
+    <span>
+      {status.managed ? `Proxy avviato dall'app su ${status.url}` : `Proxy esterno in ascolto su ${status.url}`}
+    </span>
   );
 }

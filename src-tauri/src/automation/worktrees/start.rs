@@ -310,7 +310,10 @@ fn prepare_start<H: Host>(st: &AutomationState, host: &H, job: &StartJob) -> Res
         // ne' controlli sul checkout, qualunque sia la consegna del workspace.
         match (free::is_free(host, job, &dir)?, task.goal()) {
             (true, _) => free::place(host, job)?,
-            // I task di un goal hanno sempre il worktree, sul branch del goal.
+            // Un goal `in_place` (workspace senza worktree paralleli alla nascita)
+            // lavora sul posto come i task sciolti: niente branch del goal.
+            (false, Some(_)) if job.goal_in_place => place_in_repo(st, host, job, &dir)?,
+            // Gli altri task di un goal hanno il worktree, sul branch del goal.
             (false, Some(goal)) => goal::place(st, host, job, &dir, goal)?,
             (false, None) => place_in_repo(st, host, job, &dir)?,
         }

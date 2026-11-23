@@ -11,4 +11,12 @@ reachable: boolean,
 /**
  * Base URL che riceverebbe `ANTHROPIC_BASE_URL`.
  */
-url: string, dashboard_url: string, };
+url: string, dashboard_url: string, 
+/**
+ * Il proxy che serve la porta e' quello avviato dall'app.
+ */
+managed: boolean, 
+/**
+ * L'app ha un proxy vivo che non risponde ancora (sta caricando).
+ */
+starting: boolean, };

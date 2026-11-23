@@ -30,7 +30,7 @@ fn goal_of(st: &AutomationState, h: &FakeHost, id: &str) -> crate::board::GoalVi
 
 #[test]
 fn the_intake_proposes_a_goal_and_reads_it_back() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_in(&st, &h, vec![spec("a", &[]), spec("b", &["a"])], json!({ "goal": goal_json("export") }));
     let g = goal_of(&st, &h, "export");
     assert_eq!((g.phase, g.goal.round(), g.tasks.total), (GoalPhase::Executing, 1, 2));
@@ -56,7 +56,7 @@ fn the_intake_proposes_a_goal_and_reads_it_back() {
 
 #[test]
 fn the_reviewer_reads_its_goal_and_its_proposal_inherits_it() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     h.goal_branch_exists("g");
     queue_in(&st, &h, vec![spec("a", &[]), review_spec("rev", &["a"])], json!({ "goal": goal_json("g") }));
     let a = session_of(&st, &h, "a");
@@ -84,7 +84,7 @@ fn the_reviewer_reads_its_goal_and_its_proposal_inherits_it() {
 
 #[test]
 fn a_goal_whose_last_proposal_is_discarded_waits_for_the_user_to_deliver_anyway() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     h.goal_branch_exists("g");
     queue_in(&st, &h, vec![spec("a", &[]), review_spec("rev", &["a"])], json!({ "goal": goal_json("g") }));
     let a = session_of(&st, &h, "a");
@@ -103,7 +103,7 @@ fn a_goal_whose_last_proposal_is_discarded_waits_for_the_user_to_deliver_anyway(
 
 #[test]
 fn the_ui_creates_tasks_in_a_goal_adds_notes_and_closes_it() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     // In pausa: nessun task parte, cosi' la chiusura li trova in coda.
     boards::board_set(&st, &h, "ws-1", None, Some(true)).unwrap();
     queue_in(&st, &h, vec![spec("a", &[])], json!({ "goal": goal_json("g") }));
@@ -125,7 +125,7 @@ fn the_ui_creates_tasks_in_a_goal_adds_notes_and_closes_it() {
 
 #[test]
 fn closing_a_goal_with_a_running_task_is_refused() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     queue_in(&st, &h, vec![spec("a", &[])], json!({ "goal": goal_json("g") }));
     session_of(&st, &h, "a");
     let err = boards::goal_close(&st, &h, "ws-1", "g").unwrap_err();

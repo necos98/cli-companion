@@ -167,11 +167,22 @@ prontezza”. Task e MCP: [docs/BOARD.MD](docs/BOARD.MD). Aggiungere un agente:
 
 ### Headroom (proxy di compressione del contesto)
 
-Se abilitato (impostazioni globali, `headroom.json`: `enabled`, `port`, predefinita 8787), le
+Se abilitato (impostazioni globali, `headroom.json`: `enabled`, `port`, predefinita 8787, `auto_start`,
+predefinito attivo, ed `executable`), le
 sessioni di **Claude Code su Windows** (worker, Bot e avvio integrato, anche al ripristino)
 partono con `ANTHROPIC_BASE_URL=http://127.0.0.1:<porta>`, così passano da
-[Headroom](https://github.com/headroomlabs-ai/headroom). Il proxy lo avvia l'utente: l'app non
-lo avvia né lo ferma, controlla solo `GET /health` (cache di pochi secondi). Se il proxy non
+[Headroom](https://github.com/headroomlabs-ai/headroom). Con `auto_start` l'app avvia il proxy da sola
+(`headroom proxy --port <porta> --no-rate-limit`, senza finestra; `--no-rate-limit` serve perché il
+limite predefinito di 60 richieste al minuto rompe i worker in parallelo) all'avvio, al salvataggio
+delle impostazioni o al primo lancio che lo trova spento, e il proxy impiega circa un minuto a rispondere (carica un modello). I worker attendono `GET /health`
+fino a 120 s; i terminali interattivi (avvio integrato, Bot) non aspettano: avviano il proxy in
+background e partono senza, con un avviso, mentre le sessioni successive lo useranno.
+`executable` indica l'eseguibile di `headroom`; vuoto, lo cerca nel PATH e in
+`%USERPROFILE%\.local\bin\headroom.exe`. L'output va in `logs/headroom-proxy.log` nella cartella
+dati. Il proxy avviato dall'app si ferma (con i suoi processi figli) all'uscita, alla disattivazione
+o al cambio di porta o eseguibile; un proxy avviato dall'utente non viene mai toccato, e uno rimasto
+orfano dopo un crash viene riutilizzato. Senza `auto_start` l'app controlla solo `GET /health`
+(cache di pochi secondi). Se il proxy non
 risponde, o `ANTHROPIC_BASE_URL` è già impostata nell'ambiente dell'app, la sessione parte senza
 proxy e con un avviso. WSL e gli altri agenti non sono toccati.
 

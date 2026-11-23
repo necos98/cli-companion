@@ -121,11 +121,15 @@ pub struct Acceptance {
     pub auto_fix: Option<u8>,
     /// L'accetta l'app (correzione automatica), non l'utente.
     pub automatic: bool,
+    /// Il workspace consegna sul posto, senza worktree paralleli: il goal NUOVO
+    /// nasce `in_place` (vale solo alla nascita, mai per un goal esistente).
+    pub in_place: bool,
 }
 
 impl Acceptance {
     /// L'accettazione automatica di una correzione.
-    pub const AUTOMATIC: Acceptance = Acceptance { auto_deliver: None, auto_fix: None, automatic: true };
+    pub const AUTOMATIC: Acceptance =
+        Acceptance { auto_deliver: None, auto_fix: None, automatic: true, in_place: false };
 }
 
 impl Goal {

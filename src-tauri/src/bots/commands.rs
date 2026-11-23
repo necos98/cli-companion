@@ -134,7 +134,7 @@ pub async fn bot_interactive_launch(
             |name| user_skills.iter().any(|s| s.name == name),
             &standard,
         )?;
-        let headroom = crate::headroom::launch_env(&launch.agent_id, ws.kind);
+        let headroom = crate::headroom::launch_env(&launch.agent_id, ws.kind, crate::headroom::Patience::NoWait);
         crate::headroom::merge_env(&mut env, &headroom);
         launch.warnings.extend(headroom.warning);
         if !env.is_empty() {
@@ -172,7 +172,7 @@ pub async fn bot_restore_env(
             &AgentCatalog::current(),
             &standard,
         );
-        let headroom = crate::headroom::launch_env(&agent_id, ws.kind);
+        let headroom = crate::headroom::launch_env(&agent_id, ws.kind, crate::headroom::Patience::NoWait);
         crate::headroom::merge_env(&mut env, &headroom);
         if let Some(text) = headroom.warning {
             warning = Some(warning.map_or_else(|| text.clone(), |w| format!("{w} {text}")));

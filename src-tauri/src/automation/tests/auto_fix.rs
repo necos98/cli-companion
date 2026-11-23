@@ -11,10 +11,11 @@ use crate::board::{Acceptance, AutoFixHold, DecisionSource, GoalOutcome, GoalPha
 /// Goal `g` con il task `a` (concluso) e la review `rev`, accettato dall'utente con
 /// `rounds` giri di correzione automatica e la sua scelta sulla consegna automatica.
 fn reviewed_goal(rounds: u8, auto_deliver: bool) -> (AutomationState, FakeHost) {
-    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::Commit, "g", 2));
+    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::LocalMerge, "g", 2));
     let tasks = vec![spec("a", &[]), review_spec("rev", &["a"])];
     let r = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": tasks, "goal": goal_json("g") })).unwrap();
-    let choices = Acceptance { auto_deliver: Some(auto_deliver), auto_fix: Some(rounds), automatic: false };
+    let choices =
+        Acceptance { auto_deliver: Some(auto_deliver), auto_fix: Some(rounds), automatic: false, in_place: false };
     boards::proposal_decide_with(&st, &h, "ws-1", r["proposal"].as_str().unwrap(), true, choices).unwrap();
     complete_work(&st, &h, "a");
     (st, h)
@@ -182,7 +183,7 @@ fn the_rounds_are_set_by_the_user_from_the_goal_detail() {
 
 #[test]
 fn the_auto_fix_choice_in_a_decision_needs_a_proposal_with_a_new_goal() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     let r = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("loose", &[])] })).unwrap();
     let id = r["proposal"].as_str().unwrap();
     let two = Acceptance { auto_fix: Some(2), ..Acceptance::default() };

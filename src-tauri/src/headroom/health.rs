@@ -24,6 +24,14 @@ pub fn is_reachable(port: u16) -> bool {
     reachable
 }
 
+/// Come `is_reachable` ma senza leggere la cache (la aggiorna): serve ad
+/// attendere l'avvio del proxy.
+pub fn probe_fresh(port: u16) -> bool {
+    let reachable = probe(port);
+    cache().put(port, reachable);
+    reachable
+}
+
 fn probe(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/health");
     let args = ["-s", "-f", "--max-time", TIMEOUT_SECS, url.as_str()].map(String::from);

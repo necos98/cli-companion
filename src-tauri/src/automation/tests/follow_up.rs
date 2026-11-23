@@ -21,7 +21,7 @@ fn follow_ups_of(st: &AutomationState, h: &FakeHost) -> Vec<FollowUp> {
 
 /// Goal `g` con il solo task `a` concluso con `follow_ups`, ancora aperto.
 fn goal_with_follow_ups(follow_ups: &[&str]) -> (AutomationState, FakeHost) {
-    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::Commit, "g", 2));
+    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::LocalMerge, "g", 2));
     let r = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("a", &[])], "goal": goal_json("g") }));
     boards::proposal_decide(&st, &h, "ws-1", r.unwrap()["proposal"].as_str().unwrap(), true).unwrap();
     complete_with_follow_ups(&st, &h, "a", follow_ups);

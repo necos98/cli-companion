@@ -34,7 +34,7 @@ pub(super) fn accept_goal(st: &AutomationState, h: &FakeHost, goal: &str, tasks:
 
 /// Un host in cui `goal/<goal>` esiste e ha `commits` commit oltre la base.
 pub(super) fn host_with_commits(mode: DeliveryMode, goal: &str, commits: u32) -> FakeHost {
-    let h = FakeHost::with_delivery(mode, false);
+    let h = FakeHost::with_delivery(mode, matches!(mode, DeliveryMode::Pr | DeliveryMode::LocalMerge));
     h.goal_branch_exists(goal);
     h.git_rule("rev-list --count", true, &format!("{commits}\n"), "");
     h
@@ -80,7 +80,7 @@ pub(super) fn started_deliverer(st: &AutomationState, h: &FakeHost) -> String {
 /// Come `host_with_commits` per il goal `g`, con il repository `api` (che ha `api` commit)
 /// oltre alla root. La regola piu' specifica va per prima: vince la prima che combacia.
 pub(super) fn host_with_api(mode: DeliveryMode, root: u32, api: u32) -> FakeHost {
-    let h = FakeHost::with_delivery(mode, false);
+    let h = FakeHost::with_delivery(mode, matches!(mode, DeliveryMode::Pr | DeliveryMode::LocalMerge));
     h.dirs.lock().unwrap().push(r"C:\p\api".to_string());
     h.goal_branch_exists("g");
     h.git_rule(r"C:\p\api|rev-list --count", true, &format!("{api}\n"), "");
@@ -97,9 +97,7 @@ pub(super) fn deliverer_of(st: &AutomationState, h: &FakeHost, goal: &str) -> St
 fn every_mode_gets_its_own_delivery_steps_and_environment() {
     for (mode, parallel, must) in [
         (DeliveryMode::Pr, true, "gh pr create --base main --head goal/g"),
-        (DeliveryMode::LocalMerge, false, "merge --ff-only goal/g"),
-        (DeliveryMode::Commit, false, "merge --ff-only goal/g"),
-        (DeliveryMode::Push, false, "git -C \"C:\\p\" push origin main"),
+        (DeliveryMode::LocalMerge, true, "merge --ff-only goal/g"),
     ] {
         let (st, h) = (AutomationState::default(), host_with_commits(mode, "g", 3));
         h.set_delivery(mode, parallel);
@@ -150,7 +148,7 @@ fn a_remote_mode_fetches_the_base_and_counts_the_commits_against_origin() {
 
 #[test]
 fn an_auto_deliver_goal_without_issues_creates_its_delivery_by_itself() {
-    let (st, h) = ready_goal(DeliveryMode::Commit, 2, Some(true));
+    let (st, h) = ready_goal(DeliveryMode::LocalMerge, 2, Some(true));
     let t = task(&st, &h, "deliver-g");
     assert_eq!(
         (t["kind"].as_str(), t["goal"].as_str(), t["status"].as_str()),
@@ -163,7 +161,7 @@ fn an_auto_deliver_goal_without_issues_creates_its_delivery_by_itself() {
 
 #[test]
 fn without_auto_deliver_the_goal_waits_and_the_button_creates_the_delivery() {
-    let (st, h) = ready_goal(DeliveryMode::Commit, 2, None);
+    let (st, h) = ready_goal(DeliveryMode::LocalMerge, 2, None);
     let g = goal_view(&st, &h, "g");
     assert_eq!((g.phase, g.waiting.clone()), (GoalPhase::Ready, vec![GoalWaiting::Deliver]));
     assert_eq!(task(&st, &h, "deliver-g"), Value::Null);
@@ -178,7 +176,7 @@ fn without_auto_deliver_the_goal_waits_and_the_button_creates_the_delivery() {
 
 #[test]
 fn the_delivery_task_goes_to_the_top_of_the_queue() {
-    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::Commit, "g", 2));
+    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::LocalMerge, "g", 2));
     accept_goal(&st, &h, "g", vec![spec("a", &[])], None);
     complete_work(&st, &h, "a");
     boards::board_set(&st, &h, "ws-1", None, Some(true)).unwrap();
@@ -191,7 +189,7 @@ fn the_delivery_task_goes_to_the_top_of_the_queue() {
 
 #[test]
 fn issues_in_the_last_review_never_start_the_delivery_but_deliver_anyway_works() {
-    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::Commit, "g", 2));
+    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::LocalMerge, "g", 2));
     accept_goal(&st, &h, "g", vec![spec("a", &[]), review_spec("rev", &["a"])], Some(true));
     complete_work(&st, &h, "a");
     let r = session_of(&st, &h, "rev");
@@ -210,7 +208,7 @@ fn issues_in_the_last_review_never_start_the_delivery_but_deliver_anyway_works()
 
 #[test]
 fn a_failed_automatic_creation_leaves_the_goal_ready_and_can_be_done_by_hand() {
-    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::Commit, "g", 2));
+    let (st, h) = (AutomationState::default(), host_with_commits(DeliveryMode::LocalMerge, "g", 2));
     accept_goal(&st, &h, "g", vec![spec("a", &[])], Some(true));
     h.edit_bots(|bots| bots.iter_mut().for_each(|b| b.enabled = false));
     complete_work(&st, &h, "a");
@@ -225,7 +223,7 @@ fn a_failed_automatic_creation_leaves_the_goal_ready_and_can_be_done_by_hand() {
 
 #[test]
 fn an_automatic_delivery_is_asked_once_while_it_is_in_flight() {
-    let (st, _h) = ready_goal(DeliveryMode::Commit, 2, None);
+    let (st, _h) = ready_goal(DeliveryMode::LocalMerge, 2, None);
     let advance = || crate::board::GoalAdvance { auto_deliver: vec!["g".to_string()], ..Default::default() };
     let mut r = st.registry();
     let auto =
@@ -240,7 +238,7 @@ fn an_automatic_delivery_is_asked_once_while_it_is_in_flight() {
 
 #[test]
 fn nothing_to_deliver_closes_the_goal_without_a_worker_and_deletes_its_branches() {
-    let (st, h) = ready_goal(DeliveryMode::Commit, 0, None);
+    let (st, h) = ready_goal(DeliveryMode::LocalMerge, 0, None);
     let spawned = h.spawns().len();
     boards::goal_deliver(&st, &h, "ws-1", "g").unwrap();
     assert_eq!(h.spawns().len(), spawned, "no worker");
@@ -260,7 +258,7 @@ fn nothing_to_deliver_closes_the_goal_without_a_worker_and_deletes_its_branches(
 
 #[test]
 fn a_missing_goal_branch_fails_the_start_with_a_clear_reason() {
-    let (st, h) = ready_goal(DeliveryMode::Commit, 2, None);
+    let (st, h) = ready_goal(DeliveryMode::LocalMerge, 2, None);
     h.git_rules.lock().unwrap().retain(|(needle, _)| !needle.contains("refs/heads/goal/g"));
     boards::goal_deliver(&st, &h, "ws-1", "g").unwrap();
     let t = task(&st, &h, "deliver-g");
@@ -270,7 +268,7 @@ fn a_missing_goal_branch_fails_the_start_with_a_clear_reason() {
 
 #[test]
 fn delivery_settings_are_set_by_the_user_and_validated() {
-    let (st, h) = ready_goal(DeliveryMode::Commit, 2, None);
+    let (st, h) = ready_goal(DeliveryMode::LocalMerge, 2, None);
     let v = boards::goal_set_delivery(&st, &h, "ws-1", "g", Some(true), None).unwrap();
     assert!(v.goals[0].goal.auto_deliver());
     let err = boards::goal_set_delivery(&st, &h, "ws-1", "g", None, None).unwrap_err();
@@ -291,7 +289,7 @@ fn delivery_settings_are_set_by_the_user_and_validated() {
 
 #[test]
 fn auto_deliver_in_a_decision_needs_a_proposal_with_a_new_goal() {
-    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::LocalMerge, true));
     let r = call(&st, &h, INTAKE, "propose_tasks", json!({ "tasks": [spec("loose", &[])] })).unwrap();
     let id = r["proposal"].as_str().unwrap();
     let err = boards::proposal_decide_with(&st, &h, "ws-1", id, true, delivering(Some(true))).unwrap_err();
