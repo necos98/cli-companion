@@ -262,6 +262,36 @@ vanno scritte qui sotto, per versione, prima del tag.
   OpenCode (prontezza «da aggiornare» finché non lo si aggiorna); le configurazioni già proposte
   o salvate restano come sono.
 
+### v0.26.0: goal (obiettivi) e Headroom
+
+- **Goal sopra i task.** Le proposte possono nascere dentro un **goal**: un obiettivo con il suo
+  branch `goal/<id>` per repository, da cui partono i worktree dei task e in cui si integrano con
+  un fast-forward. La board mostra fase e giro del goal, la sezione «Serve a te», il filtro per
+  goal e il dettaglio con registro delle decisioni e note. Il design è in `docs/GOALS.MD`.
+- **Consegna del goal.** Un goal pronto si consegna sulla base come lotto unico con il pulsante
+  «Consegna» (o da solo con la consegna automatica): un task di consegna riallinea, ripete la
+  verifica, applica la modalità del workspace (PR, fast-forward locale o push) e chiude il goal
+  con il rapporto finale e la notifica «Goal consegnato».
+- **Correzione automatica con tetto.** Per ogni goal si può scegliere quanti giri (0–3, di serie
+  0) di correzioni proposte dal revisore l'app accetta da sola; oltre il tetto il goal aspetta
+  l'utente.
+- **Follow-up raccolti.** Alla chiusura del goal i follow-up dei report e i findings delle review
+  si raccolgono nel goal; da «Serve a te» si scartano o si mandano all'Intake.
+- **Perché un task è fallito.** I task falliti mostrano il motivo (worker fallito, uscito,
+  fermato, interrotto, avvio fallito) e quelli in coda bloccati da un task fallito lo dicono con
+  «bloccato da». I worker ricevono nel `get_task` i report delle dipendenze e il contesto del goal.
+- **Headroom (solo Windows, solo Claude Code).** In Impostazioni › Integrazioni si attiva
+  [Headroom](https://github.com/headroomlabs-ai/headroom): worker, Bot e avvii integrati di Claude
+  Code su Windows passano dal proxy locale (porta di serie 8787) con `ANTHROPIC_BASE_URL`. Con il
+  proxy spento o con `ANTHROPIC_BASE_URL` già impostato la sessione parte diretta con un avviso.
+  La dashboard si apre in una finestra dedicata dalla barra dei mondi o dal piede della sidebar.
+  WSL e OpenCode restano esclusi.
+- **Chi ha già i file.** I file delle board passano alla versione 3 dello schema (si aggiunge
+  l'elenco dei goal, nulla da fare). Una versione precedente dell'app li mette da parte come
+  `*.bak-<timestamp>`: i task creati dopo l'aggiornamento non sono leggibili da quella versione.
+  Le skill aggiornate (`task-intake` e le altre del flusso) arrivano con l'aggiornamento del
+  pacchetto dell'agente (prontezza «da aggiornare» finché non lo si aggiorna).
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali
