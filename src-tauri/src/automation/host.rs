@@ -272,7 +272,11 @@ impl Host for TauriHost {
         env_kind: TargetKind,
         req: &AutomationRequest,
     ) -> Result<AutomationStart, String> {
-        agents::automation_command(agent, env_kind, req)
+        let mut start = agents::automation_command(agent, env_kind, req)?;
+        let headroom = crate::headroom::launch_env(agent, env_kind);
+        crate::headroom::merge_env(&mut start.launch.env, &headroom);
+        start.warnings.extend(headroom.warning);
+        Ok(start)
     }
 
     fn stage_env(&self, tab_id: &str, env: Vec<(String, String)>) {

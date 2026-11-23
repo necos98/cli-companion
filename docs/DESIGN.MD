@@ -167,6 +167,7 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
 | `store/` | persistenza JSON comune: busta versionata, migrazioni, backup, avvisi (`StoreWarning`), `write_atomic` |
 | `workspaces/` | il `Workspace` (target, avvii, impostazioni dei worker, consegna, repository, archiviazione), il suo store in memoria e `workspaces.json`, i comandi Tauri, le patch di impostazioni proposte dagli agenti |
 | `agents/` | contratti (`contracts/`), registro, rilevamento, pacchetti/plugin, preset, regole dei worker; `claude_code/` è l'unica integrazione |
+| `headroom/` | proxy Headroom di compressione del contesto: impostazioni globali (`headroom.json`), controllo `/health` con cache breve, `launch_env` (la decisione che aggiunge `ANTHROPIC_BASE_URL` ai lanci di Claude Code su Windows) e comandi Tauri |
 | `board/` | la coda dei task di un workspace: modello, ciclo di vita, scheduler, vista, formato su disco, recupero, archivio (pura) |
 | `automation/` | registro di worker e board, scheduler a timer, avvio e pulizia dei worktree, E2E, RPC dei tool MCP, autenticazione per sessione, salvataggio delle board |
 | `pty/` | una shell per tab in un PTY, con output su un `Channel` |

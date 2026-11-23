@@ -26,7 +26,7 @@ use crate::platform::Target;
 
 pub struct ClaudeCode;
 
-const AGENT_ID: &str = "claude-code";
+pub const AGENT_ID: &str = "claude-code";
 /// Comando che avvia Claude Code in modo interattivo (base anche dei preset).
 const INTERACTIVE_COMMAND: &str = "claude --dangerously-skip-permissions";
 const MARKETPLACE: &str = "cli-companion-local";

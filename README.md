@@ -165,6 +165,16 @@ Moduli e flusso di avvio: [docs/DESIGN.MD](docs/DESIGN.MD), “Integrazioni: sta
 prontezza”. Task e MCP: [docs/BOARD.MD](docs/BOARD.MD). Aggiungere un agente:
 [docs/wiki/integrare-un-coding-agent.md](docs/wiki/integrare-un-coding-agent.md).
 
+### Headroom (proxy di compressione del contesto)
+
+Se abilitato (impostazioni globali, `headroom.json`: `enabled`, `port`, predefinita 8787), le
+sessioni di **Claude Code su Windows** (worker, Bot e avvio integrato, anche al ripristino)
+partono con `ANTHROPIC_BASE_URL=http://127.0.0.1:<porta>`, così passano da
+[Headroom](https://github.com/headroomlabs-ai/headroom). Il proxy lo avvia l'utente: l'app non
+lo avvia né lo ferma, controlla solo `GET /health` (cache di pochi secondi). Se il proxy non
+risponde, o `ANTHROPIC_BASE_URL` è già impostata nell'ambiente dell'app, la sessione parte senza
+proxy e con un avviso. WSL e gli altri agenti non sono toccati.
+
 ## Avvii
 
 Ogni workspace ha gli avvii integrati, forniti dal registry dei coding agent e limitati alle

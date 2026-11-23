@@ -12,6 +12,8 @@ import type { BotSettings } from "../bindings/BotSettings.ts";
 import type { BotSkillOption } from "../bindings/BotSkillOption.ts";
 import type { BotTabLaunch } from "../bindings/BotTabLaunch.ts";
 import type { BotTabRestore } from "../bindings/BotTabRestore.ts";
+import type { HeadroomSettings } from "../bindings/HeadroomSettings.ts";
+import type { HeadroomStatus } from "../bindings/HeadroomStatus.ts";
 import type { BuiltinLaunch } from "../bindings/BuiltinLaunch.ts";
 import type { ConnectorActionId } from "../bindings/ConnectorActionId.ts";
 import type { ConnectorActionOutcome } from "../bindings/ConnectorActionOutcome.ts";
@@ -205,6 +207,14 @@ export const api = {
   /** Rimette l'ambiente di un tab Bot ripristinato (senza ricaricare la skill); l'esito porta l'avviso se riparte senza le scelte del Bot. */
   botRestoreEnv: (workspaceId: string, botId: string, agentId: string, tabId: string) =>
     invoke<BotTabRestore>("bot_restore_env", { workspaceId, botId, agentId, tabId }),
+
+  headroomSettingsGet: () => invoke<HeadroomSettings>("headroom_settings_get"),
+  headroomSettingsSet: (settings: HeadroomSettings) => invoke<HeadroomSettings>("headroom_settings_set", { settings }),
+  headroomStatus: () => invoke<HeadroomStatus>("headroom_status"),
+  headroomOpenDashboard: () => invoke<void>("headroom_open_dashboard"),
+  /** Prepara l'ambiente Headroom di un tab con avvio integrato (anche al ripristino); restituisce l'avviso, se c'è. */
+  headroomStageEnv: (workspaceId: string, agentId: string, tabId: string) =>
+    invoke<string | null>("headroom_stage_env", { workspaceId, agentId, tabId }),
 
   getLaunchSettings: () => invoke<LaunchSettings>("get_launch_settings"),
 

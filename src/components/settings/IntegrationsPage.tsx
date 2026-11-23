@@ -4,6 +4,7 @@ import { refreshIntegrations } from "../../app/actions/integrations";
 import { errorMessage } from "../../lib/errors";
 import { useStore } from "../../hooks/useStore";
 import { configStore } from "../../stores/config";
+import HeadroomCard from "./HeadroomCard";
 import IntegrationCard from "./IntegrationCard";
 import IntegrationsGeneral from "./IntegrationsGeneral";
 import { SettingsPage } from "./shared";
@@ -36,6 +37,7 @@ export default function IntegrationsPage() {
         <IntegrationCard key={info.id} info={info} />
       ))}
       {integrations.length > 0 && <IntegrationsGeneral integrations={integrations} />}
+      <HeadroomCard />
     </SettingsPage>
   );
 }

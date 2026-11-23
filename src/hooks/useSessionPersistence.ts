@@ -6,7 +6,7 @@ import { startSubscription } from "../lib/subscription";
 import { noticeStore } from "../lib/notices";
 import { parseSession, unavailableAgentsNotice } from "../lib/session";
 import { loadHubSettings } from "../app/actions/hub";
-import { stageBotRestoreEnvs } from "../app/botRestore";
+import { stageBotRestoreEnvs, stageBuiltinRestoreEnvs } from "../app/botRestore";
 import { flushBeforeExit } from "../app/lifecycle";
 import { sessionSaver, watchSessionChanges } from "../app/sessionSaver";
 import { configStore } from "../stores/config";
@@ -65,6 +65,10 @@ async function restoreSession(): Promise<void> {
     // L'ambiente dei tab Bot va preparato prima che i terminali partano.
     const botWarning = await stageBotRestoreEnvs(restored.tabs);
     if (botWarning !== null) noticeStore.push({ key: "session:bot-restore", level: "warning", text: botWarning });
+    const headroomWarning = await stageBuiltinRestoreEnvs(restored.tabs);
+    if (headroomWarning !== null) {
+      noticeStore.push({ key: "session:headroom", level: "warning", text: headroomWarning });
+    }
     tabsStore.merge(restored.tabs);
     const restoredLayout = {
       groups: data.groups,

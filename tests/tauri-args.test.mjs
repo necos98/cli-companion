@@ -44,6 +44,7 @@ function rustCommands() {
     "connectors/commands/actions.rs",
     "connectors/commands/routes.rs",
     "store/warnings.rs",
+    "headroom/commands.rs",
   ]) {
     const src = readFileSync(path.join(RS, file), "utf8");
     const re = /#\[tauri::command\]\s*pub (?:async )?fn (\w+)\s*\(([^)]*)\)/g;

@@ -4,6 +4,7 @@ mod awake;
 pub mod board;
 mod bots;
 mod connectors;
+mod headroom;
 mod hub;
 pub mod ipc;
 mod launch_migration;
@@ -72,6 +73,7 @@ pub fn run() {
             store::install_emitter(app.handle());
             startup::timed("legacy data migrated", || store::legacy::migrate_legacy_data(app));
             startup::timed("integrations loaded", || agents::load_integrations(app));
+            startup::timed("headroom settings loaded", || headroom::load_from_disk(app));
             startup::timed("workspaces loaded", || workspaces::load_from_disk(app));
             startup::timed("launch settings loaded", || launch_settings::load_from_disk(app));
             startup::timed("bots loaded", || bots::load_from_disk(app));
@@ -149,6 +151,11 @@ pub fn run() {
             bots::commands::bot_launches,
             bots::commands::bot_interactive_launch,
             bots::commands::bot_restore_env,
+            headroom::commands::headroom_settings_get,
+            headroom::commands::headroom_settings_set,
+            headroom::commands::headroom_status,
+            headroom::commands::headroom_open_dashboard,
+            headroom::commands::headroom_stage_env,
             hub::settings::commands::hub_get_settings,
             hub::settings::commands::hub_set_enabled,
             hub::settings::commands::hub_set_provider,
@@ -251,6 +258,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // La dashboard di Headroom non tiene viva l'app senza la finestra principale.
+            if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } = &event {
+                if label == "main" {
+                    headroom::commands::close_dashboard(app);
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 // Salvataggi di board ancora in coda (coalescenza).
                 automation::flush_on_exit(app);

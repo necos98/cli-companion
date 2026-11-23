@@ -23,3 +23,24 @@ export async function stageBotRestoreEnvs(tabs: readonly TabEntry[]): Promise<st
   );
   return botRestoreNotice(warnings);
 }
+
+/**
+ * Come `stageBotRestoreEnvs` per i tab ripristinati con un avvio integrato di
+ * un agente: il backend rimette l'ambiente Headroom, se serve. Restituisce
+ * l'avviso per l'utente, `null` se non c'è nulla da dire.
+ */
+export async function stageBuiltinRestoreEnvs(tabs: readonly TabEntry[]): Promise<string | null> {
+  const warnings = await Promise.all(
+    tabs
+      .filter((t) => t.launchId?.startsWith("builtin:") && t.agentId !== undefined)
+      .map(async (t) => {
+        try {
+          return await api.headroomStageEnv(t.workspaceId, t.agentId!, t.key);
+        } catch (e) {
+          report("ripristino dell'ambiente Headroom", e);
+          return null;
+        }
+      }),
+  );
+  return botRestoreNotice(warnings);
+}

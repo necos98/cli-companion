@@ -56,6 +56,30 @@ export function spawnTab(ws: Workspace, launch?: Launch | BuiltinLaunch): void {
     );
   }
   const key = newTabKey();
+  if (launchAgentId(chosen) !== undefined) {
+    void spawnAgentTab(ws, chosen, key);
+    return;
+  }
+  openLaunchTab(ws, chosen, key);
+}
+
+/**
+ * Avvio integrato di un agente: prima il backend prepara l'ambiente del tab
+ * (es. il proxy Headroom per Claude Code), che `pty_spawn` applica una volta
+ * sola; se non risponde il tab si apre comunque, senza.
+ */
+async function spawnAgentTab(ws: Workspace, chosen: Launch | BuiltinLaunch | undefined, key: string): Promise<void> {
+  try {
+    const warning = await api.headroomStageEnv(ws.id, launchAgentId(chosen)!, key);
+    if (warning !== null) warn("launch:headroom", warning);
+  } catch (e) {
+    report("preparazione dell'ambiente Headroom", e);
+  }
+  openLaunchTab(ws, chosen, key);
+}
+
+function openLaunchTab(ws: Workspace, chosen: Launch | BuiltinLaunch | undefined, key: string): void {
+  const config = configStore.getState();
   // Per gli integrati si salva il comando di ripristino, si esegue quello di avvio.
   const { command, startCommand } = launchCommands(chosen);
   showTerminalsOf(ws.id);

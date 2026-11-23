@@ -1,4 +1,5 @@
 import { configStore } from "../stores/config";
+import { headroomStore } from "../stores/headroom";
 import { hubStore } from "../stores/hub";
 import { layoutStore, viewWorkspaceId } from "../stores/layout";
 import { uiStore } from "../stores/ui";
@@ -61,4 +62,9 @@ export function useSidebarFooterShown(): boolean {
 /** Manager, Ufficio o Agents HUB coprono pannello Task e terminali. */
 export function useOverlayShown(): boolean {
   return useStores(VIEW_STORES, computeOverlayShown);
+}
+
+/** Headroom è acceso: la sua voce compare nella barra dei mondi. */
+export function useHeadroomEnabled(): boolean {
+  return useStore(headroomStore, (s) => s.settings.enabled);
 }

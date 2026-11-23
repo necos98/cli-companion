@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { loadHubSettings } from "../app/actions/hub";
+import { loadHeadroomSettings } from "../app/actions/headroom";
 import { api } from "../lib/tauri";
 import { ignoreError, report } from "../lib/errors";
 import { configStore } from "../stores/config";
@@ -39,6 +40,11 @@ export function useInitialData(): void {
   // Interruttore dell'Agents HUB (spento di default).
   useEffect(() => {
     void loadHubSettings();
+  }, []);
+
+  // Headroom: interruttore e porta (la dashboard sta nella barra dei mondi).
+  useEffect(() => {
+    void loadHeadroomSettings();
   }, []);
 
   // Versione dell'app (footer della sidebar).

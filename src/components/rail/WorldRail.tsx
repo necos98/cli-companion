@@ -1,10 +1,11 @@
-import { Building2, MessagesSquare, SlidersHorizontal, SquareTerminal } from "lucide-react";
+import { Building2, Gauge, MessagesSquare, SlidersHorizontal, SquareTerminal } from "lucide-react";
+import { openHeadroomDashboard } from "../../app/actions/headroom";
 import { openSettings } from "../../app/actions/settings";
 import { showHub, showTerminals, toggleOffice } from "../../app/actions/view";
 import { useHubWaitingTotal } from "../../hooks/useHubChannels";
 import { waitingText } from "../../lib/hub";
 import { useStore } from "../../hooks/useStore";
-import { useActiveWorld, useOfficeShown } from "../../hooks/useView";
+import { useActiveWorld, useHeadroomEnabled, useOfficeShown } from "../../hooks/useView";
 import { configStore } from "../../stores/config";
 import { uiStore } from "../../stores/ui";
 import { Button } from "../ui/button";
@@ -19,6 +20,7 @@ import RailItem from "./RailItem";
 export default function WorldRail() {
   const world = useActiveWorld();
   const officeShown = useOfficeShown();
+  const headroomEnabled = useHeadroomEnabled();
   const waiting = useHubWaitingTotal();
   const botsEnabled = useStore(configStore, (s) => s.botSettings.enabled);
   const appVersion = useStore(configStore, (s) => s.appVersion);
@@ -49,6 +51,15 @@ export default function WorldRail() {
           title="Ufficio (Ctrl+Maiusc+O)"
           active={officeShown}
           onClick={toggleOffice}
+        />
+      )}
+      {headroomEnabled && (
+        <RailItem
+          icon={Gauge}
+          label="Headroom"
+          title="Dashboard di Headroom"
+          active={false}
+          onClick={openHeadroomDashboard}
         />
       )}
       <span className="flex-1" />

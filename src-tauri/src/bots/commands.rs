@@ -127,13 +127,16 @@ pub async fn bot_interactive_launch(
             _ => Vec::new(),
         };
         let standard = standard_file(&app, &ws);
-        let (launch, env) = launches::build_bot_launch(
+        let (mut launch, mut env) = launches::build_bot_launch(
             &bot,
             &workspace_agent_id(ws.agent),
             &AgentCatalog::current(),
             |name| user_skills.iter().any(|s| s.name == name),
             &standard,
         )?;
+        let headroom = crate::headroom::launch_env(&launch.agent_id, ws.kind);
+        crate::headroom::merge_env(&mut env, &headroom);
+        launch.warnings.extend(headroom.warning);
         if !env.is_empty() {
             crate::pty::stage_env(&app, &tab_id, env);
         }
@@ -162,13 +165,18 @@ pub async fn bot_restore_env(
         // Sempre, anche se il Bot e' cambiato: la riga salvata di un agente che porta
         // il file nel comando lo nomina e la CLI rifiuta un file che non c'e'.
         let standard = standard_file(&app, &ws);
-        let (env, warning) = launches::build_bot_restore(
+        let (mut env, mut warning) = launches::build_bot_restore(
             bot.as_ref(),
             &agent_id,
             &workspace_agent_id(ws.agent),
             &AgentCatalog::current(),
             &standard,
         );
+        let headroom = crate::headroom::launch_env(&agent_id, ws.kind);
+        crate::headroom::merge_env(&mut env, &headroom);
+        if let Some(text) = headroom.warning {
+            warning = Some(warning.map_or_else(|| text.clone(), |w| format!("{w} {text}")));
+        }
         if !env.is_empty() {
             crate::pty::stage_env(&app, &tab_id, env);
         }
