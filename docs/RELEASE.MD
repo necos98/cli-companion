@@ -322,6 +322,23 @@ vanno scritte qui sotto, per versione, prima del tag.
   (`--tools read,grep,find,ls`, più quelli MCP); nelle altre modalità lavorano senza conferme. I
   limiti del piano non sono mostrati.
 
+### v0.28.0: via i goal, Pi passa da Headroom
+
+- **I goal non ci sono più.** Spariscono goal, branch `goal/`, task di consegna e pulsante
+  «Consegna», correzione automatica a giri e follow-up alla chiusura, insieme a filtro,
+  raggruppamento e dettaglio del goal e alle voci relative in «Serve a te». Le proposte dell'Intake
+  sono di nuovo task semplici con le loro dipendenze. Restano il motivo del fallimento, il
+  «bloccato da» e il passaggio dei report delle dipendenze ai task che ne dipendono.
+- **Board esistenti.** Al primo avvio la board passa allo schema 4: i goal e i task di consegna
+  vengono tolti, i task che stavano in un goal restano come task normali con il loro stato. Un
+  worktree rimasto su un branch `goal/<id>` viene rimosso, ma il branch non viene mai cancellato:
+  se conteneva lavoro integrato e non consegnato, è ancora lì. Meglio aggiornare senza goal in
+  corso.
+- **Pi passa dal proxy Headroom.** Con Headroom attivo, l'estensione di Pi ridireziona sul proxy
+  i provider Anthropic e quelli OpenAI-compatibili il cui `baseUrl` coincide con l'**Upstream
+  OpenAI** (nuovo campo delle impostazioni di Headroom, per esempio `https://api.deepseek.com`).
+  Claude Code continua con `ANTHROPIC_BASE_URL`; OpenCode parte diretto.
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali

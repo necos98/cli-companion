@@ -169,8 +169,8 @@ export default function HeadroomCard() {
         />
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Es. <code className="font-mono">https://api.deepseek.com</code> per DeepSeek; vuoto = OpenAI. Le sessioni Pi
-        con un provider OpenAI-compatibile allo stesso indirizzo passano dal proxy, che riparte quando lo cambi.
+        Es. <code className="font-mono">https://api.deepseek.com</code> per DeepSeek; vuoto = OpenAI. Le sessioni Pi con
+        un provider OpenAI-compatibile allo stesso indirizzo passano dal proxy, che riparte quando lo cambi.
       </p>
 
       {error && <p className="whitespace-pre-wrap text-xs text-destructive">{error}</p>}
