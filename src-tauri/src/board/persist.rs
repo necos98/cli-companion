@@ -1,9 +1,9 @@
 //! Formato su disco della board: la busta `{schema_version, data}` del modulo
 //! `store`, la catena di migrazioni, le invarianti sui valori dopo la lettura e
-//! le righe degli archivi (task conclusi e goal chiusi). Nessun I/O: lo fa chi possiede la
+//! la riga dell'archivio dei task conclusi. Nessun I/O: lo fa chi possiede la
 //! cartella (`automation`), che crea un `JsonFile` per workspace con `board_store`.
 
-use super::{legacy, legacy_goals, legacy_settings, Board, Goal, Task, MAX_PARALLEL_LIMIT};
+use super::{legacy, legacy_goals, legacy_settings, Board, Task, MAX_PARALLEL_LIMIT};
 use crate::agents::registry;
 use crate::store::{Decoded, JsonFile, Migration};
 use serde::Serialize;
@@ -12,13 +12,12 @@ use serde_json::Value;
 /// Passi di migrazione della board: la versione corrente e' il loro numero.
 /// Il passo 0 -> 1 porta alla busta il file storico (v0, anche della v0.11); il
 /// passo 1 -> 2 sposta nelle proposte di impostazioni i campi dei worker che
-/// ora sono per agente; il passo 2 -> 3 aggiunge i goal.
-static BOARD_MIGRATIONS: [Migration; 3] = [legacy::v0_to_v1, legacy_settings::v1_to_v2, legacy_goals::v2_to_v3];
+/// ora sono per agente; il passo 2 -> 3 aggiunge i goal e il 3 -> 4 li toglie di nuovo.
+static BOARD_MIGRATIONS: [Migration; 4] =
+    [legacy::v0_to_v1, legacy_settings::v1_to_v2, legacy_goals::v2_to_v3, legacy_goals::v3_to_v4];
 
 /// Versione di una riga dell'archivio dei task conclusi.
 const ARCHIVE_VERSION: u32 = 1;
-/// Versione di una riga dell'archivio dei goal chiusi.
-const GOAL_ARCHIVE_VERSION: u32 = 1;
 
 /// Il formato della board senza un file: serve a leggere un testo
 /// (`Board::from_json`). Per un file vero si usa `board_store`.
@@ -48,19 +47,12 @@ fn check_board(board: &Board) -> Result<(), String> {
 }
 
 impl Board {
-    /// Invarianti sui valori, applicate a ogni lettura: parallelismo nei limiti,
-    /// un agente per ogni task, il giro solo (e sempre) sui task di un goal e
-    /// i campi dei goal coerenti.
+    /// Invarianti sui valori, applicate a ogni lettura: parallelismo nei limiti
+    /// e un agente per ogni task.
     pub(super) fn sanitize(&mut self) {
         self.max_parallel = self.max_parallel.clamp(1, MAX_PARALLEL_LIMIT);
-        for t in self.tasks.iter_mut() {
-            if t.agent.is_empty() {
-                t.agent = registry::default_agent().id().to_string();
-            }
-            t.round = if t.goal.is_some() { t.round.max(1) } else { 0 };
-        }
-        for g in &mut self.goals {
-            g.sanitize();
+        for t in self.tasks.iter_mut().filter(|t| t.agent.is_empty()) {
+            t.agent = registry::default_agent().id().to_string();
         }
     }
 
@@ -75,19 +67,14 @@ impl Board {
 }
 
 #[derive(Serialize)]
-struct ArchiveLine<'a, T> {
+struct ArchiveLine<'a> {
     schema_version: u32,
-    data: &'a T,
+    data: &'a Task,
 }
 
 /// Riga dell'archivio (JSON su una riga) di un task concluso e rimosso dalla board.
 pub fn archive_line(task: &Task) -> Result<String, String> {
     serde_json::to_string(&ArchiveLine { schema_version: ARCHIVE_VERSION, data: task }).map_err(|e| e.to_string())
-}
-
-/// Riga dell'archivio dei goal (JSON su una riga) di un goal chiuso e rimosso dalla board.
-pub fn archive_goal_line(goal: &Goal) -> Result<String, String> {
-    serde_json::to_string(&ArchiveLine { schema_version: GOAL_ARCHIVE_VERSION, data: goal }).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

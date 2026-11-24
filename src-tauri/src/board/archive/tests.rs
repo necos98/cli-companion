@@ -122,7 +122,7 @@ fn a_task_needed_by_a_failed_task_stays_but_a_done_one_does_not_hold_it() {
 #[test]
 fn a_task_a_pending_proposal_depends_on_stays() {
     let mut b = board_of(MAX_FINISHED_KEPT as i64 + 2);
-    b.add_proposal("p-1".into(), "tab-1", None, vec![spec("new", &["t0"])].into(), SpecContext::default(), 5).unwrap();
+    b.add_proposal("p-1".into(), "tab-1", None, vec![spec("new", &["t0"])], SpecContext::default(), 5).unwrap();
     let gone = b.take_archivable();
     assert_eq!(ids(&gone), ["t1"]);
     assert!(b.task("t0").is_some());

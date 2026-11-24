@@ -101,7 +101,6 @@ describe("tipi di task dei Bot", () => {
       work: "Lavoro",
       review: "Review",
       plan: "Pianificazione",
-      deliver: "Consegna",
     });
   });
   it("botHasKind e botsForKind: solo abilitati e con quel tipo, nell'ordine dei dati", () => {

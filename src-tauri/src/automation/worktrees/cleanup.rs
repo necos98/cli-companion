@@ -4,31 +4,15 @@
 use super::{git, repo_cfg, repo_dir, CleanupTarget};
 use crate::automation::hooks;
 use crate::automation::*;
-use crate::board::GOAL_BRANCH_PREFIX;
 use crate::workspaces::{DeliveryMode, RepoConfig};
+
+/// Prefisso dei branch dei goal, funzione eliminata: quei branch non si cancellano.
+const LEGACY_GOAL_BRANCH_PREFIX: &str = "goal/";
 
 /// Esito della pulizia: gli avvisi non bloccano mai.
 struct CleanupOutcome {
     removed: bool,
     warnings: Vec<String>,
-}
-
-/// Branch di un task di un goal: si cancella (`-D`, il lavoro e' gia' nel goal)
-/// solo se e' contenuto in `goal`; altrimenti resta, con un avviso.
-fn delete_goal_task_branch<H: Host>(
-    host: &H,
-    ws: &Workspace,
-    root: &str,
-    branch: &str,
-    goal: &str,
-    warnings: &mut Vec<String>,
-) {
-    let contained = host.git(ws, root, &["merge-base", "--is-ancestor", branch, goal]).map(|o| o.ok).unwrap_or(false);
-    if !contained {
-        warnings.push(format!("branch {branch} kept: not contained in {goal}"));
-    } else if let Err(e) = git(host, ws, root, &["branch", "-D", branch]) {
-        warnings.push(format!("branch not deleted: {e}"));
-    }
 }
 
 /// Rimuove il worktree `path` del repository `root`: se esiste, prima i comandi di
@@ -69,8 +53,7 @@ pub(super) fn remove_worktree<H: Host>(
 /// worktree (con `--force` se l'impostazione lo chiede) e il branch del task:
 /// `-D` per `pr` (il merge e' squash/rebase lato server, la consegna l'ha
 /// confermata il worker), `-d` altrimenti (non cancella lavoro non unito);
-/// sempre `-d` se il target ha `keep_unmerged`. Per un task di un goal il branch
-/// si cancella (`-D`) solo se e' contenuto in `goal/<id>`, altrimenti resta.
+/// sempre `-d` se il target ha `keep_unmerged`.
 fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, target: &CleanupTarget) -> CleanupOutcome {
     let (wt, mut warnings) = (&target.wt, Vec::new());
     let root = repo_dir(ws, target.repo.as_deref());
@@ -85,20 +68,16 @@ fn cleanup_worktree<H: Host>(host: &H, ws: &Workspace, target: &CleanupTarget) -
     if !remove_worktree(host, ws, &root, &cfg, &wt.path, Some(&vars), &mut warnings) {
         return CleanupOutcome { removed: false, warnings };
     }
-    // Difesa: il branch di un goal non e' di nessun task, lo cancella solo l'app
-    // a goal consegnato (vedi `DeliveryCleanup`).
-    if wt.branch.starts_with(GOAL_BRANCH_PREFIX) {
-        warnings.push(format!("branch {} kept: it is a goal branch", wt.branch));
+    // Difesa: un worktree rimasto da una versione con i goal puo' stare su un
+    // branch `goal/<id>`, che puo' contenere lavoro integrato e mai consegnato.
+    // Il worktree si toglie, il branch non si cancella mai.
+    if wt.branch.starts_with(LEGACY_GOAL_BRANCH_PREFIX) {
+        warnings.push(format!("branch {} kept: it is a goal branch left by an older version", wt.branch));
         return CleanupOutcome { removed: true, warnings };
     }
-    match &target.goal_branch {
-        Some(goal) => delete_goal_task_branch(host, ws, &root, &wt.branch, goal, &mut warnings),
-        None => {
-            let flag = if ws.delivery.mode == DeliveryMode::Pr && !target.keep_unmerged { "-D" } else { "-d" };
-            if let Err(e) = git(host, ws, &root, &["branch", flag, &wt.branch]) {
-                warnings.push(format!("branch not deleted: {e}"));
-            }
-        }
+    let flag = if ws.delivery.mode == DeliveryMode::Pr && !target.keep_unmerged { "-D" } else { "-d" };
+    if let Err(e) = git(host, ws, &root, &["branch", flag, &wt.branch]) {
+        warnings.push(format!("branch not deleted: {e}"));
     }
     CleanupOutcome { removed: true, warnings }
 }

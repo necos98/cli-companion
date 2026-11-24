@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { STATUSES, statusDotClass, statusLabel, toggleStatus } from "../../lib/board";
 import type { TaskStatus } from "../../lib/board";
 import { cn } from "../../lib/utils";
@@ -17,8 +16,6 @@ interface Props {
   onAgents: (agents: string[]) => void;
   filtering: boolean;
   onReset: () => void;
-  /** Controlli in coda alla barra (raggruppamento per goal). */
-  trailing?: ReactNode;
 }
 
 /** Una voce di un filtro a chip: il valore filtrato e il testo mostrato. */
@@ -78,7 +75,6 @@ export default function ListFilters({
   onAgents,
   filtering,
   onReset,
-  trailing,
 }: Props) {
   return (
     <div className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-4 py-3">
@@ -112,7 +108,6 @@ export default function ListFilters({
       {agentChoices.length > 0 && (
         <ChoiceChips label="Filtra per agente" choices={agentChoices} selected={agents} onChange={onAgents} />
       )}
-      {trailing}
       {filtering && (
         <button
           type="button"

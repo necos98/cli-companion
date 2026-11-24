@@ -39,7 +39,6 @@ fn report(summary: &str, items: usize, item: impl Fn(usize) -> String) -> TaskRe
         follow_ups: (0..items).map(&item).collect(),
         verdict: Some(Verdict::Issues),
         findings: vec!["Missing test".into()],
-        ..ReportFields::default()
     };
     build_report("completed", summary, fields, Some(" 3 files changed".into()))
 }

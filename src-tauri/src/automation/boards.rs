@@ -5,34 +5,23 @@
 //! worktree sono in `worktrees`; tipi, validazione e scheduler puri in
 //! `crate::board`. Il contratto e' `docs/BOARD.MD`.
 
-use super::worktrees::{CleanupTarget, DeliveryCleanup, FolderKinds, StartJob};
+use super::worktrees::{CleanupTarget, FolderKinds, StartJob};
 use super::*;
-use crate::board::{self, Acceptance, GoalView, ProposalInput, SchedCtx, SpecContext, Task, TaskSpec, TaskView};
+use crate::board::{self, SchedCtx, SpecContext, Task, TaskSpec, TaskView};
 use serde_json::json;
 
 mod agents;
-mod auto_fix;
 mod commands;
-mod delivery;
-mod follow_up;
-mod goal_branches;
 mod lifecycle;
 mod session;
 
 pub(super) use agents::ReadinessLookup;
-pub(super) use auto_fix::{goal_set_auto_fix, run_auto_fix};
 pub(super) use commands::{
-    board_set, goal_add_note, goal_close, proposal_decide, proposal_decide_with, task_action, task_create, task_move,
-    task_update, task_update_check, workspace_of,
+    board_set, proposal_decide, task_action, task_create, task_move, task_update, task_update_check, workspace_of,
 };
-pub(super) use delivery::{goal_deliver, goal_set_delivery, run_auto_deliver};
-pub(super) use follow_up::goal_set_follow_up;
-pub(super) use goal_branches::{delete_branch, goal_delete_branches};
 #[cfg(test)]
 pub(super) use lifecycle::START_TIMEOUT_MS;
-pub(super) use session::{
-    get_goal, list_goals, list_tasks, propose_tasks, rpc_session, session_workspace, task_details,
-};
+pub(super) use session::{list_tasks, propose_tasks, rpc_session, session_workspace, task_details};
 
 // ---------------------------------------------------------------------------
 // Registry: board
@@ -59,16 +48,6 @@ impl Registry {
         self.boards.get(ws).and_then(|b| b.task_view(id, &self.gate_of(ws)))
     }
 
-    /// I goal della board del workspace con fase e attesa (vuoto se non esiste).
-    pub fn goal_views(&self, ws: &str) -> Vec<GoalView> {
-        self.boards.get(ws).map(Board::goal_views).unwrap_or_default()
-    }
-
-    /// Il goal `id` per `get_goal`, con i suoi task.
-    pub fn goal_detail(&self, ws: &str, id: &str) -> Option<Value> {
-        self.boards.get(ws).and_then(|b| b.goal_detail_json(id))
-    }
-
     pub(super) fn mark_dirty(&mut self, ws: &str) {
         if !self.dirty.iter().any(|d| d == ws) {
             self.dirty.push(ws.to_string());
@@ -92,16 +71,9 @@ impl Registry {
         board::id_from_title(title, &|id| board.is_some_and(|b| b.id_taken(id)))
     }
 
-    /// Task creato a mano, nel goal aperto `goal` o sciolto.
-    pub fn create_task(
-        &mut self,
-        ws: &str,
-        spec: TaskSpec,
-        goal: Option<&str>,
-        ctx: SpecContext<'_>,
-        now: i64,
-    ) -> Result<String, String> {
-        self.edit(ws, |b| b.create_task_in(spec, goal, ctx, now))
+    /// Task creato a mano.
+    pub fn create_task(&mut self, ws: &str, spec: TaskSpec, ctx: SpecContext<'_>, now: i64) -> Result<String, String> {
+        self.edit(ws, |b| b.create_task(spec, ctx, now))
     }
 
     /// Segna `no_git` sui task `queued` la cui cartella e' stata appena
@@ -129,14 +101,14 @@ impl Registry {
         ws: &str,
         source_tab: &str,
         source_task: Option<String>,
-        input: ProposalInput,
+        specs: Vec<TaskSpec>,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<String, String> {
         self.check_planner_can_propose(source_tab)?;
         self.next_proposal += 1;
         let id = format!("p-{now}-{}", self.next_proposal);
-        self.edit(ws, |b| b.add_proposal(id.clone(), source_tab, source_task, input, ctx, now))?;
+        self.edit(ws, |b| b.add_proposal(id.clone(), source_tab, source_task, specs, ctx, now))?;
         self.note_planner_proposal(source_tab);
         Ok(id)
     }
@@ -151,17 +123,19 @@ impl Registry {
         ws: &str,
         id: &str,
         accept: bool,
-        acceptance: Acceptance,
         ctx: SpecContext<'_>,
         now: i64,
     ) -> Result<(), String> {
-        self.edit(ws, |b| {
-            if accept {
-                b.accept_proposal_with(id, acceptance, ctx, now).map(|_| ())
-            } else {
-                b.discard_proposal(id, now)
-            }
-        })
+        self.edit(
+            ws,
+            |b| {
+                if accept {
+                    b.accept_proposal(id, ctx, now).map(|_| ())
+                } else {
+                    b.discard_proposal(id, now)
+                }
+            },
+        )
     }
 
     pub fn update_task(
@@ -191,45 +165,22 @@ impl Registry {
     /// Toglie un task; se aveva un worktree lo fa ripulire.
     pub fn delete_task(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.delete_task(id, now))?;
-        self.queue_cleanups(ws, vec![removed], None, None);
+        self.queue_cleanups(ws, vec![removed], None);
         Ok(())
-    }
-
-    /// "Chiudi goal": toglie i task non conclusi del goal (tutto o niente),
-    /// scarta le sue proposte e lo chiude; fa ripulire i worktree.
-    pub fn close_goal(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
-        let removed = self.edit(ws, |b| b.close_goal(id, now))?;
-        self.queue_cleanups(ws, removed, None, None);
-        Ok(())
-    }
-
-    /// Nota dell'utente nel registro delle decisioni di un goal aperto.
-    pub fn add_goal_note(&mut self, ws: &str, id: &str, text: &str, now: i64) -> Result<(), String> {
-        self.edit(ws, |b| b.add_goal_note(id, text, now))
     }
 
     /// Toglie un task e quelli che ne dipendono (tutto o niente); fa ripulire i worktree.
     pub fn delete_task_cascade(&mut self, ws: &str, id: &str, now: i64) -> Result<(), String> {
         let removed = self.edit(ws, |b| b.delete_with_dependents(id, now))?;
-        self.queue_cleanups(ws, removed, None, None);
+        self.queue_cleanups(ws, removed, None);
         Ok(())
     }
 
     /// Mette in coda la pulizia del worktree di ogni task tolto. `workspace`:
-    /// copia del workspace quando non e' piu' nello store. `gone`: la board, se
-    /// non e' piu' nel registro (serve ai repository del goal di una consegna).
-    /// Di un task di consegna si rimuovono i worktree e si conservano i branch del
-    /// goal: non e' stato consegnato.
-    fn queue_cleanups(&mut self, ws: &str, removed: Vec<Task>, workspace: Option<&Workspace>, gone: Option<&Board>) {
-        let board = gone.or_else(|| self.boards.get(ws));
+    /// copia del workspace quando non e' piu' nello store.
+    fn queue_cleanups(&mut self, ws: &str, removed: Vec<Task>, workspace: Option<&Workspace>) {
         let mut effects = Vec::new();
         for task in removed {
-            if task.worktree.is_some() {
-                if let Some(cleanup) = DeliveryCleanup::of_task(ws, &task, board, false, workspace) {
-                    effects.push(Effect::DeliveryCleanup(Box::new(cleanup)));
-                    continue;
-                }
-            }
             if let Some(target) = CleanupTarget::for_task(ws, task) {
                 let target = match workspace {
                     Some(w) => target.with_workspace(w),
@@ -314,7 +265,7 @@ impl Registry {
             self.dirty.retain(|d| *d != ws.id);
             self.next_rev += 1;
             self.effects.push(Effect::DeleteBoard(ws.id.clone(), self.next_rev));
-            self.queue_cleanups(&ws.id, board.tasks.clone(), Some(ws), Some(&board));
+            self.queue_cleanups(&ws.id, board.tasks.clone(), Some(ws));
         }
     }
 
@@ -362,21 +313,7 @@ impl Registry {
                 continue;
             }
             if let Some(task) = b.task(&id).cloned() {
-                let key = board::repo_key(task.repo.as_deref());
-                let goal_branch = task.goal().and_then(|g| b.goal_branch(g, &key)).cloned();
-                let goal_branches = match task.goal().and_then(|g| b.goal(g)) {
-                    Some(goal) if task.kind == TaskKind::Deliver => goal.branches.clone(),
-                    _ => Default::default(),
-                };
-                let goal_in_place = task.goal().and_then(|g| b.goal(g)).is_some_and(|g| g.in_place);
-                let job = StartJob {
-                    ws: ws.clone(),
-                    attempt: task.attempts(),
-                    task,
-                    goal_branch,
-                    goal_branches,
-                    goal_in_place,
-                };
+                let job = StartJob { ws: ws.clone(), attempt: task.attempts(), task };
                 self.effects.push(Effect::StartTask(Box::new(job)));
             }
         }
@@ -393,30 +330,25 @@ impl Registry {
         };
         b.rev = self.next_rev;
         b.updated_at = now;
-        // Chiusura dei goal finiti, prima della vista e dell'archivio; le consegne da
-        // annunciare e da avviare sono effetti (vedi `apply_advance`).
-        let advance = b.advance_goals(now);
-        // L'archivio prima della board salvata senza quei task e goal: se l'app
+        // L'archivio prima della board salvata senza quei task: se l'app
         // cade in mezzo restano nel file della board (e nell'archivio, due volte).
         let archived = b.take_archivable();
-        let archived_goals = b.take_archivable_goals();
         let view = b.view_with(ws, blocked, &gate);
         let published = Effect::Publish(Box::new(b.clone()), Box::new(view));
-        if !archived.is_empty() || !archived_goals.is_empty() {
-            self.effects.push(Effect::Archive { ws_id: ws_id.to_string(), tasks: archived, goals: archived_goals });
+        if !archived.is_empty() {
+            self.effects.push(Effect::Archive { ws_id: ws_id.to_string(), tasks: archived });
         }
         self.effects.push(published);
-        self.apply_advance(ws_id, advance);
     }
 
-    /// L'archivio ha rifiutato questi task e goal, gia' tolti dalla board: li
+    /// L'archivio ha rifiutato questi task, gia' tolti dalla board: li
     /// rimette in fondo, se la board esiste ancora e non li ha gia'. Non segna
     /// la board modificata (niente giro di ripubblicazione): ci riprova la
     /// prossima modifica vera, che li archivia di nuovo.
-    pub(super) fn restore_unarchived(&mut self, ws: &str, tasks: Vec<Task>, goals: Vec<Goal>) {
+    pub(super) fn restore_unarchived(&mut self, ws: &str, tasks: Vec<Task>) {
         let Some(b) = self.boards.get_mut(ws) else {
             return;
         };
-        b.restore_archived(tasks, goals);
+        b.restore_archived(tasks);
     }
 }

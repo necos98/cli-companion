@@ -1,12 +1,9 @@
-//! Modello dati della board: task, proposte e costanti di dominio (i goal
-//! sono in `goal`).
+//! Modello dati della board: task, proposte e costanti di dominio.
 //! Solo tipi e accessi in lettura; le operazioni stanno in `queue`,
 //! `lifecycle` e `scheduler`.
 
 use super::record::TaskRecord;
-use super::{
-    AutoFixHold, E2eRun, Goal, GoalSpec, ProposalGoal, SettingsProposal, TaskKind, TaskQuestion, TaskSpec, TaskState,
-};
+use super::{E2eRun, SettingsProposal, TaskKind, TaskQuestion, TaskSpec, TaskState};
 use crate::agents::Effort;
 use crate::bots::SkillRef;
 use serde::{Deserialize, Serialize};
@@ -123,11 +120,6 @@ pub struct Task {
     /// lavora sul posto, senza worktree, branch ne' consegna git). Si aggiorna
     /// alla creazione e all'accettazione e, in modo autorevole, all'avvio.
     pub no_git: bool,
-    /// Goal del task (`None` = task sciolto). Lo assegna solo l'ingresso in
-    /// coda (proposta accettata o task creato a mano): non cambia piu'.
-    pub(in crate::board) goal: Option<String>,
-    /// Giro del goal in cui il task e' entrato in coda; 0 senza goal.
-    pub(in crate::board) round: u32,
     pub(in crate::board) state: TaskState,
     pub(in crate::board) attempts: u32,
     pub(in crate::board) last_report: Option<String>,
@@ -152,39 +144,8 @@ pub struct Proposal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub source_task: Option<String>,
-    /// Goal nuovo, creato all'accettazione (dall'Intake). Escluso con `goal_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub goal: Option<GoalSpec>,
-    /// Goal aperto a cui vanno i task: indicato dall'Intake o ereditato dalla
-    /// review del revisore che propone. Escluso con `goal`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub goal_id: Option<String>,
     pub created_at: i64,
     pub tasks: Vec<TaskSpec>,
-    /// Correzione che l'app non accetta da sola pur avendo giri automatici: il
-    /// motivo, scritto dalla board al publish (o dopo una validazione fallita).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub auto_fix_hold: Option<AutoFixHold>,
-}
-
-impl Proposal {
-    /// Il goal a cui vanno i task della proposta, se ne ha uno.
-    pub fn target_goal(&self) -> Option<ProposalGoal> {
-        match (&self.goal, &self.goal_id) {
-            (Some(spec), _) => Some(ProposalGoal::New(spec.clone())),
-            (None, Some(id)) => Some(ProposalGoal::Existing(id.clone())),
-            (None, None) => None,
-        }
-    }
-
-    /// Proposta di correzione: viene dal revisore di una review di un goal
-    /// (solo a quella l'app assegna un goal: un worker non lo indica).
-    pub fn is_correction(&self) -> bool {
-        self.source_task.is_some() && self.goal_id.is_some()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,8 +160,6 @@ pub struct Board {
     pub proposals: Vec<Proposal>,
     /// Proposte pendenti di modifica delle impostazioni del workspace.
     pub settings_proposals: Vec<SettingsProposal>,
-    /// Goal della board, aperti e chiusi di recente (i piu' vecchi si archiviano).
-    pub goals: Vec<Goal>,
     /// Revisione in memoria (ordina i salvataggi/eventi concorrenti).
     #[serde(skip)]
     pub rev: u64,
@@ -216,7 +175,6 @@ impl Default for Board {
             tasks: Vec::new(),
             proposals: Vec::new(),
             settings_proposals: Vec::new(),
-            goals: Vec::new(),
             rev: 0,
         }
     }

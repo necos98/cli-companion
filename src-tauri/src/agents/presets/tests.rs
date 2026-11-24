@@ -312,7 +312,7 @@ fn task_intake_skill_covers_the_method() {
         "get_workspace_settings",
         "propose_settings",
         "Project Setup",
-        "Goal review",
+        "## Review",
         "kind: \"review\"",
         "all** the tasks",
         "E2E scenarios",

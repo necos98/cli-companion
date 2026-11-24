@@ -219,12 +219,12 @@ impl AutomationState {
         self.run(host, |r| r.remove_board(ws));
     }
 
-    /// Applica gli effetti nell'ordine. I task e i goal che l'archivio ha
+    /// Applica gli effetti nell'ordine. I task che l'archivio ha
     /// rifiutato non vanno persi: tornano nel registro e vengono rimessi nella
     /// board che il `Publish` successivo dello stesso workspace salva (la vista
     /// resta com'e').
     fn apply_effects<H: Host>(&self, host: &H, effects: Vec<Effect>) {
-        let mut unarchived: HashMap<String, (Vec<Task>, Vec<Goal>)> = HashMap::new();
+        let mut unarchived: HashMap<String, Vec<Task>> = HashMap::new();
         for e in effects {
             match e {
                 Effect::StartTask(job) => {
@@ -240,33 +240,17 @@ impl AutomationState {
                     let (st, h) = (self.clone(), host.clone());
                     host.defer(CLEANUP_DELAY, Box::new(move || worktrees::run_cleanup(&st, &h, *target)));
                 }
-                Effect::DeliveryCleanup(cleanup) => {
-                    let (st, h) = (self.clone(), host.clone());
-                    let delay = if cleanup.immediate { Duration::ZERO } else { CLEANUP_DELAY };
-                    host.defer(delay, Box::new(move || worktrees::run_delivery_cleanup(&st, &h, *cleanup)));
-                }
-                Effect::AutoDeliver { ws_id, goal_id } => {
-                    let (st, h) = (self.clone(), host.clone());
-                    host.defer(Duration::ZERO, Box::new(move || boards::run_auto_deliver(&st, &h, &ws_id, &goal_id)));
-                }
-                Effect::AutoFix { ws_id, proposal_id } => {
-                    let (st, h) = (self.clone(), host.clone());
-                    host.defer(Duration::ZERO, Box::new(move || boards::run_auto_fix(&st, &h, &ws_id, &proposal_id)));
-                }
-                Effect::Archive { ws_id, tasks, goals } => {
+                Effect::Archive { ws_id, tasks } => {
                     let tasks = archive_or_keep(&ws_id, "task", tasks, |t| &t.id, |t| host.archive_tasks(&ws_id, t));
-                    let goals = archive_or_keep(&ws_id, "goal", goals, |g| &g.id, |g| host.archive_goals(&ws_id, g));
-                    if !tasks.is_empty() || !goals.is_empty() {
+                    if !tasks.is_empty() {
                         // Registro (senza segnarlo modificato) e board da salvare.
-                        self.registry().restore_unarchived(&ws_id, tasks.clone(), goals.clone());
-                        let entry = unarchived.entry(ws_id).or_default();
-                        entry.0.extend(tasks);
-                        entry.1.extend(goals);
+                        self.registry().restore_unarchived(&ws_id, tasks.clone());
+                        unarchived.entry(ws_id).or_default().extend(tasks);
                     }
                 }
                 Effect::Publish(mut board, view) => {
-                    if let Some((tasks, goals)) = unarchived.get(&board.workspace_id) {
-                        board.restore_archived(tasks.clone(), goals.clone());
+                    if let Some(tasks) = unarchived.get(&board.workspace_id) {
+                        board.restore_archived(tasks.clone());
                     }
                     self.publish(host, &board, &view);
                 }

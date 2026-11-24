@@ -316,7 +316,7 @@ fn the_board_status_schema_describes_every_property_and_its_bounds() {
         assert!(props[name]["description"].as_str().is_some_and(|d| !d.is_empty()), "{name}");
     }
     assert_eq!(props["status"]["items"]["enum"], json!(["queued", "running", "done", "failed"]));
-    assert_eq!(props["kind"]["enum"], json!(["work", "review", "plan", "deliver"]));
+    assert_eq!(props["kind"]["enum"], json!(["work", "review", "plan"]));
     assert_eq!(
         (&props["offset"]["minimum"], &props["limit"]["minimum"], &props["limit"]["maximum"]),
         (&json!(0), &json!(1), &json!(PAGE_MAX))

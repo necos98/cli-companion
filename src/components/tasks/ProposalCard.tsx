@@ -9,14 +9,10 @@ import { isReview, proposalHeading } from "../../lib/review";
 import { dependencyLabels, dependsOnText, specExcerpt } from "../../lib/taskPanel";
 import { proposalAgentLabel } from "../../lib/taskAgent";
 import type { TaskAgents } from "../../lib/taskAgent";
-import GoalTag from "./GoalTag";
-import { goalBranchName } from "../../lib/goalDelivery";
-import { autoFixChoices, proposalAutoFixNote } from "../../lib/autoFix";
 
 /**
  * Props della card "Proposta da Task Intake" / "Proposta dal reviewer" (pannello Task e Tasks Manager):
- * titoli, estratto della specifica, dipendenze, agente, modello e Scarta / Accetta. Con un goal nuovo, le scelte
- * dell'utente sulle correzioni e sulla consegna automatiche; con una correzione che non è entrata da sola, il motivo.
+ * titoli, estratto della specifica, dipendenze, agente, modello e Scarta / Accetta.
  * La card chiama `api.proposalDecide` e passa a `onBoard` la board restituita;
  * se la validazione fallisce (es. id nel frattempo occupato) mostra l'errore.
  */
@@ -28,15 +24,7 @@ export interface ProposalCardProps {
   /** Agenti del workspace: nome dell'agente proposto per ogni task. */
   agents: TaskAgents;
   onBoard: (board: BoardView) => void;
-  /** Titolo del goal a cui appartiene (o che nascerebbe); assente per i task sciolti. */
-  goal?: string | null;
-  /** Giro che la correzione aprirebbe; assente se non è una correzione. */
-  round?: number | null;
 }
-
-/** Select compatto delle scelte sul goal nuovo. */
-const choiceSelectClass =
-  "h-6 rounded-md border border-input bg-transparent px-1.5 text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 interface SpecMetaProps {
   spec: TaskSpec;
@@ -60,40 +48,19 @@ function SpecMeta({ spec, board, agents, siblings }: SpecMetaProps) {
   );
 }
 
-export default function ProposalCard({
-  workspaceId,
-  proposal,
-  board,
-  agents,
-  onBoard,
-  goal = null,
-  round = null,
-}: ProposalCardProps) {
+export default function ProposalCard({ workspaceId, proposal, board, agents, onBoard }: ProposalCardProps) {
   const [pending, setPending] = useState<"accept" | "discard" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [autoDeliver, setAutoDeliver] = useState(false);
-  const [autoFix, setAutoFix] = useState(0);
   const specs = proposal.tasks;
   const heading = useMemo(() => proposalHeading(proposal, board.tasks), [proposal, board.tasks]);
   const single = specs.length === 1 ? specs[0] : null;
   const excerpt = useMemo(() => (single ? specExcerpt(single.task) : ""), [single]);
-  const autoFixNote = useMemo(() => proposalAutoFixNote(proposal, board.goals), [proposal, board.goals]);
 
   const decide = async (accept: boolean) => {
     setError(null);
     setPending(accept ? "accept" : "discard");
     try {
-      // Le scelte valgono solo per il goal nuovo che la proposta crea.
-      const choices = accept && proposal.goal !== undefined;
-      onBoard(
-        await api.proposalDecide(
-          workspaceId,
-          proposal.id,
-          accept,
-          choices ? autoDeliver : null,
-          choices ? autoFix : null,
-        ),
-      );
+      onBoard(await api.proposalDecide(workspaceId, proposal.id, accept));
     } catch (e) {
       setError(String(e));
       setPending(null);
@@ -113,57 +80,6 @@ export default function ProposalCard({
         <p className="min-w-0 break-words text-[11px] text-muted-foreground">
           Review: <span className="text-text-secondary">{heading.origin}</span>
         </p>
-      )}
-
-      {goal && (
-        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
-          {proposal.goal ? (
-            <span className="break-words">Nuovo goal: {goal}</span>
-          ) : (
-            <GoalTag title={goal} className="text-[11px]" />
-          )}
-          {round !== null && <span>correzione · giro {round}</span>}
-        </p>
-      )}
-
-      {autoFixNote && <p className="break-words text-[11px] text-status-attention">{autoFixNote}</p>}
-
-      {proposal.goal && (
-        <div className="flex min-w-0 flex-col gap-1.5 text-[11px] text-muted-foreground">
-          <p className="break-words">
-            Branch che verrà creato:{" "}
-            <code className="font-mono text-text-secondary">{goalBranchName(proposal.goal.id)}</code>
-          </p>
-          <label className="flex items-center gap-2">
-            Correzioni automatiche
-            <select
-              aria-label="Correzioni automatiche"
-              value={autoFix}
-              disabled={pending !== null}
-              onChange={(e) => setAutoFix(Number(e.target.value))}
-              className={choiceSelectClass}
-            >
-              {autoFixChoices().map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2">
-            Consegna automatica
-            <select
-              aria-label="Consegna automatica"
-              value={autoDeliver ? "yes" : "no"}
-              disabled={pending !== null}
-              onChange={(e) => setAutoDeliver(e.target.value === "yes")}
-              className={choiceSelectClass}
-            >
-              <option value="no">no</option>
-              <option value="yes">sì</option>
-            </select>
-          </label>
-        </div>
       )}
 
       {single ? (

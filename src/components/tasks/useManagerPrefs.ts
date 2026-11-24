@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 import { browserStorage } from "../../lib/browserStorage";
-import type { GoalFilter } from "../../lib/goals";
 import { readPrefs, writePrefs } from "../../lib/taskViews";
 import type { ListPrefs, ManagerView, WorkspacePrefs } from "../../lib/taskViews";
 
@@ -21,6 +20,5 @@ export function useManagerPrefs(workspaceId: string) {
 
   const setView = useCallback((view: ManagerView) => update((p) => ({ ...p, view })), [update]);
   const setList = useCallback((list: ListPrefs) => update((p) => ({ ...p, list })), [update]);
-  const setGoal = useCallback((goal: GoalFilter) => update((p) => ({ ...p, goal })), [update]);
-  return { prefs, setView, setList, setGoal };
+  return { prefs, setView, setList };
 }

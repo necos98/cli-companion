@@ -64,8 +64,7 @@ vecchi si ignorano (niente `deny_unknown_fields`).
   "paused": false,        // coda in pausa: nessun nuovo avvio
   "updated_at": 0,
   "tasks": [ /* Task, l'ordine dell'array È l'ordine della coda */ ],
-  "proposals": [ /* Proposal pendenti */ ],
-  "goals": [ /* Goal aperti e chiusi di recente, vedi "Goal" */ ]
+  "proposals": [ /* Proposal pendenti */ ]
 }
 ```
 
@@ -77,7 +76,7 @@ Task:
   "title": "Modalità di consegna",       // 1..=80
   "task": "...",            // specifica per il worker, 1..=100000
   "depends_on": ["task-schema"],         // id esistenti, niente cicli, max 50
-  "kind": "work",           // work | review | plan | deliver (default work, vedi "Task di review", "Task di pianificazione" e "Consegna del goal"); una review richiede almeno una dipendenza; plan e deliver li crea solo l'app
+  "kind": "work",           // work | review | plan (default work, vedi "Task di review" e "Task di pianificazione"); una review richiede almeno una dipendenza; plan lo crea solo l'app
   "e2e": false,             // true = deve superare gli E2E del repository; omesso se false (vedi "Test E2E")
   "no_git": false,          // true = la cartella del task non è un repository git: modalità libera (vedi "Cartelle senza git"); omesso se false; deciso a creazione/accettazione, riletto all'avvio
   "repo": null,             // cartella relativa alla root; null = la root (multi-repo)
@@ -86,8 +85,6 @@ Task:
   "bot": "general",         // Bot che esegue il task (omesso nei task vecchi, che si comportano come prima); agent, model, effort e skill qui sotto sono lo snapshot preso all'accettazione
   "effort": null,           // sforzo del Bot, omesso se assente; all'avvio va in AutomationRequest.effort: un livello non supportato dall'agente è ignorato con una nota sul task
   "skill": null,            // SkillRef del Bot, omessa se assente; il worker la carica per prima (vedi get_task)
-  "goal": "export-ordini",  // id del goal del task, omesso = task sciolto; lo assegna l'ingresso in coda e non cambia più (vedi "Goal")
-  "round": 1,               // giro del goal in cui il task è entrato in coda; omesso senza goal
   "status": "queued",       // queued | running | done | failed
   "fail_reason": null,      // solo se failed, omesso se assente: worker_failed | worker_exited | stopped | interrupted | start_failed (scritto dalla transizione che porta il task a failed; si azzera con "Riprova"; i task falliti prima che esistesse restano senza: motivo sconosciuto, la UI non mostra nulla)
   "worker_status": null,    // starting | running | background | needs_input | idle | awaiting_answer | ... (come oggi)
@@ -129,8 +126,6 @@ TaskReport (da `complete_task`):
   "summary": "...",
   "commit": "abc1234",      // opzionale
   "pr_url": "https://...",  // opzionale (modalità PR)
-  "commits": [],            // solo task deliver: commit finali, uno per repository; omesso se vuoto (max 20)
-  "pr_urls": [],            // solo task deliver: link delle PR (modalità pr), uno per repository; omesso se vuoto (max 20)
   "files_changed": [], "tests": [{ "command", "result": "passed|failed|not_run", "details" }],
   "follow_ups": [],
   "diffstat": "...",        // calcolato dall'app quando c'è un worktree
@@ -165,9 +160,6 @@ Proposal:
   "created_at": 0,
   "source_task": "review-x", // opzionale: task di review o di pianificazione il cui worker l'ha proposta
                              // (omesso se assente); in quel caso source_tab è il tab di quel worker
-  "goal": { "id", "title", "request", "done_when", "decisions"? }, // opzionale: goal nuovo, creato all'accettazione
-  "goal_id": "export-ordini", // opzionale: goal aperto a cui vanno i task (dell'Intake o ereditato dalla review)
-                              // goal e goal_id si escludono; nessuno dei due = task sciolti
   "tasks": [ /* TaskSpec: id, title, task, depends_on, repo, agent?, model, kind, e2e */ ]
 }
 ```
@@ -210,8 +202,6 @@ Limiti: 200 task per board, 20 task per proposta, 20 proposte pendenti per board
   patch cambia il Bot o il `kind` (con solo `kind` lo snapshot resta, si verifica il Bot del task) e quindi anche nella
   verifica di `request_task_update` prima della card: "task '<id>': bot <nome> cannot run <kind> tasks: choose a bot
   whose kinds include <kind> (see get_workspace_settings.bots)". I task già in coda o finiti non si rivalidano.
-  Il tipo `deliver` non compare mai nei `kinds` di un Bot (la validazione lo scarta): un task `deliver` lo esegue un
-  Bot con `work` (`TaskKind::bot_kind`: `deliver` → `work`, gli altri tipi se stessi), quindi nessuna migrazione dei Bot.
 - **Avvio con effort e skill.** `AutomationRequest.effort` riceve l'effort del task; se l'agente non lo supporta
   `automation_command` lo scarta e l'avviso finisce nella nota del task. Con una skill l'invocazione viene
   dal contratto dell'agente (`PluginSkills`/`UserSkills::skill_name`); se l'agente non può fornirla l'avvio fallisce
@@ -271,9 +261,8 @@ worker o cosa si può scegliere. Compaiono in `KanbanCard`, `ListRow`, `TaskDeta
 
 | Badge | Origine del dato | Effetto |
 |---|---|---|
-| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks` (e `goal` se la review appartiene a un goal; ha anche `get_goal`), nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`; la proposta torna nel thread d'origine. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
+| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks`, nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`; la proposta torna nel thread d'origine. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
 | **Pianificazione** | `kind: plan`, solo task creati dall'app (HUB e `create_plan_task`) | Ruolo Planner: worktree isolato sempre, non occupa il repository nello scheduler, niente setup, consegna, commit né E2E; `list_tasks`, `get_workspace_settings` e `ask_user`; notifica `PlanWithoutProposal` se chiude senza proposta; escluso dalla chiusura automatica del thread. Il `kind` è riservato all'app. Serve un Bot con `plan` (`Planner`) |
-| **Consegna** | `kind: deliver`, solo task creati dall'app (pulsante "Consegna" e consegna automatica) | Ruolo Deliverer: porta il branch del goal sulla base per intero (vedi "Consegna del goal"); `get_task` con `goal` e `goal_tasks`, `get_goal`, `get_task_details`, `ask_user` ed E2E; niente verdetto, `findings` né proposte; il report porta `commits` e `pr_urls`. Lo esegue un Bot con `work` (General di serie). Il `kind` è riservato all'app |
 | **Verificato** / **Problemi trovati** | verdetto del report di una review `done` | Solo informativo: i `findings` si leggono nel dettaglio |
 | **E2E richiesto** / esito | `e2e` del task e ultima esecuzione (`e2e_run` o `report.e2e`) | "E2E richiesto" finché il task marcato non ha mai eseguito gli E2E, poi l'esito (vedi "Test E2E") |
 | **Bot** (avatar e nome) | `bot` del task (snapshot all'accettazione); assente nei task vecchi | Dice chi esegue il task; il selettore del Bot offre solo i Bot abilitati con quel `kind` |
@@ -284,7 +273,7 @@ worker o cosa si può scegliere. Compaiono in `KanbanCard`, `ListRow`, `TaskDeta
 | **Motivo** del fallimento | `fail_reason` del task `failed` | "Fermato dall'utente", "App riavviata", "Avvio fallito", "Il worker ha rinunciato", "Worker uscito senza esito"; assente nei task falliti prima del campo |
 | Repository | `repo` del task | Repository in cui lavora (assente = root) |
 
-Tipo e Bot: `work` → `General` (o un Bot con `work`), `review` → `Reviewer`, `plan` → `Planner`, `deliver` → il Bot di consegna del goal (General di serie). Nei form,
+Tipo e Bot: `work` → `General` (o un Bot con `work`), `review` → `Reviewer`, `plan` → `Planner`. Nei form,
 cambiando il tipo il Bot scelto resta se lo esegue, altrimenti passa al default del tipo con un avviso in linea.
 
 ### Azioni consentite (`allowed_actions`, `can_edit`, `can_reorder`, `cascade`)
@@ -325,15 +314,18 @@ Il file `<app_data>/boards/<workspace_id>.json` usa la busta comune a tutti i fi
 (modulo `store`):
 
 ```jsonc
-{ "schema_version": 3, "data": { /* la board, come in "Modello dati" */ } }
+{ "schema_version": 4, "data": { /* la board, come in "Modello dati" */ } }
 ```
 
 La versione corrente è il numero dei passi di migrazione (`BOARD_MIGRATIONS` in
-`board/persist.rs`); oggi è **3**. Un file senza busta è la versione 0: il formato scritto
+`board/persist.rs`); oggi è **4**. Un file senza busta è la versione 0: il formato scritto
 dall'app fino alla v0.12 e quello della v0.11 (stessi campi, più stati e campi eliminati).
 Il passo 1 → 2 (`board/legacy_settings.rs`) sposta i campi dei worker delle proposte di impostazioni
-in `worker_agents`; il passo 2 → 3 (`v2_to_v3`, `board/legacy_goals.rs`) aggiunge `goals: []`
-senza ricostruire nessun goal dai task esistenti, che restano sciolti.
+in `worker_agents`; il passo 2 → 3 (`v2_to_v3`, `board/legacy_goals.rs`) aggiunge `goals: []` ai file della v0.26 e il passo 3 → 4
+(`v3_to_v4`, stesso file) toglie ogni traccia dei goal, funzione poi eliminata: via la lista `goals`, via i task `kind: "deliver"`
+(e i loro id da `depends_on` di task e proposte), via `goal`/`round` dai task e `goal`/`goal_id`/`auto_fix_hold` dalle proposte. Gli
+altri task del goal restano task sciolti, con il loro stato. I vecchi file d'archivio `*.goals.*` su disco si ignorano; i worktree
+rimasti dai task `deliver` eliminati restano su disco, non più gestiti.
 
 **Migrazione (`v0_to_v1`, `board/legacy.rs`).** Funzione pura sul JSON del file, senza orologio e
 senza stato dell'app; sul formato della v0.12 non cambia nulla. Per i file della v0.11:
@@ -349,9 +341,7 @@ senza stato dell'app; sul formato della v0.12 non cambia nulla. Per i file della
 
 Un task `failed` per migrazione senza `finished_at` lo prende da `updated_at`. Dopo la migrazione
 si applicano le invarianti sui valori (`Board::sanitize`): `max_parallel` fra 1 e 16, un `agent`
-per ogni task (il predefinito se manca), `round` solo sui task di un goal (almeno 1), goal con
-`round` almeno 1 e con `outcome`/`review` solo se chiusi (un goal chiuso senza esito vale
-`abandoned`, senza review `none`); `workspace_id` vuoto rende il file inutilizzabile.
+per ogni task (il predefinito se manca); `workspace_id` vuoto rende il file inutilizzabile.
 
 **Recupero dopo il riavvio (`Board::recover_after_restart`, `board/recovery.rs`).** Distinto dalle
 migrazioni e applicato a ogni caricamento, anche di un file già alla versione corrente: nessun
@@ -373,7 +363,7 @@ La board tiene al massimo `MAX_FINISHED_KEPT` = 200 task conclusi (`done` e `fai
 pubblicazione (`flush_one`) i più vecchi per `finished_at` oltre i 200 più recenti escono dalla
 board (`Board::take_archivable`, `board/archive.rs`). Restano, anche oltre il tetto, i task con
 un `worktree` (ancora da ripulire o da riusare con "Riprova"), quelli da cui dipende un task non `done` o una
-proposta pendente e quelli di un goal **aperto**; i riferimenti ai task usciti spariscono dai `depends_on` di quelli rimasti.
+proposta pendente; i riferimenti ai task usciti spariscono dai `depends_on` di quelli rimasti.
 
 I task usciti finiscono in `<app_data>/boards/archive/<workspace_id>.jsonl`, una riga JSON per
 task in coda al file (la cartella e il file si creano alla prima volta):
@@ -390,14 +380,6 @@ board in memoria e nel file che il `Publish` successivo salva (la vista inviata 
 quella senza di loro), e la prossima modifica vera li archivia di nuovo
 (`Registry::restore_unarchived`). L'archivio non si legge più dall'app; si cancella insieme alla
 board (`delete_board`, rimozione del workspace).
-
-I **goal chiusi** seguono lo stesso meccanismo: la board ne tiene `MAX_CLOSED_GOALS_KEPT` = 100 (i chiusi
-più di recente, per `closed_at`; gli aperti restano sempre), i più vecchi escono
-(`Board::take_archivable_goals`, `board/goal/archive.rs`) e vanno in
-`<app_data>/boards/archive/<workspace_id>.goals.jsonl`, una riga `{"schema_version":1,"data":{ /* il goal */ }}`
-per goal (`Host::archive_goals`). Stesso `Effect::Archive` (con `tasks` e `goals`) prima del `Publish`, stessa
-garanzia: un goal rifiutato dall'archivio torna nella board (`Board::restore_archived`) e si riprova alla
-modifica successiva. Il file si cancella con la board.
 
 ## Consegna (impostazione del workspace)
 
@@ -426,21 +408,16 @@ workspace. Cambiarla non tocca i task già `running`.
 
 Per le modalità con branch: `repos[repo].base_branch` → (solo `pr`) default di `origin`
 (`git symbolic-ref --short refs/remotes/origin/HEAD`, senza `origin/`) → branch corrente del
-checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branch corrente. Per un goal la regola
-vale una volta, alla creazione di `goal/<id>` nel repository: la base risolta si scrive in `Goal.branches` e non
-cambia più (vedi "Branch del goal").
+checkout del repo, risolto **all'avvio** del task. Per `push`/`commit`: il branch corrente.
 
 ### Worktree (solo modalità parallele)
 
-Fanno eccezione i task di un goal in una cartella git, salvo un goal `in_place`: hanno il worktree in ogni modalità, da
-`goal/<id>` (vedi "Branch del goal"). Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
+Come oggi: `<repoDir>/.worktrees/<task-id>`, branch `task/<task-id>`, `.worktrees/` in
 `info/exclude`, hook del repo (`copy_ignored`, `setup`) dopo la creazione, `setup_done`,
 riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 - Gli **hook** `setup` e `cleanup` girano con il runner dei processi dell'app (`automation/process.rs`,
   lo stesso degli E2E): dell'output si tengono solo gli ultimi 64 KiB per stream e, allo scadere
   del timeout, si uccide l'intero albero di processi (vedi "Test E2E", Annullamento).
-- I **task di consegna** (`kind: "deliver"`) hanno il worktree sul branch del goal, non su un branch loro, e uno per
-  repository del goal con commit da consegnare (vedi "Consegna del goal"); non passano dalla pulizia generica.
 - Le **review** (`kind: "review"`) ricevono il worktree dalla base come ogni task (`task/<id>`);
   la pulizia a `done` funziona anche senza commit sul branch (worktree rimosso, branch cancellato).
 - I **task di pianificazione** (`kind: "plan"`) hanno un worktree `task/<id>` dalla base **in ogni
@@ -458,6 +435,8 @@ riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
   rebase lato server: la consegna è confermata dal worker) e `git branch -d task/<id>` per
   `local_merge`. Gli errori diventano avvisi nella `note`, mai bloccanti. Un task `failed`
   conserva worktree e branch per il retry.
+  Un worktree rimasto da una versione con i goal, su un branch `goal/<id>`, si rimuove ma il branch non si cancella mai
+  (può contenere lavoro mai consegnato): resta un avviso nel log.
 - **Riallineamento delle worktree**: la pulizia alla chiusura del tab dipende da un flag in
   memoria, quindi un crash o la chiusura dell'app nel suo ritardo la perdono. All'avvio (primo
   giro del timer, dopo il ripristino delle board) e poi ogni 5 minuti l'app confronta le board con
@@ -477,7 +456,7 @@ riuso al retry, guardiano dei 5 minuti, timeout git 120 s, WSL via `wsl.exe -e`.
 
 ### Modalità in place
 
-Per i task sciolti e per quelli di un goal `in_place` (gli altri task di un goal hanno il worktree, vedi "Branch del goal"). Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
+Nessun worktree: il worker lavora nel checkout del repo. Prima dell'avvio l'app non modifica
 nulla (niente fetch, niente worktree); nelle modalità con branch legge soltanto la base
 (`base_branch` del repo, default di `origin` per `pr`, branch corrente) per scriverla nelle
 istruzioni. In `pr`/`local_merge` seriali il worker crea il branch
@@ -488,7 +467,7 @@ istruzioni. In `pr`/`local_merge` seriali il worker crea il branch
 `get_task` restituisce `instructions` (comuni) + `environment` (cartella, branch, base,
 modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalità:
 
-- **Comuni** (con `dependencies` o `goal` in `get_task`, anche la riga che li cita): work only inside `<dir>`; never touch other folders; commit only files you
+- **Comuni** (con `dependencies` in `get_task`, anche la riga che le cita): work only inside `<dir>`; never touch other folders; commit only files you
   changed, never stash/reset/discard changes you did not make; do not push or merge unless
   the delivery steps say so; run the verification the task asks for before delivering; when
   delivery succeeded call `complete_task` with `status: "completed"` (with `commit`, and
@@ -514,17 +493,6 @@ modalità) + `delivery` (i passi della modalità). Contenuto minimo per modalit�
 - **local_merge, in place**: `git switch -c task/<id> <base>`; lavoro; commit; `git switch
   <base>`; `git merge --ff-only task/<id>` (se non è fast-forward: `git rebase <base>
   task/<id>` e riprova); `git branch -d task/<id>`.
-- **Task di un goal** (in una cartella git; una sola variante, indipendente dalla modalità; testo in
-  `board/texts/goal.rs`, `environment` con task branch, goal branch e base): commit su `task/<id>` (il worktree è
-  già lì); `git rebase goal/<goal-id>` (risolvi i conflitti, ripeti la verifica); passo E2E per i task `e2e`;
-  `git fetch . task/<id>:goal/<goal-id>`, eseguito nel worktree del task: avanza il branch del goal al tuo commit
-  senza metterlo in checkout. Se è rifiutato come non fast-forward (`! [rejected] … (non-fast-forward)`, nulla
-  cambia) perché il branch del goal si è mosso: rebase di nuovo, ripeti la verifica, riprova. Se git rifiuta perché
-  `goal/<goal-id>` è in checkout nella copia dell'utente o in un altro worktree (`fatal: refusing to fetch into
-  branch 'refs/heads/goal/<id>' checked out at '<path>'`, nulla cambia, anche con `receive.denyCurrentBranch`) →
-  `complete_task` `failed` con il motivo: l'utente deve portare quella cartella su un altro branch. Mai push, mai
-  PR, mai toccare `<base>` (il goal si consegna per intero più tardi), niente checkout di altri branch; poi
-  `complete_task` `completed` con `commit`.
 - **push**: commit sul branch corrente; `git pull --rebase`; ripeti la verifica se ha portato
   modifiche; `git push`.
 - **commit**: commit sul branch corrente. Niente push.
@@ -555,7 +523,6 @@ Posizione del passo:
 - `local_merge` in place: dopo il commit del lavoro, prima di `git switch <base>`.
 - `push`: dopo `git pull --rebase` (e la ripetizione della verifica), prima di `git push`.
 - `commit`: dopo il commit, ultimo passo.
-- task di un goal: dopo `git rebase goal/<goal-id>`, prima di `git fetch . task/<id>:goal/<goal-id>`.
 
 Prima della chiamata finale a `complete_task` c'è la riga `E2E_GATE`: `completed` è accettato
 solo se l'ultima esecuzione è passata sul codice attuale (stesso albero e stesse modifiche non
@@ -624,10 +591,7 @@ Funzione pura dopo ogni modifica (come oggi):
 3. Slot: due task della stessa cartella senza git (`no_git`, vedi "Cartelle senza git") non girano
    mai insieme, nemmeno in modalità parallela. In modalità parallela (`pr`/`local_merge` con `parallel`) fino a `max_parallel`
    running nella board; altrimenti **1 running per repository** (chiave `repo`), comunque
-   entro `max_parallel`. Un task `plan`, che gira sempre nel suo worktree, non occupa il repository; nemmeno un task
-   di un goal in una cartella git con i worktree (`Board::runs_in_own_worktree`), che vale fino a `max_parallel` in ogni
-   modalità. Un task di un goal `no_git` o `in_place` lavora sul posto: resta esclusivo per cartella, come uno sciolto
-   (anche se la consegna del workspace è poi passata ai worktree: `Board::in_place_goal`).
+   entro `max_parallel`. Un task `plan`, che gira sempre nel suo worktree, non occupa il repository.
 4. Ogni scelto passa a `running` (`worker_status = starting`, `attempts += 1`,
    `started_at`), l'avvio vero (git + spawn) gira fuori dal lock su un thread separato.
 
@@ -717,26 +681,25 @@ un **segreto suo**:
   (`probe-<casuale>`), non quella di un terminale.
 
 Il **ruolo** del chiamante lo decide l'app, non il chiamante: viene dal tab (`Role::of_worker`). Il worker di un task
-`work` è `worker`, quello di un task `review` è `reviewer`, quello di un task `plan` è `planner`, quello di un task `deliver` è `deliverer`, ogni altro tab
+`work` è `worker`, quello di un task `review` è `reviewer`, quello di un task `plan` è `planner`, ogni altro tab
 di cli-companion (Intake compreso) è `session`. La tabella unica dei metodi consentiti a ogni ruolo è `Method::roles` in `automation/roles.rs`
 (un `match` esaustivo: aggiungere un metodo obbliga a decidere chi lo chiama); `rpc::dispatch` la usa per il
 controllo di accesso e il server MCP per scegliere i tool, e un test verifica che coincidano. Un metodo non consentito
 risponde "`<metodo>` is reserved for automated sessions" (a una sessione) o "`<metodo>` is not available to
 automated sessions" (a un worker); un tab di un workspace archiviato risponde "workspace is archived" a tutto.
 
-| Metodo | `worker` | `reviewer` | `planner` | `deliverer` | `session` |
-|---|:-:|:-:|:-:|:-:|:-:|
-| `whoami` (handshake del server MCP, non è un tool) | sì | sì | sì | sì | sì |
-| `get_task`, `complete_task` | sì | sì | sì | sì | no |
-| `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | sì | no |
-| `run_e2e`, `get_e2e_result` | sì | sì | no | sì | no |
-| `propose_tasks` | no | sì | sì | no | sì |
-| `get_task_details` | no | sì | sì | sì | sì |
-| `list_tasks`, `list_goals` | no | no | sì | no | sì |
-| `get_goal` | no | sì | sì | sì | sì |
-| `get_workspace_settings` | no | sì | sì | no | sì |
-| `update_task`, `delete_task`, `propose_settings` | no | no | no | no | sì |
-| `save_skill`, `list_skills`, `delete_skill` | no | no | no | no | sì |
+| Metodo | `worker` | `reviewer` | `planner` | `session` |
+|---|:-:|:-:|:-:|:-:|
+| `whoami` (handshake del server MCP, non è un tool) | sì | sì | sì | sì |
+| `get_task`, `complete_task` | sì | sì | sì | no |
+| `ask_user` (solo con l'Agents HUB acceso) | sì | no | sì | no |
+| `run_e2e`, `get_e2e_result` | sì | sì | no | no |
+| `propose_tasks` | no | sì | sì | sì |
+| `get_task_details` | no | sì | sì | sì |
+| `list_tasks` | no | no | sì | sì |
+| `get_workspace_settings` | no | sì | sì | sì |
+| `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
+| `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
 
 `ask_user` richiede l'Agents HUB (`Method::requires_hub`): è l'HUB che porta la domanda all'utente e raccoglie la risposta; senza HUB
 nessuno potrebbe rispondere. Il revisore non lo ha apposta: la sua verifica non deve fermarsi su una risposta, e i dubbi
@@ -746,7 +709,7 @@ li mette nel verdetto.
 
 Il server MCP sceglie il ruolo con la RPC interna `whoami` (non è un tool) ed espone tool diversi in base al tab: **worker** (`role: "worker"`, tab registrato come worker di
 un task `work`), **reviewer** (`role: "reviewer"`, worker di un task `review`), **planner**
-(`role: "planner"`, worker di un task `plan`), **deliverer** (`role: "deliverer"`, worker di un task `deliver`) oppure **sessione**
+(`role: "planner"`, worker di un task `plan`) oppure **sessione**
 (`role: "session"`, qualunque altro tab di cli-companion: Intake o terminale
 normale). Fuori da cli-companion nessun tool. Se l'app non risponde a `whoami` entro 3 s l'handshake
 non si blocca: la lista è vuota, il server riprova in background e, appena riceve il ruolo, avvisa il client
@@ -756,11 +719,10 @@ queue with propose_tasks and read and propose changes to the workspace settings 
 get_workspace_settings and propose_settings; the user approves them in the app; never wait for workers.
 
 Worker:
-- `get_task` → `{ task, title, instructions, environment, delivery, dependencies?, goal?, previous_attempt?, skill? }`.
+- `get_task` → `{ task, title, instructions, environment, delivery, dependencies?, previous_attempt?, skill? }`.
   `dependencies` (omesso se vuoto): per ogni dipendenza diretta `done`, la stessa forma e gli stessi limiti di
-  `reviewed_tasks`. `goal` (omesso per un task sciolto): `{ title, request, done_when, decisions }`, con `decisions`
-  come `{ source, text }`. Se c'è almeno uno dei due, le istruzioni comuni guadagnano la riga "Read `dependencies`
-  and `goal` before starting..." (vedi docs/GOALS.MD, "Passaggio di consegne"); altrimenti nulla cambia. Se il task ha
+  `reviewed_tasks`. Se c'è, le istruzioni comuni guadagnano la riga "Read `dependencies` before starting..."
+  (le dipendenze sono consegnate e già nella base); altrimenti nulla cambia. Se il task ha
   una skill (snapshot del Bot), `skill` è il nome da caricare con lo strumento skill dell'agente e `instructions`
   inizia con "Before starting, load the skill <skill> with your skill tool; the instructions of this task take
   precedence over the skill where they conflict." (stesso per i task `review` e `plan`). Senza skill l'output non cambia.
@@ -785,26 +747,20 @@ Worker:
 
 Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_tasks`,
 `propose_settings` o tool di skill; tutti gli altri metodi di sessione restano vietati):
-- `get_task` → `{ task, title, instructions, environment, reviewed_tasks, goal?, previous_attempt? }`.
+- `get_task` → `{ task, title, instructions, environment, reviewed_tasks, previous_attempt? }`.
   `instructions` sono quelle del reviewer, **senza `delivery`**. `reviewed_tasks` ha, per ogni
   dipendenza diretta, `{ id, title, status, summary (troncato), commit, pr_url, files_changed,
   diffstat, tests, follow_ups, truncated? }` (liste e testi limitati; `truncated: true` se
   qualcosa è stato tagliato). Non include la specifica: il reviewer la legge con
-  `get_task_details`. `goal` (omesso se la review non appartiene a un goal): `{ title, request,
-  done_when, decisions }`, con `decisions` come `{ source, text }`, come per il worker. Il reviewer
-  non riceve `dependencies` (i report dei task rivisti sono già in `reviewed_tasks`) e le sue
-  istruzioni non hanno la riga "Read `dependencies` and `goal` before starting...".
+  `get_task_details`. Il reviewer non riceve `dependencies` (i report dei task rivisti sono già in
+  `reviewed_tasks`) e le sue istruzioni non hanno la riga "Read `dependencies` before starting...".
 - `complete_task { status, summary, verdict?, findings?, ... }` (come sopra, più i campi di verdetto):
   con `status: "completed"` serve `verdict: "passed" | "issues"`; `findings: string[]` (stessi
   limiti di `follow_ups`: max 100 voci, 1..=2000 caratteri) è obbligatorio e non vuoto con
   `issues`, ammesso come suggerimenti con `passed`. Con `status: "failed"` `verdict` è un
   errore (`findings` ammessi).
 - `get_task_details { id }` e `propose_tasks { tasks }`: come per la sessione, ma la RPC li
-  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo. Lo schema di
-  `propose_tasks` del reviewer (e del planner) non ha `goal` né `goal_id`: passarli è un errore ("goal and goal_id
-  cannot be set by an automated session: …"); la proposta del reviewer **eredita** il goal della sua review
-  (vedi "Goal").
-- `get_goal { id }`: come per la sessione (il reviewer verifica l'obiettivo del goal).
+  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo.
 - `get_workspace_settings {}`: sola lettura, nel workspace del task (come per il planner, con la
   descrizione che non cita `propose_settings`): il reviewer sceglie da `bots` il Bot e da
   `agents[].models` l'eventuale `model` dei task di correzione e della nuova review.
@@ -815,23 +771,6 @@ Istruzioni del server MCP per il reviewer (inglese): automated reviewer; call ge
 verify the integrated result without changing files; propose fixes with propose_tasks; always
 finish with complete_task and a verdict.
 
-Deliverer (worker di un task `deliver`, `mcp/tools/deliver.rs`; solo i metodi della tabella, mai proposte,
-`update_task`, `list_tasks`, `get_workspace_settings` o tool di skill):
-- `get_task` → `{ task, title, instructions, environment, delivery, goal, goal_tasks, previous_attempt?, skill? }`.
-  `instructions` sono quelle del `kind` (`board/prompts/deliver_instructions.md`, con gli standard di ingegneria e le
-  regole del workspace); `environment` elenca i repository da consegnare (checkout dell'utente, worktree sul branch
-  del goal, base, E2E) e la modalità; `delivery` ha i passi della modalità del workspace (vedi "Consegna del goal").
-  `goal` è quello dei task di un goal (`{ title, request, done_when, decisions }`); `goal_tasks` ha, per ogni task
-  `work` e `review` del goal in ordine di coda, la forma di `reviewed_tasks` (report senza specifica: la legge con
-  `get_task_details`).
-- `complete_task { status, summary, commits?, pr_urls? }`: `commits` e `pr_urls` (max 20 voci, validati come `commit` e
-  `pr_url`) sono accettati **solo** per i task `deliver` ("commits and pr_urls are only accepted for deliver tasks");
-  `verdict` e `findings` sono un errore. Per un task marcato E2E `completed` è soggetto al blocco (vedi "Test E2E").
-- `get_task_details { id }` e `get_goal { id }`: come per la sessione; `run_e2e`/`get_e2e_result`: come per il worker;
-  `ask_user` con l'HUB acceso.
-
-Istruzioni del server MCP per il deliverer (inglese): automated deliverer; call get_task first; bring the goal to its
-base as the delivery steps say; always finish with complete_task (con l'HUB: un dubbio si chiede con ask_user).
 
 `whoami` risponde anche `hub: bool` (l'Agents HUB è acceso) a ogni ruolo; il server MCP lo legge una
 volta col ruolo (assente = spento). Con l'HUB acceso le istruzioni di worker e pianificatore dicono di
@@ -897,9 +836,7 @@ Sessione (workspace = quello del tab):
   accettazione, creazione manuale e aggiornamento: "task '<id>': a review task needs at least one
   dependency (depends_on: the tasks it reviews)"). `kind: "plan"` è rifiutato qui come in
   `update_task`, `task_create` e `task_update` (`kind "plan" is reserved to the app: …`), e un task
-  `plan` non cambia tipo ("the kind of a plan task cannot be changed"). Lo stesso vale per `deliver`
-  (`kind "deliver" is reserved to the app: delivery tasks cannot be proposed, created or set by hand`; "the kind of a
-  delivery task cannot be changed"). `e2e` (bool, default `false`) richiede che il
+  `plan` non cambia tipo ("the kind of a plan task cannot be changed"). `e2e` (bool, default `false`) richiede che il
   repository del task abbia `e2e` configurato, controllato negli stessi quattro punti: "task
   '<id>': e2e requires an E2E command configured for repository '<repo>'". Valida tutto (id unici anche rispetto ai task esistenti e alle altre
   proposte, dipendenze verso la proposta stessa o task esistenti, niente cicli, `repo`
@@ -918,20 +855,13 @@ Sessione (workspace = quello del tab):
   specifica com'è scritta; **all'accettazione** il Bot si risolve e agente, modello, effort e skill vengono
   **copiati nel task** (snapshot, con l'id del Bot per la UI): modificare o eliminare il Bot dopo non cambia i
   task già in coda.
-- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status, goal? (id del goal, se il task ne ha
-  uno), kind? (se non `work`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
+- `list_tasks { status?: string[] }` → righe compatte `{ id, title, status,
+  kind? (`review` e `plan`), e2e? (solo `true`), verdict? (se il report ne ha uno), attention?,
   waiting_on?, blocked_by? (id dei `failed` da cui dipende un `queued`), fail_reason? (solo se `failed` e noto), agent_unavailable? (`{ agent, reason }`, vedi “Agente e modello di un task”), summary? (300),
   note? (200) }` + `counts` + `proposals_pending`.
 - `get_task_details { id }` → task completo (testo, report, worktree, `agent`, `model`) con la sua vista (`agent_unavailable` compreso).
-- `list_goals { open_only?: bool }` → `{ goals: [{ id, title, phase, round, waiting, tasks: { done, total } }] }`,
-  nell'ordine della board (aperti e chiusi ancora sulla board; con `open_only: true` solo gli aperti).
-  Errore: "open_only must be a boolean".
-- `get_goal { id }` → `{ goal: { id, title, request, done_when, decisions, round, created_at, closed_at?, outcome?,
-  review?, auto_deliver?, deliver_bot?, auto_fix, auto_rounds, report?, follow_ups, phase, waiting, progress: { done, total }, tasks: [{ id, title, status, kind, round }] } }`. Errore:
-  "unknown goal: <id>".
 - `update_task { id, title?, task?, depends_on?, repo?, bot?, agent?, model?, kind?, e2e? }` — solo `queued` o
-  `failed`; `repo` solo senza worktree; il goal non cambia mai ("the goal of a task cannot be changed") e i nuovi
-  `depends_on` rispettano le regole di appartenenza (vedi "Goal"). Ritorna il task senza testo. L'agente si ricontrolla
+  `failed`; `repo` solo senza worktree. Ritorna il task senza testo. L'agente si ricontrolla
   solo se il patch contiene `agent`, `model` o `bot` (`agent: null` = quello del workspace o il
   predefinito globale, risolto adesso). Se il task ha un Bot, `agent` e `model` si azzerano salvo che il patch li
   contenga e il Bot si risolve di nuovo (nuovo snapshot); `bot: null` torna al comportamento senza Bot e azzera
@@ -1070,7 +1000,7 @@ alla fine. L'ultimo esito sta solo in memoria (per repository, perso al riavvio)
 
 ### Il blocco della consegna
 
-Si applica solo a `complete_task` con `status: "completed"` di un task `work` o `deliver` con `e2e: true`.
+Si applica solo a `complete_task` con `status: "completed"` di un task `work` con `e2e: true`.
 Task non marcati e review: nessun blocco; `failed` è sempre accettato. L'impronta attuale si
 calcola fuori dal lock (`git rev-parse HEAD HEAD^{tree}` + `git status`). Il rifiuto lascia il
 task `running` con l'errore `complete_task rejected: <motivo> The task stays in progress.`, per:
@@ -1102,11 +1032,9 @@ tutti `done` (nessuna modifica allo scheduler).
 - **Chi la crea**: Task Intake, quando serve, includendola nella proposta (nessun automatismo
   nell'app). Deve avere almeno una dipendenza.
 - **Chi la esegue**: un **reviewer** (`whoami` → `role: "reviewer"`), con istruzioni proprie
-  (`reviewer_instructions.md`) e i tool descritti in "Tool MCP". Non modifica file tracciati, non
-  fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
-  integrato con `git fetch origin` e `origin/<base>`; per la review di un goal lo stato integrato è `goal/<id>`
-  (il worktree parte da lì: niente fetch né `origin/<base>`) e il diff dell'intero goal è `<base>...goal/<id>`
-  (vedi "Branch del goal"). Legge le specifiche con `get_task_details`,
+  (`reviewer_instructions.md`) e i tool descritti in "Tool MCP".
+  Non modifica file tracciati, non fa commit/push/merge/branch e lascia il checkout com'era; in modalità PR verifica lo stato
+  integrato con `git fetch origin` e `origin/<base>`. Legge le specifiche con `get_task_details`,
   i diff dei task rivisti, esegue build e test richiesti, se una specifica rivista ha scenari E2E esegue la suite E2E sullo stato integrato e controlla che ogni scenario abbia un test (scenario senza test o test che fallisce = difetto reale), controlla ogni "Done when" e
   l'obiettivo end to end (compresa l'integrazione tra i task). Segnala solo difetti reali:
   obiettivo mancato, bug, regressioni, test mancanti, sicurezza e le **violazioni chiare dello
@@ -1134,10 +1062,8 @@ tutti `done` (nessuna modifica allo scheduler).
   dei task) più una nuova `review` che dipende dalle correzioni e riafferma l'obiettivo, poi
   `complete_task` con `verdict: "issues"`. Non attende la decisione sulla proposta, che porta
   `source_task`.
-- **Ciclo automatico solo su richiesta, con un tetto**: di serie le correzioni le decide l'utente
-  accettando o scartando la proposta. Per un goal con `auto_fix.max_rounds > 0` (scelto dall'utente)
-  l'app accetta da sola le proposte di correzione ammissibili, fino al tetto dei giri; oltre, il goal
-  aspetta l'utente (vedi "Correzione automatica del goal").
+- **Nessun ciclo automatico**: le correzioni le decide l'utente accettando o scartando la
+  proposta.
 
 ## Task di pianificazione
 
@@ -1248,8 +1174,6 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
 - **Scheduler**: due task della stessa cartella senza git non girano mai insieme, nemmeno in modalità
   parallela (condividono la cartella).
 - **Review**: rivede i file direttamente nella cartella (vedi "Task di review").
-- **Goal**: un goal in una cartella senza git non ha branch (nessuna voce in `Goal.branches` per quella cartella):
-  i suoi task lavorano in modalità libera come qui descritto.
 - **E2E**: un task `e2e` in una cartella senza git è rifiutato alla creazione, proposta, accettazione e
   aggiornamento, e fallisce all'avvio, perché il blocco della consegna richiede un'impronta git del codice
   ("task '<id>': e2e needs a git repository: <cartella> is not one … Remove e2e or ask the user to run git
@@ -1268,345 +1192,7 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
   nuova validazione; se fallisce (es. un id nel frattempo occupato) la card mostra l'errore.
 - Scarta → la proposta sparisce. Nessun feedback all'Intake.
 - Una proposta fatta dal reviewer di una review registra `source_task` (id della review) e
-  `source_tab` (tab del reviewer); lo stesso per il pianificatore di un task `plan` (id del task
-  `plan`, al massimo una proposta per worker); le proposte dell'Intake non hanno `source_task`.
-- Comando Tauri `proposal_decide(workspace_id, proposal_id, accept: bool, auto_deliver?, auto_fix?) -> BoardView`
-  (le due scelte valgono solo per una proposta con goal nuovo, vedi "Comandi ed eventi Tauri").
-- Una proposta con `goal` nuovo crea il goal **solo all'accettazione**; scartarla non crea nulla. Vedi "Goal".
-- Una proposta di correzione di un goal con correzione automatica può essere accettata **dall'app**, con lo stesso
-  percorso e la stessa validazione del pulsante; se resta pendente pur avendo giri a disposizione, porta il motivo in
-  `auto_fix_hold` e la card lo mostra. Vedi "Correzione automatica del goal".
 
-## Goal
-
-Il goal (obiettivo) è l'oggetto tracciato sopra i task: nasce da una proposta accettata, raggruppa i suoi task, ha
-una fase calcolata e una chiusura. Il progetto completo, con le tappe successive (branch del goal, consegna,
-correzione automatica, follow-up), è in [GOALS.MD](GOALS.MD); qui il contratto consegnato (tappa T2). Il codice è
-in `board/goal.rs` e `board/goal/` (puro, senza orologio). Il branch del goal (tappa T4) è in "Branch del goal" più sotto,
-la consegna (tappa T5) in "Consegna del goal", la correzione automatica (tappa T7) in "Correzione automatica del goal", i
-follow-up (tappa T8) in "Follow-up del goal".
-
-```jsonc
-{
-  "id": "export-ordini",      // ^[a-z0-9][a-z0-9-]{0,39}$, unico fra i goal della board
-  "title": "...",             // 1..=80
-  "request": "...",           // la richiesta dell'utente con le sue parole, 1..=4000
-  "done_when": ["..."],       // criteri di riuscita dell'obiettivo: 1..=20, 1..=300 caratteri ciascuno
-  "decisions": [              // registro delle decisioni: max 50, le più vecchie cadono
-    { "at": 0, "source": "intake", "text": "..." }   // source: intake | user | app; text 1..=500
-  ],
-  "round": 1,                 // 1 = il lavoro iniziale; +1 a ogni proposta di correzione accettata
-  "created_at": 0,
-  "closed_at": 0,             // presente = chiuso (omesso se aperto); un goal chiuso non si riapre
-  "outcome": "delivered",     // solo se chiuso: delivered | abandoned
-  "review": "passed",         // solo se chiuso: passed | issues | none (verdetto della review del goal conclusa per ultima)
-  "branches": {               // repository -> branch del goal (vuoto finché nessun task è partito), vedi "Branch del goal"
-    ".": { "branch": "goal/export-ordini", "base": "main" }
-  },
-  "in_place": false,           // fissato alla nascita dal workspace: true = task sul posto, uno alla volta, senza branch (vedi "Branch del goal"); assente = false
-  "auto_deliver": false,      // consegna automatica quando il goal è pronto (default false; lo cambia solo l'utente)
-  "deliver_bot": "general",   // Bot che esegue la consegna; omesso = "general"; lo cambia solo l'utente
-  "auto_fix": { "max_rounds": 0 },  // giri di correzione accettati dall'app: 0..=3, 0 = di serie (lo cambia solo l'utente)
-  "auto_rounds": [],          // i giri le cui correzioni ha accettato l'app (vedi "Correzione automatica del goal")
-  "report": {                 // solo se chiuso "delivered" da un task di consegna (vedi "Consegna del goal")
-    "summary": "...", "commits": ["abc1234"], "pr_urls": ["https://..."]
-  },
-  "follow_ups": [             // solo se chiuso: suggerimenti raccolti alla chiusura (vedi "Follow-up del goal")
-    { "text": "...", "source_task": "export-csv", "state": "open" }   // state: open | dismissed | promoted
-  ]
-}
-```
-
-`auto_deliver`, `deliver_bot` e `report` sono della consegna (T5), `auto_fix` e `auto_rounds` della
-correzione automatica (T7), `follow_ups` dei follow-up (T8): nessun tool MCP, proposta di task o di impostazioni li scrive, il `report` al
-caricamento si toglie da un goal che non è `delivered` (e si riporta nei limiti), `max_rounds` si riporta a 0..=3 e
-`auto_rounds` ai giri possibili (2..=4, senza doppioni, in ordine). Limiti: `MAX_OPEN_GOALS` = 50 goal aperti per board ("too many open goals on the board (max 50): add the
-tasks to an open goal with goal_id").
-
-**Nascita** (`propose_tasks`, poi l'accettazione dell'utente):
-
-| Origine | Goal dei task |
-|---|---|
-| proposta dell'Intake con `goal` | goal creato all'accettazione; i task ricevono `goal` e `round: 1`; le `decisions` entrano nel registro come voci `intake` con l'ora dell'accettazione |
-| proposta dell'Intake con `goal_id` | i task entrano nel goal aperto con il suo `round` corrente |
-| proposta del reviewer di una review con goal | **ereditato dall'app** (`goal_id` = goal della review, il reviewer non indica nulla); all'accettazione il goal passa al giro successivo e i task entrano con il nuovo `round` |
-| proposta del reviewer di una review sciolta, del planner | nessuno (un worker non può indicare `goal`/`goal_id`) |
-| task creato a mano (`task_create` con `goal`) | il goal aperto indicato, al giro corrente |
-| proposta senza `goal` né `goal_id` | nessuno: task sciolti, come prima dei goal |
-| task `plan` | mai ("a plan task cannot belong to a goal") |
-
-Una proposta di correzione è quella con `source_task` e `goal_id` (`Proposal::is_correction`). Errori (inglese, a
-proposta e di nuovo all'accettazione, che lascia la proposta pendente): "pass goal (a new goal) or goal_id (an open
-goal), not both", "unknown goal: <id>", "goal <id> is closed: propose a new goal", "goal id already in use: <id>"
-(un goal della board o il goal nuovo di un'altra proposta pendente), i limiti dei campi (`goal.title is too long
-(max 80 characters)`, `goal.done_when is empty: …`, …).
-
-**Appartenenza.** Un task sta al più in un goal e tutti i task di una proposta nello stesso goal. Un task di un goal
-dipende solo da task dello stesso goal ("task '<id>': depends on '<x>', which belongs to another goal", "… which is
-not part of goal '<g>'"); un task sciolto non dipende da task di un goal aperto ("… which belongs to the open goal
-'<g>'"). Le regole valgono a proposta, accettazione, creazione manuale e `update_task`. Il goal di un task non
-cambia mai.
-
-**Fase e attesa** (`GoalView`, derivate da `board/goal/phase.rs`, mai su disco né impostabili):
-
-| `phase` | Quando |
-|---|---|
-| `executing` | almeno un task `work` del goal non è `done` |
-| `verifying` | i `work` sono `done` e una review del goal non lo è (in coda, in corso o fallita) |
-| `deciding` | nessun task aperto, una proposta del goal è pendente |
-| `ready` | nessun task aperto né proposta pendente, e il goal non ha (ancora) un task di consegna |
-| `delivering` | il task di consegna del goal non è `done` (`queued`, `running` o `failed`) |
-| `closed` | `closed_at` presente |
-
-L'ordine dei controlli è: chiuso, `delivering`, `executing`, `verifying`, `deciding`, `ready`.
-
-`waiting` (vuoto = il goal procede da solo), nell'ordine: `proposal` (una proposta del goal è pendente e non sarà
-accettata in automatico), `round_limit` (una proposta di correzione è pendente e i giri automatici sono finiti: solo
-con `auto_fix.max_rounds > 0`; con 0 la correzione è una `proposal` come prima), `deliver`
-(il goal è `ready`, ha branch, non ha un task di consegna e la consegna non parte da sola: l'utente preme "Consegna"),
-`failed` (un task del goal è `failed`, anche quello di consegna), `attention` (un task del goal ha il worker in
-attesa dell'utente). Un goal chiuso non aspetta nulla.
-
-`GoalView.last_review` (`passed` | `issues` | `none`) è il verdetto dell'ultima review `done` del goal, calcolato anche
-a goal aperto: l'interfaccia ne ricava "Consegna" o "Consegna comunque" (con `issues`).
-
-**Chiusura** (l'unico stato del goal scritto su disco):
-
-- **da sola**, a ogni pubblicazione della board (`Board::advance_goals` in `board/goal/advance.rs`, prima della vista
-  e dell'archivio), per ogni goal aperto il primo caso che vale:
-  1. il task di consegna è `done`: chiuso `delivered` con il `report` (vedi "Consegna del goal") e notifica;
-  2. nessun task e nessuna proposta pendente (tutti eliminati): chiuso `abandoned`;
-  3. `ready` e senza `branches` (cartella senza git, o task mai partiti in git): chiuso `delivered` **senza report**
-     né notifica: non c'è nulla da consegnare;
-  4. `ready`, `auto_deliver` acceso e ultima review non `issues`: non chiude, chiede la consegna automatica;
-
-  Prima dei goal, lo stesso passo aggiorna `auto_fix_hold` di ogni proposta pendente e chiede l'accettazione automatica
-  delle correzioni che la meritano (vedi "Correzione automatica del goal").
-  Con la regola provvisoria della T2 un goal si chiudeva appena finiti i task (`Board::close_finished_goals`): non
-  esiste più, la chiusura `delivered` avviene solo con la consegna;
-- **"Chiudi goal"** (comando `goal_close`): elimina i task `queued` e `failed` del goal, con i task non `done` che ne
-  dipendono, scarta le sue proposte pendenti e lo chiude `abandoned`. Tutto o niente: se uno dei task da togliere è
-  `running` risponde "cannot close goal '<id>': <ids> are running, stop them first" senza toccare la board. I
-  worktree dei task tolti vengono ripuliti. I task `done` restano.
-
-"Chiudi goal" elimina anche il task di consegna se è `queued` o `failed` (se è `running` si ferma prima). La chiusura
-non tocca i branch del goal. In ogni caso `review` è il verdetto della review del goal conclusa per ultima (`none` se
-nessuna). Un goal chiuso rifiuta nuovi task e note; un goal `delivering` rifiuta nuovi task (proposte con `goal_id`,
-task manuali, review: "goal <id> is being delivered: new tasks cannot join it").
-
-**Note dell'utente** (comando `goal_add_note`): una voce `user` nel registro delle decisioni di un goal aperto
-(1..=500 caratteri; oltre 50 voci cadono le più vecchie).
-
-**Vista.** `BoardView.goals: GoalView[]` (i campi del goal più `phase`, `waiting`, `last_review` e `tasks: { done, total }`), nell'ordine
-della board; ogni `TaskView` porta il suo `goal` e `round`; le proposte portano `goal`/`goal_id` e, se trattenute,
-`auto_fix_hold`.
-
-### Correzione automatica del goal
-
-Tappa T7 di [GOALS.MD](GOALS.MD) ("Giri e correzione automatica"). La decisione è pura (`board/goal/auto_fix.rs`,
-`auto_fix_decision`); l'effetto lo esegue l'automazione (`automation/boards/auto_fix.rs`).
-
-**Impostazione.** `auto_fix.max_rounds` (0..=3, di serie 0) lo sceglie solo l'utente: sulla card della proposta che crea
-il goal ("Correzioni automatiche: no / 1 / 2 / 3 giri", `proposal_decide` con `auto_fix`) e nel dettaglio del goal
-(`goal_set_auto_fix`). Nessun tool MCP lo scrive: non è un campo di `propose_tasks` (il goal di `propose_tasks` rifiuta
-`auto_fix`: "goal: unknown field 'auto_fix' …"), di `propose_settings` né di `update_task`; lo fissa un test che chiama
-ogni metodo con ogni ruolo (`no_role_can_change_the_automatic_correction_of_a_goal`). Errori (inglese): "auto_fix
-max_rounds must be between 0 and 3", "auto_fix applies only to a proposal that creates a new goal" (una scelta attiva
-su una proposta senza goal nuovo; "no" non cambia nulla).
-
-**Decisione** su ogni proposta pendente (`AutoFixDecision`), nell'ordine:
-
-| Caso | Decisione |
-|---|---|
-| non è una correzione (`is_correction`), il goal è chiuso o ha `max_rounds: 0` | `Manual`: la decide l'utente, come prima |
-| `round - 1 >= max_rounds` | `RoundLimit`: resta pendente, `waiting` riporta `round_limit` |
-| non ammissibile | `Hold(motivo)`: resta pendente, `auto_fix_hold` = il motivo, `waiting` riporta `proposal` |
-| altrimenti | `Accept`: l'app la accetta |
-
-Ammissibile = tutti i criteri di GOALS.MD §8, ognuno con il suo motivo (`AutoFixHold`, `reason`):
-
-| `reason` | Criterio violato |
-|---|---|
-| `not_from_review` | `source_task` è una review di quel goal (non lo è più se la review è stata tolta) |
-| `kind` (`task`, `kind`) | solo task `work` e `review` |
-| `repo` (`task`, `repo`) | solo repository già usati da un task del goal (chiave `repo_key`, `.` = la root) |
-| `bot` (`task`, `bot`) | nessun Bot spento di serie (`enabled_by_default: false`: `git-operator`, `release`), anche se acceso dall'utente (`bots::presets::off_by_default`) |
-| `invalid` (`error`) | l'ultima accettazione automatica tentata è fallita la validazione |
-
-**Effetto.** A ogni publish `advance_goals` aggiorna `auto_fix_hold` e ritorna in `GoalAdvance.auto_fix` le proposte da
-accettare; l'automazione mette in coda `Effect::AutoFix` (una sola richiesta in volo per proposta, `auto_fixing`) che,
-fuori dal lock, chiama `proposal_decide_with` con `Acceptance::AUTOMATIC`: **lo stesso percorso del pulsante**
-(repository e E2E verificati con git, poi `accept_proposal_with` con la stessa validazione). Dentro il lock la board
-ricontrolla che la decisione sia ancora `Accept` ("proposal <id> is not accepted automatically" altrimenti). Riuscita:
-i task entrano con `round + 1`, il giro va in `auto_rounds` e il registro riceve una voce `app` ("Round 2 accepted
-automatically: 3 tasks", "… 1 task"). Fallita: la proposta resta pendente con `auto_fix_hold: { reason: "invalid",
-error }` e l'app non ci riprova (l'utente la accetta o la scarta; azzerare e rialzare i giri la fa ritentare una volta).
-Alzare `max_rounds` con una correzione ferma al tetto la fa partire al publish successivo.
-
-**Tetto.** Nessun ciclo senza fine è possibile: ogni accettazione automatica fa avanzare `round`, e con
-`round - 1 >= max_rounds` la decisione è `RoundLimit`. Con `max_rounds: N` le correzioni dei giri 2..=N+1 entrano da
-sole e la successiva aspetta l'utente (test `a_review_that_always_finds_issues_stops_at_the_last_automatic_round`).
-Con `auto_fix` e `auto_deliver` un goal va dalla proposta accettata alla base senza interventi, entro il tetto.
-
-**HUB.** `decide_hub_proposal` resta manuale e passa da `proposal_decide`: su una proposta già accettata in automatico
-risponde "proposal not found: <id>"; una proposta decisa (dall'utente o dall'HUB) mentre l'accettazione automatica è in
-coda non viene toccata: l'effetto trova la proposta sparita, registra l'errore nel log e non scrive nulla.
-
-### Follow-up del goal
-
-I `follow_ups` che i worker scrivono nei report e i suggerimenti delle review non si perdono: alla chiusura del goal
-(`Board::close`, in `board/goal/closure.rs`, quindi sia `delivered` sia `abandoned`, da sola o con "Chiudi goal") la
-board li copia in `Goal.follow_ups`, perché dopo la chiusura i task possono essere archiviati; i follow-up si
-archiviano con il goal. Il codice è in `board/goal/follow_up.rs` (puro).
-
-- **Raccolta**: per ogni task del goal, in ordine di coda, i `follow_ups` del suo report e, per una review con verdetto
-  `passed`, i suoi `findings` (i suggerimenti; quelli di una review con `issues` sono problemi, non follow-up). Ogni
-  voce è `{ text, source_task, state }` con `state` `open` | `dismissed` | `promoted`, tutte `open` alla raccolta.
-- **Senza doppioni**: il confronto è sul testo normalizzato (spazi ridotti a uno, senza differenze di maiuscole);
-  resta la prima voce, con il suo `source_task`. I testi vuoti si scartano.
-- **Tetto**: al massimo `MAX_FOLLOW_UPS` = 100 voci per goal (ognuna 1..=2000 caratteri, come nel report); le eccedenti si
-  scartano e lasciano una riga `warn` nel log ("N follow-ups over the limit of 100 were discarded").
-- **Al caricamento** un goal aperto non ha follow-up e uno chiuso li ha senza voci vuote, nei limiti.
-- **Stato**: lo cambia solo l'utente, dall'interfaccia (`goal_set_follow_up`), mai un tool MCP e mai l'app da sola;
-  nessuna voce diventa un task da sola. Da `open` si passa a `dismissed` o `promoted`; una voce già decisa non cambia
-  più ("follow-up <n> is already <stato>"); gli altri errori sono "a follow-up can only be dismissed or promoted",
-  "unknown follow-up: <n>" e "unknown goal: <id>". La voce si indica con la sua posizione in `Goal.follow_ups`.
-- **`get_goal`** li restituisce in sola lettura (`follow_ups`, vuoto su un goal aperto), così l'Intake può leggerli.
-
-### Branch del goal
-
-Ogni goal ha, per ogni repository git in cui lavora, un branch `goal/<goal-id>` (`goal_branch_name`,
-`board/goal/branches.rs`), registrato in `Goal.branches`: mappa chiave del repository → `{ branch, base }`. La
-chiave è `"."` per la root del workspace (`repo_key`), altrimenti la cartella relativa alla root; `base` è il nome
-semplice (senza `origin/`) risolto alla creazione con la regola di "Branch base", poi fisso. Al caricamento si
-scartano le voci con un nome diverso da `goal/<id>`, una base non valida o una chiave non canonica (il file non è
-fidato).
-
-- **Creazione** (`automation/worktrees/start/goal.rs`): la fa l'app all'avvio del primo task del goal in quel
-  repository, fuori dal lock della board, con `git branch --no-track goal/<id> <partenza>`: in `pr` da
-  `origin/<base>` dopo il fetch, altrimenti dal `<base>` locale. Un branch già esistente ma senza voce nel goal si
-  riusa; se la voce c'è e il branch è sparito l'avvio fallisce ("the goal branch goal/<id> no longer exists in
-  <dir>: the app does not recreate it silently. …"), mai ricreato in silenzio.
-- **Task del goal**: in una cartella git girano, per un goal con i worktree, in un worktree `<repoDir>/.worktrees/<task-id>`, branch
-  `task/<task-id>` creato da `goal/<goal-id>`, in ogni modalità di consegna (anche `push`/`commit`), con gli hook
-  `copy_ignored` e `setup` come negli altri worktree. Niente verifica "checkout sulla base" di `local_merge`; la
-  copia di lavoro dell'utente non si tocca e il branch del goal non si mette mai in checkout. Il retry riusa
-  worktree e branch. In una cartella senza git lavorano in modalità libera, senza branch.
-- **Goal `in_place`**: la configurazione di consegna del workspace decide **alla nascita del goal** (accettazione della
-  proposta che lo crea, `proposal_decide`): senza worktree paralleli (`!Delivery::worktrees()`: `parallel` spento, o
-  modalità senza branch) `Goal.in_place` è `true`, e non cambia più, quindi un cambio di configurazione non tocca i goal
-  già avviati. I task di un goal `in_place` si comportano come quelli sciolti del workspace: sul posto nel checkout (vedi
-  "Modalità in place"), **uno alla volta per repository** (occupano il repository nello scheduler) e ciascuno consegna con
-  i passi in place della modalità. Nessun `goal/<id>`: `Goal.branches` resta vuoto come per una cartella senza git, la
-  review e le istruzioni usano il testo dei task sciolti (base del repository, nessun `goal_branch`), e un goal `ready` si
-  chiude `delivered` da solo (nulla da consegnare: nessun task di consegna, nessun pulsante "Consegna"). Con i worktree
-  paralleli il goal nasce con `in_place: false` e va come descritto sopra. Il campo manca nei file scritti prima di
-  questa versione (default `false`: quei goal restano coi loro branch) e una versione precedente lo ignora.
-- **Integrazione**: vedi "Istruzioni di consegna" (rebase su `goal/<id>` e `git fetch . task/<id>:goal/<id>`).
-- **Review del goal**: il worktree parte da `goal/<id>`; per il reviewer lo stato integrato è `goal/<id>` e il diff
-  dell'intero goal è `<base>...goal/<id>`, al posto di `origin/<base>`. Le review sciolte non cambiano.
-- **Pulizia a `done`**: comandi `cleanup`, worktree rimosso e `task/<id>` cancellato (`-D`) **solo dopo**
-  `git merge-base --is-ancestor task/<id> goal/<id>`; altrimenti il branch resta con l'avviso "branch task/<id> kept:
-  not contained in goal/<id>" nella `note`. Un task `failed` conserva worktree e branch.
-- **Riallineamento**: riconosce solo i worktree `task/<id>`: un branch `goal/*` non è mai orfano né si cancella da lì.
-- **Elimina branch** (comando `goal_delete_branches`, `automation/boards/goal_branches.rs`): solo per un goal
-  **abbandonato** (i branch di un goal consegnato li cancella già la consegna; un goal aperto o consegnato è rifiutato: "goal <id> is open: close it first", "goal <id> was
-  delivered: its branches are kept"). Il nome si ricostruisce dall'id e in ogni repository si fa `git branch -D`; un
-  branch già assente vale come cancellato. Le voci cancellate escono da `Goal.branches` anche se un altro repository
-  fallisce; i fallimenti tornano in un errore solo ("branch goal/<id> not deleted everywhere: <repo>: <errore>").
-- **Consegna**: il lavoro del goal arriva sulla base solo con il task di consegna (vedi "Consegna del goal"), che a goal
-  consegnato cancella anche i branch `goal/<id>` locali.
-- **Task sciolti**: invariati in tutto (checkout o worktree, base e consegna secondo la modalità).
-
-### Consegna del goal
-
-Quando il goal è `ready` e ha branch, la consegna è un task `kind: "deliver"`, **uno per goal**, creato solo dall'app
-(`Board::create_deliver_task`, `board/goal/delivery/task.rs`): `propose_tasks`, `task_create` e `update_task` lo rifiutano
-(`kind "deliver" is reserved to the app: delivery tasks cannot be proposed, created or set by hand`) e un task `deliver`
-non cambia tipo. Lo esegue un Bot con `work` fra i `kinds` (`general` di serie, cambiabile nel dettaglio del goal con
-`goal_set_delivery`): nessun Bot dedicato e nessuna skill, le istruzioni sono quelle del `kind`. Il codice puro sta in
-`board/deliver.rs` (regole del `kind` e del report), `board/goal/advance.rs`, `board/goal/delivery.rs` e
-`board/texts/deliver.rs`; l'automazione in `automation/deliver.rs` (`get_task` e RPC), `automation/boards/delivery.rs`
-(creazione, notifica, consegna automatica), `automation/worktrees/start/deliver.rs` (avvio) e
-`automation/worktrees/delivery_cleanup.rs` (pulizia).
-
-**Quando parte.**
-
-| Situazione | Cosa succede |
-|---|---|
-| `auto_deliver` acceso e l'ultima review è `passed` (o il goal non ha review) | al publish, `advance_goals` chiede la consegna automatica: l'effetto `Effect::AutoDeliver` (fuori dal lock, perché servono i Bot dell'host) crea il task con la stessa funzione del pulsante; una sola richiesta in volo per goal |
-| `auto_deliver` spento (di serie) | `waiting: deliver`: l'utente preme **Consegna** (`goal_deliver`) |
-| l'ultima review è `issues` | mai da sola: il pulsante è **Consegna comunque** |
-
-Se la creazione automatica fallisce (Bot spento, sconosciuto o senza `work`) l'app lo scrive nel log e il goal resta
-`ready`: il pulsante nel dettaglio, che compare anche con il goal `ready` senza `deliver` in `waiting`, mostra l'errore.
-Gli errori di `create_deliver_task` (inglese): goal sconosciuto o chiuso, "goal <id> is not ready to deliver: it is
-<fase>", "goal <id> already has a delivery task: retry it", "goal <id> has no branches: there is nothing to deliver".
-
-**Il task.** Id `deliver-<goal-id>` (con suffisso numerico se occupato), titolo "Consegna: <titolo del goal>" (tagliato
-a 80), `task` fisso in inglese, nessuna dipendenza, `goal` e `round` del goal, Bot del goal (`deliver_bot`, risolto come
-per ogni task: spento, sconosciuto o senza `work` è un errore). Entra in coda **in cima**. Il repository principale
-(`repo`) è quello di un task `work` del goal marcato `e2e` se esiste, altrimenti la root (chiave `"."`) se ha un branch,
-altrimenti il primo dei branch del goal; `e2e` è acceso se un task `work` del goal marcato `e2e` sta in quel repository
-(il blocco E2E vale anche per i `deliver`: vedi "Test E2E").
-
-**Avvio** (`automation/worktrees/start/deliver.rs`, fuori dal lock). Per ogni repository in `goal.branches`:
-
-- il ref `goal/<id>` deve esistere, altrimenti l'avvio fallisce ("the goal branch goal/<id> no longer exists in <dir>: …",
-  mai ricreato in silenzio);
-- in `pr` il fetch della base (`origin/<base>`, con la cache degli altri avvii);
-- i **commit oltre la base** si contano con `git rev-list --count <base>..goal/<id>`: solo i repository con commit sono da
-  consegnare. Se nessuno ne ha il task si chiude `done` **senza lanciare un worker**, con un report dell'app ("Nothing to
-  deliver: the goal branches have no commits beyond their base."), e il goal si chiude `delivered` con quel riepilogo
-  (`Registry::finish_without_worker`, che rispetta l'avvio in corso);
-- ogni repository da consegnare ha un **worktree** `<repoDir>/.worktrees/<task-id>` sul branch del goal
-  (`git worktree add <path> goal/<id>`: nessun branch `task/<id>`), uno per repository (multi-repo); il retry li riusa.
-  Quello del repository del task (se ha commit, altrimenti il primo) è `task.worktree` e la cartella di lavoro del
-  worker; i **hook di setup** del repository (`setup`, `copy_ignored`) girano **solo in quel worktree principale**. Gli
-  altri worktree sono nominati nell'`environment` di `get_task`.
-
-**Cosa fa il worker** (istruzioni in `board/prompts/deliver_instructions.md`, passi in `board/texts/deliver.rs`; inglese).
-Per ogni repository da consegnare, nell'ordine:
-
-1. **riallinea** `goal/<id>` sulla base aggiornata (`pr` e `push`: `git fetch origin` poi `git rebase origin/<base>`;
-   `local_merge` e `commit`: `git rebase <base>`), risolve i conflitti; se non riesce `git rebase --abort` e
-   `complete_task` `failed` con i file in conflitto;
-2. **verifica** l'obiettivo: rilegge le specifiche dei task del goal (`goal_tasks`, `get_task_details`) e rilancia i
-   comandi della loro sezione "Verify", poi controlla i `done_when` del goal; con `e2e` segue il passo E2E e il blocco
-   come ogni task marcato;
-3. passo finale della **modalità di consegna** del workspace, applicata qui e una volta sola:
-
-   | Modalità | Passo finale |
-   |---|---|
-   | `pr` | per ogni repository: `git push --force-with-lease -u origin goal/<id>`, `gh pr create --base <base> --head goal/<id> --title "<titolo>" --body-file <file>` (una PR per repository; una PR già esistente si riusa), `gh pr merge <url> --<merge_method>` (con `--auto` e attesa di `MERGED` se servono check), `git push origin --delete goal/<id>` |
-   | `local_merge`, `commit` | fast-forward del `<base>` locale: con la base in checkout nella copia dell'utente (`git rev-parse --abbrev-ref HEAD`) `git -C "<repoDir>" merge --ff-only goal/<id>`, altrimenti `git fetch . goal/<id>:<base>` dal worktree; se il checkout lo impedisce `failed` con il motivo |
-   | `push` | lo stesso fast-forward, poi `git push origin <base>` |
-
-   Mai `git push --force` su una base (`--force-with-lease` solo su `goal/<id>`, dopo il rebase), mai cancellare i branch
-   `goal/<id>` locali (lo fa l'app), niente checkout di altri branch nei worktree;
-4. chiude con `complete_task` `completed`: `summary` (cosa è stato consegnato), `commits` (l'hash finale per repository)
-   e, in `pr`, `pr_urls`.
-
-Il **titolo della PR** si sanifica con `pr_title_safe`: restano lettere e cifre (anche unicode), spazi e `-_.,:/()#+`, il
-resto diventa spazio, spazi compressi, al massimo 80 caratteri ("Goal delivery" se non resta nulla); il **corpo**
-(riepilogo dei task) il worker lo scrive con il suo strumento di modifica file in un file fuori da ogni repository e lo
-passa con `--body-file`, poi lo cancella: testo preso dal goal o dai report non finisce mai in una riga di comando.
-
-**Esito.**
-
-- **`completed`**: il task diventa `done` e, al publish, `advance_goals` chiude il goal `delivered` con il `report`:
-  `summary` del task, `commits` = `commit` ∪ `commits` e `pr_urls` = `pr_url` ∪ `pr_urls` senza doppioni (max 20, nei
-  limiti del contenuto non fidato). Notifica (`task-notify` `delivered`, `Notice`): "Goal consegnato: <titolo>".
-- **`failed`** (conflitti, verifica fallita, merge o push rifiutato): il task resta `failed`, il goal `delivering` con
-  `failed` in `waiting`. "Riprova" lo rilancia sugli stessi worktree e branch: il lavoro fatto resta su `goal/<id>`.
-- **Pulizia**: il worktree di un `deliver` non passa dalla pulizia generica, che cancellerebbe il branch del goal
-  (`CleanupTarget::for_task` lo esclude e `cleanup_worktree` non cancella mai un branch `goal/*`). Un effetto suo,
-  `Effect::DeliveryCleanup` (fuori dal lock), rimuove `<repoDir>/.worktrees/<task-id>` in ogni repository del goal (con
-  `--force` se la configurazione del repository lo chiede) e, **a goal consegnato**, cancella il branch locale
-  `goal/<id>` di ogni repository; i branch cancellati si **dimenticano** in `Goal.branches`. Quando: dopo la chiusura del
-  tab del worker (come `cleanup_on_close`), subito se non c'è stato un worker; se il worktree non si riesce a togliere il
-  suo branch resta, e gli avvisi vanno nella `note` senza bloccare. Se il task di consegna viene eliminato
-  (`delete`, `delete_cascade`, "Chiudi goal") si tolgono solo i worktree e i branch restano.
 
 ### Proposte di impostazioni
 
@@ -1666,8 +1252,8 @@ nomina mai un agente o un modello: li legge da `get_workspace_settings.agents`.
   (deve coincidere con quello del Bot). La specifica deve
   bastare a un worker che non vede la conversazione. Quando la richiesta produce 2 o più task
   (o un solo task rischioso o la correzione di un bug difficile) aggiunge in fondo alla proposta
-  una **review** del goal (`kind: "review"`, un Bot i cui `kinds` includono `review` con modello della fascia `strong`, se l'utente vuole un controllo
-  indipendente anche su un altro agente (un Bot che lo usa), `depends_on` su tutti i task del goal); l'utente può scartarla.
+  una **review** finale (`kind: "review"`, un Bot i cui `kinds` includono `review` con modello della fascia `strong`, se l'utente vuole un controllo
+  indipendente anche su un altro agente (un Bot che lo usa), `depends_on` su tutti i task della proposta); l'utente può scartarla.
 - Il pannello dei terminali mostra il badge **INTAKE** sull'intestazione dei tab avviati da un
   Bot con la skill `task-intake`.
 - Task Intake sa dei tool di impostazioni: se la richiesta riguarda la configurazione del
@@ -1823,21 +1409,7 @@ scegliere il Bot; i testi sono **esclusivi**, così ogni richiesta ha un solo Bo
 Argomenti camelCase lato JS.
 - `board_get(workspace_id) -> BoardView`
 - `board_set(workspace_id, max_parallel?, paused?) -> BoardView`
-- `task_create(workspace_id, spec: { title, task, depends_on?, repo?, agent?, model?, kind?, goal? }) -> BoardView`
-  (id generato dal titolo: slug ASCII, max 40, suffisso `-2`, `-3`… se occupato; vuoto →
-  `task-<n>`). Manuale, senza proposta. `kind: "plan"` non è ammesso (vedi "Task di pianificazione"). `goal`
-  (facoltativo, `NewTaskSpec.goal`) è un goal aperto: il task vi entra al giro corrente (vedi "Goal").
-- `goal_close(workspace_id, goal_id) -> BoardView`: "Chiudi goal" (vedi "Goal").
-- `goal_add_note(workspace_id, goal_id, text) -> BoardView`: nota dell'utente nel registro delle decisioni.
-- `goal_set_follow_up(workspace_id, goal_id, index, state) -> BoardView`: scarta (`dismissed`) o manda all'Intake
-  (`promoted`) il follow-up `index` di un goal chiuso (vedi "Follow-up del goal").
-- `goal_delete_branches(workspace_id, goal_id) -> BoardView`: "Elimina branch" di un goal abbandonato (vedi "Branch del goal").
-- `goal_deliver(workspace_id, goal_id) -> BoardView`: "Consegna" / "Consegna comunque": crea il task di consegna del
-  goal `ready`, anche se l'ultima review ha trovato problemi (vedi "Consegna del goal").
-- `goal_set_delivery(workspace_id, goal_id, auto_deliver?, bot?) -> BoardView`: consegna automatica e/o Bot di consegna di
-  un goal aperto (almeno uno dei due; il Bot deve esistere, essere acceso e avere `work` fra i `kinds`).
-- `goal_set_auto_fix(workspace_id, goal_id, max_rounds) -> BoardView`: giri di correzione automatica (0..=3) di un
-  goal aperto (vedi "Correzione automatica del goal").
+  `task-<n>`). Manuale, senza proposta. `kind: "plan"` non è ammesso (vedi "Task di pianificazione").
 - `task_update(workspace_id, task_id, patch) -> BoardView` (stesse regole di `update_task`).
 - `task_action(workspace_id, task_id, action) -> BoardView`, `action` è un `TaskAction` (vedi "Azioni consentite"; una stringa sconosciuta è rifiutata in deserializzazione) ∈ `retry` (failed →
   queued in fondo) | `mark_done` (failed → done a mano: tiene report e worktree, sblocca i
@@ -1860,10 +1432,7 @@ Argomenti camelCase lato JS.
   Il percorso lo ricava il backend (worktree del task o cartella del repository + `junit`, per i
   workspace WSL convertito in un percorso UNC `wsl.localhost` della distro), mai il frontend. Errori (italiano): nessuna
   esecuzione, report non piu' presente (cartella ripulita).
-- `proposal_decide(workspace_id, proposal_id, accept, auto_deliver?, auto_fix?) -> BoardView`: `auto_deliver` è la
-  consegna automatica e `auto_fix` i giri di correzione automatica (0..=3) del goal nuovo che la proposta accettata
-  crea; una scelta attiva con una proposta senza goal nuovo è un errore ("auto_deliver applies only to a proposal that
-  creates a new goal", "auto_fix applies only to a proposal that creates a new goal"). L'accettazione automatica
+- `proposal_decide(workspace_id, proposal_id, accept) -> BoardView`. L'accettazione automatica
   dell'app usa la stessa funzione (`proposal_decide_with`), mai questo comando.
 - `settings_proposal_decide(workspace_id, proposal_id, accept) -> { board, workspace? }`
   (vedi "Proposte di impostazioni").
@@ -1883,7 +1452,7 @@ Argomenti camelCase lato JS.
   un repository è partita o conclusa; `repo` = chiave del repository, `.` = la root; le
   esecuzioni dei task passano da `board-update`), `task-notify` (notifica di sistema, vedi sotto). L'evento `user-request` non
   esiste più.
-- `task-notify`: `{ workspace_id, task_id, tab_id: string|null, kind: "attention"|"failed"|"question"|"delivered", title,
+- `task-notify`: `{ workspace_id, task_id, tab_id: string|null, kind: "attention"|"failed"|"question", title,
   body }`; `title` è il titolo del task, `body` il testo italiano ("<titolo> richiede attenzione" /
   "<titolo> è fallito") e `tab_id` il tab del worker se esiste ancora. Il frontend mostra la
   notifica di sistema (come per le altre notifiche, solo con la finestra non in primo piano).
@@ -1897,8 +1466,7 @@ Argomenti camelCase lato JS.
   nel terminale di un worker in `needs_input`/`idle` si preme Invio e il worker torna `running`; in
   `awaiting_answer` Invio riprende il worker e chiude la domanda senza testo.
 - `task-notify.kind` è `attention`, `failed` o `question` ("<titolo> ha una domanda", quando il worker
-  comincia ad aspettare la risposta) o `delivered` ("Goal consegnato: <titolo>": `task_id` è il task di consegna, `title`
-  il titolo del goal, `tab_id` sempre `null`).
+  comincia ad aspettare la risposta).
 
 ## UI
 
@@ -1917,29 +1485,17 @@ Testi in italiano.
 - Intestazione: "Task", pausa/riprendi la coda, "Apri Tasks Manager" (Ctrl+Maiusc+B), comprimi.
   Con la coda in pausa: banner "Coda in pausa…"; con la fascia chiusa: "Fuori fascia oraria".
 - Sezioni: **Serve a te** (solo se non vuota; sostituisce "Proposte" e "Falliti"), nell'ordine:
-  proposte di task (con il goal a cui appartengono e, per le correzioni, "correzione · giro N"; una correzione ferma al
-  tetto dice "Giri automatici finiti (N/N): decidi tu", una trattenuta "Non accettata in automatico: <motivo>",
-  `proposalAutoFixNote` in `src/lib/autoFix.ts`; la card di un goal nuovo offre "Correzioni automatiche: no / 1 / 2 /
-  3 giri" e "Consegna automatica") e
-  di impostazioni (card "Proposta di impostazioni", vedi "Proposte di impostazioni"), task che
-  aspettano l'utente (domanda del worker, poi attenzione; clic → tab del worker), task falliti (motivo,
-  "Blocca: …" coi task in coda che bloccano, Riprova) e, per ultimi, i **follow-up aperti** dei goal chiusi negli ultimi
-  14 giorni (`openFollowUpGroups`, `src/lib/followUps.ts`): una card per goal, comprimibile, con per ogni voce "Manda
-  all'Intake" e "Scarta"; scartata o mandata l'ultima voce aperta il goal esce dal pannello. Le azioni sono quelle di
+  proposte di task e di impostazioni (card "Proposta di impostazioni", vedi "Proposte di impostazioni"), task che
+  aspettano l'utente (domanda del worker, poi attenzione; clic → tab del worker) e task falliti (motivo,
+  "Blocca: …" coi task in coda che bloccano, Riprova). Le azioni sono quelle di
   prima (Accetta/Scarta, Applica/Scarta, Riprova). La voce è calcolata da `needsYou` (`src/lib/needsYou.ts`).
-  "Manda all'Intake" prepara la richiesta (`followUpRequest`: il testo della voce con titolo e id del goal d'origine, in
-  inglese) e la **copia negli appunti**, perché il tab del Bot Intake non accetta un testo iniziale; apre il tab Task
-  Intake e un avviso dice di incollarla. La voce passa a `promoted` solo se appunti e Intake hanno funzionato (senza un
-  Bot con la skill `task-intake` resta `open`).
-  Poi **Goal in corso** (solo se ci sono goal aperti: titolo, fase, giro dal secondo, avanzamento
-  "3/5", un segno "Serve a te" se il goal aspetta l'utente; clic → dettaglio del goal nel Tasks Manager;
-  ordine: prima chi aspetta, poi dal più vecchio). Poi **In corso N/M** (card: titolo, modello · tempo
+  Poi **In corso N/M** (card: titolo, modello · tempo
   trascorso oppure "Richiede attenzione"; clic → mette a fuoco il tab del worker nella griglia; i task
   con attenzione compaiono anche in "Serve a te") e
   **In coda N** (numerata, trascinabile per riordinare, "attende X" se aspetta dipendenze, "bloccato da X" se una è fallita; clic
-  → dettaglio). I task in corso e in coda mostrano il goal come etichetta. Piede: "+ Nuovo task" e "Task
+  → dettaglio). Piede: "+ Nuovo task" e "Task
   Intake" (apre il primo Bot abilitato con la skill `task-intake`).
-- Barra compressa: stessi contatori di prima più i goal aperti (solo se > 0). La vista Globale non cambia.
+- Barra compressa: stessi contatori di prima. La vista Globale non cambia.
 - Da vuoto: "Nessun task" + pulsante "Apri Task Intake".
 - I tab dei worker restano nella griglia dei terminali come oggi (badge AUTO).
 - **Vista Globale**: il pannello raggruppa per workspace (solo quelli con task attivi o
@@ -1968,21 +1524,6 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   multipla con conteggi, filtro repo solo nei multi-repo, "Azzera filtri", stato vuoto.
   Colonne: Stato, Titolo (+ sottotitolo: esito o motivo), Modello, Aggiornato (ordinamento
   default, desc), Durata. Filtri ricordati per workspace. Piede "N di M task".
-- **Goal** (visibili solo se la board ne ha): selettore "Goal" accanto alla ricerca (Kanban e Lista;
-  "Tutti i goal", i goal aperti, i chiusi, "Senza goal"), ricordato per workspace; un goal sparito
-  dalla board non nasconde i task (`effectiveGoalFilter`). Nella Lista l'interruttore "Raggruppa per
-  goal" divide le righe con un'intestazione per goal (fase, avanzamento; clic → dettaglio). I task
-  mostrano il goal come etichetta (Kanban, Lista, grafo, dettaglio). Logica in `src/lib/goals.ts`.
-- **Dettaglio del goal** (stesso pannello laterale del task, uno solo alla volta): fase, giro e
-  avanzamento, cosa aspetta l'utente, richiesta, criteri, decisioni con "Aggiungi nota" (1..=500
-  caratteri, solo goal aperti), task per giro con stato (dal secondo giro, "accettato in automatico" o "accettato da
-  te", da `auto_rounds`), esito delle review, "Correzioni automatiche" (selettore no / 1 / 2 / 3 giri e giri usati,
-  `goal_set_auto_fix`), "Consegna" (consegna automatica, Bot, task e pulsante di consegna), "Chiudi goal" con
-  conferma in linea che elenca i task in coda/falliti e le proposte che verranno eliminati (con un
-  task in corso la conferma è disattivata). Goal chiuso: esito, esito della review e data, rapporto di consegna e **Follow-up** (tutte le voci con il loro stato; le
-  aperte si scartano o si mandano all'Intake). Branch: per ogni
-  repository `goal/<id>` con la base da cui è nato; per un goal abbandonato "Elimina branch" con conferma
-  (`goal_delete_branches`).
 - **Dipendenze**: il grafo React Flow attuale, ripulito (nodi con i 4 stati).
 - **Dettaglio** (pannello laterale destro agganciato, uguale per tutte le viste e aperto anche
   dal pannello Task): stato, id, titolo, azioni per stato (Da fare: Modifica, In cima alla
@@ -1995,8 +1536,7 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
   renderer minimale per titoli, liste, codice inline/blocchi, grassetto, link), dipendenze,
   modello, repo, durata. Modifica (solo Da fare/Fallito): titolo, testo, dipendenze, modello.
 - **Nuovo task** (dialog): titolo, specifica (textarea), dipendenze (multi-selezione tra i task
-  non fatti; con un goal, solo quelli dello stesso goal; senza goal, quelli sciolti o di goal chiusi), goal
-  (facoltativo, fra i goal aperti; solo se ce ne sono), modello (default del workspace), repo (solo multi-repo). Suggerimento: "Per una
+  non fatti), modello (default del workspace), repo (solo multi-repo). Suggerimento: "Per una
   specifica completa usa Task Intake".
 
 ### Impostazioni

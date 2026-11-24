@@ -3,7 +3,7 @@
 //! dal titolo. Funzioni pure, nessun I/O. Gli argomenti dei comandi della UI
 //! (`NewTaskSpec`, `TaskPatch`) sono in `args`.
 
-use super::{check_kind_input, parse_goal_id, parse_goal_spec, ProposalGoal, Task, TaskKind, TASK_MAX, TITLE_MAX};
+use super::{check_kind_input, Task, TaskKind, TASK_MAX, TITLE_MAX};
 use crate::agents::Effort;
 use crate::bots::SkillRef;
 use crate::validate::{clip_chars, req_text};
@@ -66,13 +66,9 @@ pub struct TaskSpec {
 
 mod args;
 
-pub use args::{parse_new_task, NewTaskSpec, TaskPatch};
+pub use args::{NewTaskSpec, TaskPatch};
 
 const SPEC_KEYS: [&str; 10] = ["id", "title", "task", "depends_on", "repo", "agent", "model", "bot", "kind", "e2e"];
-/// Campi di `propose_tasks`.
-const PROPOSAL_KEYS: [&str; 3] = ["tasks", "goal", "goal_id"];
-/// Il goal di un task: non e' un campo della specifica (vedi `parse_spec`).
-const GOAL_KEY: &str = "goal";
 
 impl TaskSpec {
     pub fn from_task(t: &Task) -> TaskSpec {
@@ -149,12 +145,6 @@ fn parse_depends(v: &Value) -> Result<Vec<String>, String> {
 /// campi assenti restano quelli di `base`. Campi sconosciuti = errore (refusi).
 pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String> {
     let obj = v.as_object().ok_or_else(|| "each task must be an object".to_string())?;
-    if obj.contains_key(GOAL_KEY) {
-        return Err(match base {
-            Some(_) => "the goal of a task cannot be changed".to_string(),
-            None => "goal is not a task field: set goal or goal_id on the proposal".to_string(),
-        });
-    }
     for k in obj.keys() {
         if !SPEC_KEYS.contains(&k.as_str()) {
             return Err(format!("unknown field '{k}' (allowed: {})", SPEC_KEYS.join(", ")));
@@ -250,39 +240,12 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
     Ok(TaskSpec { id, title, task, depends_on, repo, agent, model, bot, effort, skill, kind, e2e })
 }
 
-/// Parametri di `propose_tasks` letti: i task e il loro goal, se indicato.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposalInput {
-    pub tasks: Vec<TaskSpec>,
-    pub goal: Option<ProposalGoal>,
-}
-
-/// Task sciolti, senza goal.
-impl From<Vec<TaskSpec>> for ProposalInput {
-    fn from(tasks: Vec<TaskSpec>) -> ProposalInput {
-        ProposalInput { tasks, goal: None }
-    }
-}
-
-/// Il goal di `propose_tasks`: `goal` (nuovo) o `goal_id` (aperto), mai entrambi.
-fn parse_proposal_goal(obj: &serde_json::Map<String, Value>) -> Result<Option<ProposalGoal>, String> {
-    let present = |k: &str| obj.get(k).filter(|v| !v.is_null());
-    match (present("goal"), present("goal_id")) {
-        (Some(_), Some(_)) => Err("pass goal (a new goal) or goal_id (an open goal), not both".to_string()),
-        (Some(g), None) => Ok(Some(ProposalGoal::New(parse_goal_spec(g)?))),
-        (None, Some(id)) => Ok(Some(ProposalGoal::Existing(parse_goal_id(id)?))),
-        (None, None) => Ok(None),
-    }
-}
-
-/// Parametri di `propose_tasks`: `{ tasks: [TaskSpec], goal? | goal_id? }`,
-/// ogni task con id.
-pub fn parse_proposal(p: &Value) -> Result<ProposalInput, String> {
+/// Parametri di `propose_tasks`: `{ tasks: [TaskSpec] }`, ogni task con id.
+pub fn parse_proposal(p: &Value) -> Result<Vec<TaskSpec>, String> {
     let obj = p.as_object().ok_or_else(|| "params must be an object".to_string())?;
-    if let Some(k) = obj.keys().find(|k| !PROPOSAL_KEYS.contains(&k.as_str())) {
-        return Err(format!("unknown field '{k}' (allowed: {})", PROPOSAL_KEYS.join(", ")));
+    if let Some(k) = obj.keys().find(|k| k.as_str() != "tasks") {
+        return Err(format!("unknown field '{k}' (allowed: tasks)"));
     }
-    let goal = parse_proposal_goal(obj)?;
     let arr = obj
         .get("tasks")
         .and_then(Value::as_array)
@@ -304,7 +267,7 @@ pub fn parse_proposal(p: &Value) -> Result<ProposalInput, String> {
         }
         specs.push(spec);
     }
-    Ok(ProposalInput { tasks: specs, goal })
+    Ok(specs)
 }
 
 /// Dipendenze esistenti, niente auto-dipendenze, niente cicli.

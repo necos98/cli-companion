@@ -2,7 +2,6 @@
 
 /**
  * Tipo di un task: `work` consegna, `review` verifica il risultato integrato,
- * `plan` esplora il repository e propone i task (vedi `plan`), `deliver`
- * porta il goal intero sulla base (vedi `deliver`).
+ * `plan` esplora il repository e propone i task (vedi `plan`).
  */
-export type TaskKind = "work" | "review" | "plan" | "deliver";
+export type TaskKind = "work" | "review" | "plan";

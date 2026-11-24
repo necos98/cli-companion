@@ -149,15 +149,6 @@ fn gate_does_not_apply_without_the_flag_the_work_kind_or_a_completion() {
 }
 
 #[test]
-fn gate_applies_to_a_delivery_marked_e2e_like_to_a_work_task() {
-    let delivery = Task { kind: TaskKind::Deliver, ..flagged(None) };
-    let e = check_gate(&delivery, true, true, None).unwrap_err();
-    assert!(e.contains("requires a passed E2E run"), "{e}");
-    assert_eq!(check_gate(&delivery, false, true, None), Ok(GateOutcome::NotRequired), "failed is always accepted");
-    assert_eq!(check_gate(&delivery, true, false, None), Ok(GateOutcome::ConfigRemoved));
-}
-
-#[test]
 fn gate_is_lifted_when_the_repository_lost_its_e2e_config() {
     assert_eq!(check_gate(&flagged(None), true, false, None), Ok(GateOutcome::ConfigRemoved));
 }

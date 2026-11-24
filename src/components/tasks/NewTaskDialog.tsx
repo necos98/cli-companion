@@ -1,11 +1,9 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import DetailTaskFields from "./DetailTaskFields";
-import NewTaskGoalField, { NO_GOAL_VALUE } from "./NewTaskGoalField";
 import { useCommand } from "./useDetailCommand";
 import { Button } from "../ui/button";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
-import { openGoals } from "../../lib/goals";
 import { repoHasE2e, withRepoE2e } from "../../lib/e2e";
 import { sanitizeModel } from "../../lib/model";
 import { defaultAgentChoice } from "../../lib/taskAgent";
@@ -16,7 +14,6 @@ import {
   ROOT_REPO,
   findCreatedTask,
   hasErrors,
-  goalDependencyPool,
   isMultiRepo,
   repoOptions,
   repoValue,
@@ -49,8 +46,6 @@ export interface NewTaskDialogProps {
   repos?: string[];
   /** Task appena creato (null se non lo si ritrova nella board restituita): il manager lo seleziona. */
   onCreated?: (task: Task | null) => void;
-  /** Goal con cui parte il form (quello in vista nel manager); vale solo se è aperto. */
-  defaultGoal?: string | null;
 }
 
 const NO_REPOS: string[] = [];
@@ -66,7 +61,6 @@ export default function NewTaskDialog({
   onOpenIntake,
   repos = NO_REPOS,
   onCreated,
-  defaultGoal = null,
 }: NewTaskDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -81,7 +75,6 @@ export default function NewTaskDialog({
           onOpenIntake={onOpenIntake}
           repos={repos}
           onCreated={onCreated}
-          defaultGoal={defaultGoal}
         />
       </DialogContent>
     </Dialog>
@@ -90,20 +83,8 @@ export default function NewTaskDialog({
 
 type FormProps = Omit<NewTaskDialogProps, "open"> & { repos: string[] };
 
-function NewTaskForm({
-  workspace,
-  agents,
-  board,
-  onBoard,
-  onClose,
-  onOpenIntake,
-  repos,
-  onCreated,
-  defaultGoal,
-}: FormProps) {
+function NewTaskForm({ workspace, agents, board, onBoard, onClose, onOpenIntake, repos, onCreated }: FormProps) {
   const tasks = board?.tasks ?? [];
-  const goals = board?.goals ?? [];
-  const goalChoices = openGoals(goals);
   const repoChoices = repoOptions(tasks, repos);
   const multiRepo = isMultiRepo(repoChoices);
   const [values, setValues] = useState<TaskFormValues>({
@@ -117,7 +98,6 @@ function NewTaskForm({
     kind: "work",
     e2e: false,
   });
-  const [goalChoice, setGoalChoice] = useState(defaultGoal ?? NO_GOAL_VALUE);
   const [errors, setErrors] = useState<TaskFormErrors>({});
   const { run, busy, error, clearError } = useCommand(onBoard);
   // I repository possono arrivare dopo l'apertura: la scelta vale solo se è fra quelli noti.
@@ -127,10 +107,6 @@ function NewTaskForm({
   // Idem per il Bot: finché non si sceglie vale il default del tipo di task (`general` se lo esegue).
   const bot = values.bot || defaultBotChoice(agents.bots, values.kind);
 
-  // Il goal può chiudersi mentre il dialog è aperto: la scelta vale solo se è ancora fra gli aperti.
-  const goal = goalChoices.some((g) => g.id === goalChoice) ? goalChoice : NO_GOAL_VALUE;
-  const dependencyPool = goalDependencyPool(tasks, goals, goal === NO_GOAL_VALUE ? null : goal);
-
   const taskRepo = multiRepo ? repoValue(repo) : null;
   const e2eConfigured = repoHasE2e(workspace.repos, taskRepo);
 
@@ -138,13 +114,6 @@ function NewTaskForm({
     setValues((v) => ({ ...v, ...withRepoE2e(patch, workspace.repos) }));
     setErrors({});
     clearError();
-  };
-
-  // Cambiando goal, le dipendenze già scelte che non sono più ammesse cadono.
-  const changeGoal = (next: string) => {
-    const pool = goalDependencyPool(tasks, goals, next === NO_GOAL_VALUE ? null : next);
-    setGoalChoice(next);
-    change({ depends_on: values.depends_on.filter((id) => pool.some((t) => t.id === id)) });
   };
 
   const submit = async (e: FormEvent) => {
@@ -165,7 +134,6 @@ function NewTaskForm({
         model: sanitizeModel(values.model),
         kind: values.kind,
         e2e: values.e2e && e2eConfigured,
-        goal: goal === NO_GOAL_VALUE ? null : goal,
       });
       created = findCreatedTask(next, values.title, previous);
       return next;
@@ -199,16 +167,12 @@ function NewTaskForm({
           </Button>
         </div>
 
-        {goalChoices.length > 0 && (
-          <NewTaskGoalField id="new-task-goal" goals={goalChoices} value={goal} onChange={changeGoal} disabled={busy} />
-        )}
-
         <DetailTaskFields
           idPrefix="new-task"
           values={{ ...values, repo, agent, bot }}
           onChange={change}
           errors={errors}
-          tasks={dependencyPool}
+          tasks={tasks}
           selfId={null}
           repoChoices={repoChoices}
           e2eConfigured={e2eConfigured}

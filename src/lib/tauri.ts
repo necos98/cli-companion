@@ -27,7 +27,6 @@ import type { ConnectorRouteInput } from "../bindings/ConnectorRouteInput.ts";
 import type { ConnectorStatus } from "../bindings/ConnectorStatus.ts";
 import type { Delivery } from "../bindings/Delivery.ts";
 import type { E2eEvent as E2eUpdateEvent } from "../bindings/E2eEvent.ts";
-import type { FollowUpState } from "../bindings/FollowUpState.ts";
 import type { HubActionRequest } from "../bindings/HubActionRequest.ts";
 import type { HubAttachment } from "../bindings/HubAttachment.ts";
 import type { HubEvent } from "../bindings/HubEvent.ts";
@@ -520,43 +519,9 @@ export const api = {
   taskMove: (workspaceId: string, taskId: string, beforeId?: string | null) =>
     invoke<BoardView>("task_move", { workspaceId, taskId, beforeId: beforeId ?? null }),
 
-  /**
-   * Accetta o scarta una proposta di Task Intake. `autoDeliver` e `autoFix` (giri di correzione automatica, 0..=3)
-   * sono le scelte dell'utente per il goal nuovo che la proposta crea; null altrimenti.
-   */
-  proposalDecide: (
-    workspaceId: string,
-    proposalId: string,
-    accept: boolean,
-    autoDeliver: boolean | null,
-    autoFix: number | null,
-  ) => invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept, autoDeliver, autoFix }),
-
-  /** Giri di correzione automatica di un goal aperto (0..=3). */
-  goalSetAutoFix: (workspaceId: string, goalId: string, maxRounds: number) =>
-    invoke<BoardView>("goal_set_auto_fix", { workspaceId, goalId, maxRounds }),
-
-  /** "Consegna" / "Consegna comunque": crea il task di consegna del goal pronto. */
-  goalDeliver: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_deliver", { workspaceId, goalId }),
-
-  /** Impostazioni di consegna del goal: consegna automatica e Bot (null = invariato). */
-  goalSetDelivery: (workspaceId: string, goalId: string, autoDeliver: boolean | null, bot: string | null) =>
-    invoke<BoardView>("goal_set_delivery", { workspaceId, goalId, autoDeliver, bot }),
-
-  /** "Chiudi goal": elimina i task in coda e falliti del goal, scarta le sue proposte e lo chiude. */
-  goalClose: (workspaceId: string, goalId: string) => invoke<BoardView>("goal_close", { workspaceId, goalId }),
-
-  /** "Elimina branch": cancella i branch `goal/<id>` di un goal chiuso senza consegna e li dimentica. */
-  goalDeleteBranches: (workspaceId: string, goalId: string) =>
-    invoke<BoardView>("goal_delete_branches", { workspaceId, goalId }),
-
-  /** Nota dell'utente nel registro delle decisioni di un goal aperto. */
-  goalAddNote: (workspaceId: string, goalId: string, text: string) =>
-    invoke<BoardView>("goal_add_note", { workspaceId, goalId, text }),
-
-  /** Scarta (`dismissed`) o manda all'Intake (`promoted`) il follow-up `index` di un goal chiuso. */
-  goalSetFollowUp: (workspaceId: string, goalId: string, index: number, state: FollowUpState) =>
-    invoke<BoardView>("goal_set_follow_up", { workspaceId, goalId, index, state }),
+  /** Accetta o scarta una proposta di Task Intake. */
+  proposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>
+    invoke<BoardView>("proposal_decide", { workspaceId, proposalId, accept }),
 
   /** Applica o scarta una proposta di modifica alle impostazioni. */
   settingsProposalDecide: (workspaceId: string, proposalId: string, accept: boolean) =>

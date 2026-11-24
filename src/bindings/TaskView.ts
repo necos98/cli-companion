@@ -57,7 +57,7 @@ agent_unavailable?: AgentUnavailableView,
 /**
  * Domanda del worker in attesa di risposta.
  */
-question?: TaskQuestion, id: string, title: string, task: string, depends_on: Array<string>, repo: string | null, agent: string, model: string | null, bot?: string, effort?: Effort, skill?: SkillRef, kind: TaskKind, e2e?: boolean, no_git?: boolean, goal?: string, round?: number, status: TaskStatus, fail_reason?: FailReason, worker_status: WorkerStatus | null, session: string | null, attempts: number, worktree: WorktreeInfo | null, last_report: string | null, note: string | null, report: TaskReport | null, e2e_run?: E2eRun, questions?: Array<TaskQuestion>, previous_attempt?: PreviousAttempt, created_at: number, updated_at: number, started_at: number | null, finished_at: number | null, 
+question?: TaskQuestion, id: string, title: string, task: string, depends_on: Array<string>, repo: string | null, agent: string, model: string | null, bot?: string, effort?: Effort, skill?: SkillRef, kind: TaskKind, e2e?: boolean, no_git?: boolean, status: TaskStatus, fail_reason?: FailReason, worker_status: WorkerStatus | null, session: string | null, attempts: number, worktree: WorktreeInfo | null, last_report: string | null, note: string | null, report: TaskReport | null, e2e_run?: E2eRun, questions?: Array<TaskQuestion>, previous_attempt?: PreviousAttempt, created_at: number, updated_at: number, started_at: number | null, finished_at: number | null, 
 /**
  * Passo di preparazione in corso: solo in uscita, mai riletto.
  */

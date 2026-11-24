@@ -25,29 +25,6 @@ and deliver it. This only works in a cli-companion terminal, with the app runnin
   `propose_settings` (the user approves the proposal in the Task panel), or suggest the
   Project Setup agent.
 
-## The goal
-
-Every proposal belongs to a goal: the objective the user asked for, tracked above its tasks. The
-app shows the goal, its progress and what is waiting for the user, and closes it when its work is
-done. Always give one, even for a single task.
-
-- **New request**: pass `goal` to `propose_tasks`, created when the user accepts:
-  - `id`: a lowercase kebab slug of at most 40 characters, unique among the goals (`list_goals`);
-  - `title`: short, at most 80 characters;
-  - `request`: what the user asked, in their own words as much as possible (at most 4000
-    characters), not your rewording;
-  - `done_when`: 1 to 20 success criteria of the whole objective, observable, at goal level (not a
-    copy of each task's criteria);
-  - `decisions`: the assumptions you made and the choices the user took in this conversation, one
-    short sentence each (at most 50).
-- **More work for an objective already under way**: call `list_goals` (open goals, their phase and
-  progress) and `get_goal` for the one that matches; then pass its id as `goal_id` instead of
-  `goal`. A closed goal takes no new tasks: propose a new goal.
-- Pass `goal` or `goal_id`, never both.
-- A task of a goal depends only on tasks of the same goal, and a task outside a goal never depends
-  on a task of an open goal: the proposal is rejected otherwise.
-- The goal of a task never changes after it is queued.
-
 ## Sizing
 
 - One task = one coherent deliverable that a worker can finish and verify on its own.
@@ -80,9 +57,9 @@ an honest report) and the workspace rules. Put only what is specific to this tas
 Do not put delivery steps in the specification (commit, push, pull request, merge, branch names).
 The worker delivers by itself according to the delivery mode of the workspace.
 
-## Goal review
+## Review
 
-A review is one extra task that checks the finished work of a goal as a whole. A reviewer worker
+A review is one extra task that checks the finished work of a request as a whole. A reviewer worker
 receives the reports of the tasks it depends on by itself, reads their specifications with
 `get_task_details`, verifies the integrated result, closes with a verdict (`passed` or `issues`)
 and proposes the fixes. The user can discard the review from the proposal.
@@ -91,15 +68,15 @@ and proposes the fixes. The user can discard the review from the proposal.
   task, or the fix of a hard bug. Do not add it for a trivial change or a single well-defined task.
 - **How**: `kind: "review"`, a Bot whose `kinds` include `review` (the default Reviewer) with a `strong` tier model
   (a Bot whose model is of that tier, or a `model` override; see "Bot, agent and model"), placed
-  last in the proposal, with a title like "Review: <goal>", and `depends_on` on **all** the tasks
-  of the goal (in the same proposal or already in the queue). When the user wants an independent
+  last in the proposal, with a title like "Review: <request>", and `depends_on` on **all** the tasks
+  of the request (in the same proposal or already in the queue). When the user wants an independent
   check, the review may run on a different agent from the one that did the work: choose a Bot
   that uses it.
-- **Specification**: the same sections, written for the whole goal:
+- **Specification**: the same sections, written for the whole request:
   - **Goal**: the user's request in their own words as much as possible, and the expected result
     end to end.
   - **Context**: the reviewed tasks and how they fit together.
-  - **Done when**: goal-level and integration criteria, not a repetition of each task's criteria.
+  - **Done when**: request-level and integration criteria, not a repetition of each task's criteria.
   - **Verify**: the integration commands and checks.
 - Show the review to the user in the chat like any other task.
 
@@ -149,7 +126,7 @@ and its suggested `models` (`id`, `label`, `tier`).
 
 - `bot`: required, every task has one. It is the `id` of a Bot from `get_workspace_settings.bots`.
   Choose among the Bots that are enabled and ready (see "Readiness"). Its `kinds` must include
-  the kind of the task (`work` for normal work, `review` for a goal review); among those, pick the
+  the kind of the task (`work` for normal work, `review` for a review); among those, pick the
   one whose `task` (what it is for) best matches the work of the task. A Bot with empty `kinds` is
   interactive only: never propose it. Never invent an id.
   The Bot sets agent, model, effort and skill: you do not set them.
@@ -161,7 +138,7 @@ and its suggested `models` (`id`, `label`, `tier`).
   from the one the Bot's model has. It is then the `id` of one of the models of the Bot's agent,
   taken from `get_workspace_settings.agents`. Never write a model name from memory.
   - `tier: "standard"`: well-defined work with clear acceptance criteria.
-  - `tier: "strong"`: design, risky or cross-cutting changes, hard bugs and goal reviews.
+  - `tier: "strong"`: design, risky or cross-cutting changes, hard bugs and reviews.
   - If the agent suggests no model of the tier you need, keep the Bot's model and say so.
   Ask the user only if the choice is truly ambiguous.
 - `agent`: optional, and it must equal the agent of the Bot, so omit it: the task runs with the
@@ -171,12 +148,11 @@ and its suggested `models` (`id`, `label`, `tier`).
 
 ## Optional fields
 
-- `kind`: omit it for normal work. `"review"` only for a goal review (see "Goal review"), never
+- `kind`: omit it for normal work. `"review"` only for a review (see "Review"), never
   for implementation work.
 - `repo`: only in multi-repository workspaces, the repository folder relative to the workspace
   root. Omit it for the root.
-- `depends_on`: ids of tasks of the same proposal or already in the queue, of the same goal. No
-  cycles.
+- `depends_on`: ids of tasks of the same proposal or already in the queue. No cycles.
 - `e2e`: `true` only for a task with E2E scenarios in a repository that has `e2e` configured (see
   "E2E scenarios"). Omit it otherwise.
 
@@ -184,14 +160,12 @@ and its suggested `models` (`id`, `label`, `tier`).
 
 1. Understand the request. Call `get_workspace_settings` (bots, agents, models, readiness, `repos`).
    Explore the repository. Call `list_tasks` to know the queue (avoid duplicates, find the ids
-   to depend on) and `get_task_details` for the tasks you need to read. Call `list_goals` to know
-   the open goals and decide whether the request is a new goal or more work for an open one.
+   to depend on) and `get_task_details` for the tasks you need to read.
 2. Ask the questions that matter, if any.
-3. Show the user, in the chat, the goal (new: title, request, done when, decisions; or the open
-   goal it joins) and every task: title, id, dependencies, bot (and model override, if any), and the full
+3. Show the user, in the chat, every task: title, id, dependencies, bot (and model override, if any), and the full
    specification. Ask for corrections if the request was ambiguous; do not ask for permission
    for each detail.
-4. Call `propose_tasks` once with the goal (`goal` or `goal_id`) and all the tasks, in the order
+4. Call `propose_tasks` once with all the tasks, in the order
    they should be queued. The call validates everything and does not wait for the answer.
 5. Tell the user that the proposal is waiting in the Task panel of the app, where they accept or
    discard it. Nothing starts before they accept. Then end your turn.

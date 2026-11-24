@@ -44,7 +44,7 @@ fn a_saved_board_is_in_the_envelope_and_loads_back() {
     let board = board_of("ws-bf-roundtrip");
     save(&dir, &board).unwrap();
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("ws-bf-roundtrip.json")).unwrap()).unwrap();
-    assert_eq!(raw["schema_version"], 3);
+    assert_eq!(raw["schema_version"], 4);
     assert_eq!(raw["data"]["workspace_id"], "ws-bf-roundtrip");
     let loaded = load_all(&dir, NOW);
     assert_eq!(loaded, [board]);
@@ -64,7 +64,7 @@ fn a_file_in_the_format_of_today_is_migrated_and_its_running_task_recovered() {
     // Il primo salvataggio lo porta alla busta.
     save(&dir, &loaded[0]).unwrap();
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("ws-bf-v0.json")).unwrap()).unwrap();
-    assert_eq!(raw["schema_version"], 3);
+    assert_eq!(raw["schema_version"], 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -163,28 +163,5 @@ fn the_archive_refuses_an_invalid_workspace_id() {
     let dir = temp_dir("archive-bad");
     assert!(append_archive(&dir, "../fuori", &[done_task("a")]).is_err());
     assert!(names(&dir).is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-fn closed_goal(id: &str) -> Goal {
-    let raw = serde_json::json!({ "id": id, "title": "G", "request": "r", "done_when": ["d"], "closed_at": 5 });
-    serde_json::from_value(raw).unwrap()
-}
-
-#[test]
-fn closed_goals_go_to_their_own_archive_file_which_dies_with_the_board() {
-    let dir = temp_dir("goal-archive");
-    append_goal_archive(&dir, "ws-bf-goals", &[closed_goal("g1"), closed_goal("g2")]).unwrap();
-    append_goal_archive(&dir, "ws-bf-goals", &[closed_goal("g3")]).unwrap();
-    let path = dir.join("archive").join("ws-bf-goals.goals.jsonl");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let ids: Vec<&str> = lines.iter().map(|l| l["data"]["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["g1", "g2", "g3"]);
-    assert!(lines.iter().all(|l| l["schema_version"] == 1 && l["data"]["closed_at"] == 5));
-    assert!(!dir.join("archive").join("ws-bf-goals.jsonl").exists(), "tasks and goals do not mix");
-    assert!(append_goal_archive(&dir, "../fuori", &[closed_goal("g")]).is_err());
-    delete(&dir, "ws-bf-goals");
-    assert!(!path.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }

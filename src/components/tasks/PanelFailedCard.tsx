@@ -1,12 +1,9 @@
 import { useState } from "react";
 import { Loader2, XCircle } from "lucide-react";
 import type { Task } from "../../lib/board";
-import GoalTag from "./GoalTag";
 
 interface PanelFailedCardProps {
   task: Task;
-  /** Titolo del goal del task (null = sciolto). */
-  goal: string | null;
   /** Motivo del fallimento su una riga ("" se non noto). */
   reason: string;
   /** Titoli dei task in coda che questo fallimento blocca. */
@@ -17,8 +14,8 @@ interface PanelFailedCardProps {
   onOpen: (taskId: string) => void;
 }
 
-/** Card di un task fallito: motivo su una riga, goal, task bloccati e "Riprova". */
-export default function PanelFailedCard({ task, goal, reason, blocking, onRetry, onOpen }: PanelFailedCardProps) {
+/** Card di un task fallito: motivo su una riga, task bloccati e "Riprova". */
+export default function PanelFailedCard({ task, reason, blocking, onRetry, onOpen }: PanelFailedCardProps) {
   const [retrying, setRetrying] = useState(false);
   const retry = async () => {
     setRetrying(true);
@@ -42,7 +39,6 @@ export default function PanelFailedCard({ task, goal, reason, blocking, onRetry,
         {blocking.length > 0 && (
           <span className="truncate text-[11px] text-muted-foreground">Blocca: {blocking.join(", ")}</span>
         )}
-        {goal && <GoalTag title={goal} className="self-start text-[11px]" />}
       </button>
       <button
         type="button"

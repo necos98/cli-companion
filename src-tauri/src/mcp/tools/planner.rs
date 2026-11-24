@@ -2,10 +2,7 @@
 //! worker con `get_task` e `complete_task` propri, piu' la lettura della coda e
 //! delle impostazioni e `propose_tasks`. Niente E2E, niente modifiche.
 
-use super::{
-    get_goal_tool, get_task_details_tool, list_goals_tool, list_tasks_tool, propose_tasks_tool, read_settings_tool,
-    tool,
-};
+use super::{get_task_details_tool, list_tasks_tool, propose_tasks_tool, read_settings_tool, tool};
 use serde_json::{json, Value};
 
 /// Istruzioni generali del server per il pianificatore (Agents HUB spento).
@@ -56,12 +53,10 @@ pub fn planner_tools() -> Vec<Value> {
             }),
             &["status", "summary"],
         ),
-        propose_tasks_tool(false),
+        propose_tasks_tool(),
         list_tasks_tool(),
         get_task_details_tool(),
         read_settings_tool(),
-        list_goals_tool(),
-        get_goal_tool(),
     ]
 }
 
@@ -74,13 +69,11 @@ mod tests {
     /// The planner set (measured 4_117): its own get_task and complete_task plus the shared
     /// propose_tasks, list_tasks, get_task_details and a shorter get_workspace_settings.
     /// Do not raise it to fit new text, shorten the text.
-    /// 4_700 = 4_150 plus list_goals and get_goal (measured 4_656).
-    const PLANNER_TOOLS_CEILING: usize = 4_700;
+    const PLANNER_TOOLS_CEILING: usize = 4_150;
     /// The planner server instructions (measured 339).
     const PLANNER_INSTRUCTIONS_CEILING: usize = 400;
     /// The planner set with the Agents HUB on: the set above plus ask_user (measured 4_813).
-    /// 5_400 = 4_850 plus list_goals and get_goal.
-    const PLANNER_HUB_TOOLS_CEILING: usize = 5_400;
+    const PLANNER_HUB_TOOLS_CEILING: usize = 4_850;
     /// The planner server instructions with the Agents HUB on (measured 342).
     const PLANNER_HUB_INSTRUCTIONS_CEILING: usize = 400;
 
@@ -122,18 +115,7 @@ mod tests {
             tools_for(Role::Planner, false).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
         assert_eq!(
             names,
-            [
-                "get_task",
-                "complete_task",
-                "propose_tasks",
-                "list_tasks",
-                "get_task_details",
-                "get_workspace_settings",
-                "list_goals",
-                "get_goal"
-            ]
+            ["get_task", "complete_task", "propose_tasks", "list_tasks", "get_task_details", "get_workspace_settings"]
         );
-        let propose = tool_named("propose_tasks");
-        assert!(propose["inputSchema"]["properties"].get("goal").is_none(), "plan tasks never have a goal");
     }
 }
