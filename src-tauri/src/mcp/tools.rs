@@ -1,17 +1,14 @@
 //! Definizione dei tool MCP e delle istruzioni del server (le legge il
-//! modello: inglese, concise). Cinque insiemi: i tool del worker di un task, quelli
+//! modello: inglese, concise). Quattro insiemi: i tool del worker di un task, quelli
 //! del revisore (il worker di un task `review`), del pianificatore (task `plan`,
-//! in `planner`), di chi consegna un goal (task `deliver`, in `deliver`) e quelli
-//! di una sessione normale (Intake compreso). Quali metodi spettano a ogni ruolo lo decide la tabella di
+//! in `planner`) e quelli di una sessione normale (Intake compreso). Quali metodi
+//! spettano a ogni ruolo lo decide la tabella di
 //! `crate::automation::roles`: un test verifica che i tool coincidano.
 
 use crate::agents::{registry, tier_models, PermissionMode, TierModels};
 use crate::automation::settings::REASON_MAX;
 use crate::automation::{Method, Role};
-use crate::board::{
-    DECISIONS_KEPT, DECISION_MAX, DONE_WHEN_ITEM_MAX, DONE_WHEN_MAX, GOAL_REQUEST_MAX, GOAL_TITLE_MAX, OPTIONS_MAX,
-    OPTION_MAX, QUESTION_MAX,
-};
+use crate::board::{OPTIONS_MAX, OPTION_MAX, QUESTION_MAX};
 use crate::workspaces::{
     DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_E2E_TIMEOUT_MIN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_AGENTS,
     MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS, MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_REPO_PATH_LEN, MAX_RULES_LEN,
@@ -19,11 +16,8 @@ use crate::workspaces::{
 };
 use serde_json::{json, Value};
 
-mod deliver;
 mod planner;
 
-use deliver::deliverer_instructions;
-pub use deliver::deliverer_tools;
 use planner::planner_instructions;
 pub use planner::planner_tools;
 
@@ -129,45 +123,7 @@ fn task_properties(with_id: bool) -> Value {
     props
 }
 
-/// `goal` e `goal_id` di `propose_tasks` (solo per le sessioni: la proposta di
-/// un revisore eredita il goal dall'app). I limiti sono quelli di `board::goal`.
-fn proposal_goal_properties() -> Value {
-    json!({
-        "goal": {
-            "type": "object",
-            "properties": {
-                "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
-                "title": { "type": "string", "minLength": 1, "maxLength": GOAL_TITLE_MAX },
-                "request": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": GOAL_REQUEST_MAX,
-                    "description": "The user's words."
-                },
-                "done_when": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": DONE_WHEN_MAX,
-                    "items": { "type": "string", "minLength": 1, "maxLength": DONE_WHEN_ITEM_MAX },
-                    "description": "Criteria of the whole goal."
-                },
-                "decisions": {
-                    "type": "array",
-                    "maxItems": DECISIONS_KEPT,
-                    "items": { "type": "string", "minLength": 1, "maxLength": DECISION_MAX },
-                    "description": "Assumptions, user choices."
-                }
-            },
-            "required": ["id", "title", "request", "done_when"],
-            "additionalProperties": false,
-            "description": "New goal (or goal_id)."
-        },
-        "goal_id": { "type": "string", "description": "Open goal (list_goals)." }
-    })
-}
-
-/// `propose_tasks`; `with_goal`: con `goal` e `goal_id` (le sessioni).
-fn propose_tasks_tool(with_goal: bool) -> Value {
+fn propose_tasks_tool() -> Value {
     let mut proposed = task_properties(true);
     proposed["model"] = json!({
         "type": ["string", "null"],
@@ -176,50 +132,26 @@ fn propose_tasks_tool(with_goal: bool) -> Value {
     });
     proposed["bot"] = json!({ "type": "string", "description": BOT_DESCRIPTION });
     proposed["agent"] = json!({ "type": "string", "description": "Must equal the Bot's agent: omit." });
-    let mut properties = json!({
-        "tasks": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 20,
-            "items": {
-                "type": "object",
-                "properties": proposed,
-                "required": ["id", "title", "task", "bot"],
-                "additionalProperties": false
-            },
-            "description": "In queue order."
-        }
-    });
-    let description = if with_goal {
-        if let (Some(props), Value::Object(goal)) = (properties.as_object_mut(), proposal_goal_properties()) {
-            props.extend(goal);
-        }
-        "Propose tasks for this workspace's queue, in a goal. The user accepts or discards it in the app; nothing \
-         starts before and you get no answer: never wait. All-or-nothing validation: unique ids (also vs queue and \
-         proposals), dependencies within the goal, no cycles, existing repo. Returns {proposal, status: \"pending\"}."
-    } else {
+    tool(
+        "propose_tasks",
         "Propose tasks for this workspace's queue. The user accepts or discards it in the app; nothing starts \
          before and you get no answer: never wait. All-or-nothing validation: unique ids (also vs queue and \
-         proposals), valid dependencies, no cycles, existing repo. Returns {proposal, status: \"pending\"}."
-    };
-    tool("propose_tasks", description, properties, &["tasks"])
-}
-
-fn list_goals_tool() -> Value {
-    tool(
-        "list_goals",
-        "The goals of this workspace: id, title, phase, round, waiting (what needs the user), tasks {done, total}.",
-        json!({ "open_only": { "type": "boolean" } }),
-        &[],
-    )
-}
-
-fn get_goal_tool() -> Value {
-    tool(
-        "get_goal",
-        "One goal: request, done_when, decisions, round, phase, waiting, progress, tasks, follow_ups.",
-        json!({ "id": { "type": "string" } }),
-        &["id"],
+         proposals), valid dependencies, no cycles, existing repo. Returns {proposal, status: \"pending\"}.",
+        json!({
+            "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": proposed,
+                    "required": ["id", "title", "task", "bot"],
+                    "additionalProperties": false
+                },
+                "description": "In queue order."
+            }
+        }),
+        &["tasks"],
     )
 }
 
@@ -247,7 +179,7 @@ fn list_tasks_tool() -> Value {
     tool(
         "list_tasks",
         "List the task queue: counts per status, pending proposals and one \
-         compact row per task (id, title, status, goal, kind unless work, verdict for reviews, attention, waiting_on, summary, note, fail_reason, blocked_by). \
+         compact row per task (id, title, status, kind unless work, verdict for reviews, attention, waiting_on, summary, note, fail_reason, blocked_by). \
          fail_reason: worker_failed|worker_exited|stopped|interrupted|start_failed. \
          blocked_by: failed tasks it depends on.",
         json!({
@@ -265,15 +197,13 @@ pub fn session_tools() -> Vec<Value> {
     let mut update = task_properties(false);
     update["id"] = json!({ "type": "string", "description": "Id of the task to change." });
     vec![
-        propose_tasks_tool(true),
+        propose_tasks_tool(),
         list_tasks_tool(),
         get_task_details_tool(),
-        list_goals_tool(),
-        get_goal_tool(),
         tool(
             "update_task",
             "Change a queued or failed task: omitted fields stay, null clears repo, agent, model and bot (a new bot re-applies its settings). repo is fixed once \
-             the task has a worktree; its goal never changes. Returns the task without its text.",
+             the task has a worktree. Returns the task without its text.",
             update,
             &["id"],
         ),
@@ -504,7 +434,7 @@ pub fn worker_tools() -> Vec<Value> {
             "get_task",
             "FIRST call of every automated session: returns your task, the working instructions, the environment, the delivery \
              steps and, after a retry, `previous_attempt`. Also `dependencies` (reports of the tasks you \
-             depend on) and `goal` (title, request, done_when, decisions), when present.",
+             depend on), when present.",
             json!({}),
             &[],
         ),
@@ -555,7 +485,7 @@ pub fn reviewer_tools() -> Vec<Value> {
         tool(
             "get_task",
             "FIRST call of every automated session: returns your review task, the reviewer instructions, the environment and \
-             `reviewed_tasks` (the reports of the tasks under review) and `goal`, if any.",
+             `reviewed_tasks` (the reports of the tasks under review).",
             json!({}),
             &[],
         ),
@@ -591,9 +521,8 @@ pub fn reviewer_tools() -> Vec<Value> {
             &["status", "summary"],
         ),
         get_task_details_tool(),
-        propose_tasks_tool(false),
+        propose_tasks_tool(),
         read_settings_tool(),
-        get_goal_tool(),
     ];
     tools.extend(e2e_tools());
     tools
@@ -633,7 +562,6 @@ pub fn tools_for(role: Role, hub: bool) -> Vec<Value> {
         Role::Worker => worker_tools(),
         Role::Reviewer => reviewer_tools(),
         Role::Planner => planner_tools(),
-        Role::Deliverer => deliverer_tools(),
     };
     if hub && Method::AskUser.requires_hub() && Method::AskUser.allows(role) {
         let after = tools.iter().position(|t| t["name"] == "complete_task").map_or(0, |i| i + 1);
@@ -676,7 +604,6 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>, hub: bool) -> S
              your turn."
             .to_string(),
         Some(Role::Planner) => planner_instructions(hub).to_string(),
-        Some(Role::Deliverer) => deliverer_instructions(hub).to_string(),
         None => "cli-companion: tools are only available in cli-companion terminals with the app running.".to_string(),
     }
 }

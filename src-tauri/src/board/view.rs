@@ -5,7 +5,7 @@
 use super::agent_gate::{AgentGate, AgentUnavailableView};
 use super::cascade::{Blockers, CascadeDelete, Waiters};
 use super::{
-    permits, Board, GoalView, Op, Proposal, SettingsProposalView, Task, TaskAction, TaskKind, TaskQuestion, TaskStatus,
+    permits, Board, Op, Proposal, SettingsProposalView, Task, TaskAction, TaskKind, TaskQuestion, TaskStatus,
     MAX_PARALLEL_LIMIT, MIN_PARALLEL_LIMIT,
 };
 use crate::validate::clip_with_ellipsis;
@@ -88,8 +88,6 @@ pub struct BoardView {
     pub tasks: Vec<TaskView>,
     pub proposals: Vec<Proposal>,
     pub settings_proposals: Vec<SettingsProposalView>,
-    /// I goal della board con fase, attesa e avanzamento.
-    pub goals: Vec<GoalView>,
     /// Il workspace usa le fasce orarie e adesso e' fuori fascia.
     pub schedule_blocked: bool,
     /// Consegna del workspace (comodita' per la UI).
@@ -130,13 +128,10 @@ impl BoardView {
 }
 
 /// La riga compatta di un task: id, titolo, stato e solo i campi che lo
-/// distinguono (goal, attenzione, attesa, tipo, agente, E2E, cartella senza git, report, domanda, nota).
+/// distinguono (attenzione, attesa, tipo, agente, E2E, cartella senza git, report, domanda, nota).
 pub fn compact_row(v: &TaskView) -> Value {
     let t = &v.task;
     let mut o = json!({ "id": t.id, "title": t.title, "status": t.status().as_str() });
-    if let Some(g) = t.goal() {
-        o["goal"] = Value::from(g);
-    }
     if v.attention {
         o["attention"] = Value::Bool(true);
     }
@@ -251,7 +246,6 @@ impl Board {
             tasks: self.tasks.iter().map(|t| self.view_of(t, &waiters, &blockers, gate)).collect(),
             proposals: self.proposals.clone(),
             settings_proposals: self.settings_proposals.iter().map(|p| p.view(ws)).collect(),
-            goals: self.goal_views(),
             schedule_blocked,
             delivery: ws.map(|w| w.delivery).unwrap_or_default(),
         }

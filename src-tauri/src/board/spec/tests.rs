@@ -14,10 +14,8 @@ fn command_arguments_are_read_by_parse_spec() {
         bot: Some("intake".into()),
         kind: Some(TaskKind::Review),
         e2e: Some(true),
-        goal: Some("export".into()),
     };
-    let (spec, goal) = parse_new_task(&serde_json::to_value(&new).unwrap()).unwrap();
-    assert_eq!(goal.as_deref(), Some("export"));
+    let spec = parse_spec(&serde_json::to_value(&new).unwrap(), None).unwrap();
     assert_eq!((spec.title.as_str(), spec.kind, spec.e2e), ("T", TaskKind::Review, true));
     assert_eq!(spec.agent.as_deref(), Some("agent-a"));
     assert_eq!(spec.bot.as_deref(), Some("intake"));
@@ -96,7 +94,7 @@ fn a_proposal_task_needs_a_bot_and_no_longer_a_model() {
     let task = |extra: serde_json::Value| {
         let mut t = json!({"id": "a", "title": "T", "task": "x"});
         t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        parse_proposal(&json!({"tasks": [t]})).map(|p| p.tasks)
+        parse_proposal(&json!({"tasks": [t]}))
     };
     assert_eq!(
         task(json!({"model": "sonnet"})).unwrap_err(),

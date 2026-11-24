@@ -80,17 +80,12 @@ pub(crate) struct WorkerEnv {
     pub branch: Option<String>,
     /// Branch base (nome semplice), nelle modalita' con branch.
     pub base: Option<String>,
-    /// `goal/<id>` per un task di un goal in una cartella git (il goal si consegna
-    /// per intero piu' tardi: il worker integra qui, non sul base).
-    pub goal_branch: Option<String>,
     /// Pianificatore sul posto in una cartella senza git (vedi `planner::root`);
     /// si toglie quando parte il controllo di sola lettura.
     pub root_plan: Option<planner::root::RootPlan>,
     /// Modalita' libera: la cartella del task non e' un repository git, si
     /// lavora sul posto senza worktree, branch ne' consegna git.
     pub free: bool,
-    /// Solo un task di consegna: i repository da consegnare (vedi `deliver`).
-    pub deliver: Vec<deliver::DeliverTarget>,
 }
 
 pub(super) struct Worker {

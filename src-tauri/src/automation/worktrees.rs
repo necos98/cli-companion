@@ -7,14 +7,12 @@
 //! orfane in `reconcile`.
 
 use super::*;
-use crate::board::{goal_branch_name, repo_key, GoalBranch, Task, TaskKind, TaskSpec, WorktreeInfo};
+use crate::board::{repo_key, Task, TaskSpec, WorktreeInfo};
 use crate::platform::TargetKind;
 use crate::workspaces::RepoConfig;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 mod cleanup;
-mod delivery_cleanup;
 mod real;
 mod reconcile;
 mod start;
@@ -22,8 +20,6 @@ mod start;
 mod tests;
 
 pub(super) use cleanup::run_cleanup;
-pub(super) use delivery_cleanup::run_delivery_cleanup;
-pub use delivery_cleanup::DeliveryCleanup;
 #[cfg(test)]
 pub(super) use real::parse_repo_list;
 pub(super) use real::{append_exclude_line, detect_repos, run_git};
@@ -49,15 +45,6 @@ pub struct StartJob {
     /// `attempts` al momento della scelta: scarta avvii superati da uno
     /// stop/retry.
     pub attempt: u32,
-    /// Il branch del goal del task in questo repository, se gia' creato (e
-    /// registrato nella board): `None` per un task sciolto o al primo avvio.
-    pub goal_branch: Option<GoalBranch>,
-    /// Solo un task di consegna: i branch del goal in ogni suo repository (chiave
-    /// del repository), cioe' i repository da consegnare. Vuoto per gli altri task.
-    pub goal_branches: BTreeMap<String, GoalBranch>,
-    /// Il goal del task e' `in_place`: il task lavora sul posto, come uno sciolto
-    /// (nessun branch ne' worktree del goal).
-    pub goal_in_place: bool,
 }
 
 /// Worktree da rimuovere (task concluso o eliminato, o orfana).
@@ -73,21 +60,12 @@ pub struct CleanupTarget {
     /// Il branch si cancella solo se e' unito (`-d`) anche in modalita' `pr`:
     /// per le worktree orfane la consegna non e' confermata da nessuno.
     pub keep_unmerged: bool,
-    /// `goal/<id>` se il task e' di un goal: il branch del task si cancella solo
-    /// se e' contenuto li'. `None` per task sciolti e worktree orfane.
-    pub goal_branch: Option<String>,
 }
 
 impl CleanupTarget {
     /// Pulizia del worktree di `task` (se ne ha uno) dopo una consegna
-    /// confermata o un'eliminazione voluta dall'utente. Un task di consegna non
-    /// passa di qui: il suo worktree sta sul branch del goal, che la pulizia
-    /// generica cancellerebbe (vedi `DeliveryCleanup`).
+    /// confermata o un'eliminazione voluta dall'utente.
     pub fn for_task(ws_id: &str, task: Task) -> Option<Self> {
-        if task.kind == TaskKind::Deliver {
-            return None;
-        }
-        let goal_branch = task.goal().map(goal_branch_name);
         let wt = task.worktree?;
         Some(Self {
             ws_id: ws_id.to_string(),
@@ -96,7 +74,6 @@ impl CleanupTarget {
             wt,
             workspace: None,
             keep_unmerged: false,
-            goal_branch,
         })
     }
 
@@ -164,11 +141,6 @@ pub(super) fn repo_dir(ws: &Workspace, repo: Option<&str>) -> String {
         Some(r) => join_path(ws.kind, &ws.path, r),
         None => ws.path.clone(),
     }
-}
-
-/// Il repository di una chiave `repo_key` (`None` = la root).
-pub(super) fn repo_of_key(key: &str) -> Option<&str> {
-    (key != repo_key(None)).then_some(key)
 }
 
 fn repo_cfg<'a>(ws: &'a Workspace, repo: Option<&str>) -> Option<&'a RepoConfig> {

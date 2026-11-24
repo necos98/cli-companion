@@ -1,5 +1,5 @@
 //! Tool MCP delle sessioni normali (Intake), del revisore e del pianificatore:
-//! propongono task e consultano la coda e i goal del workspace del tab chiamante.
+//! propongono task e consultano la coda del workspace del tab chiamante.
 
 use super::commands::update_checked;
 use crate::automation::worktrees::{check_e2e_configured, check_e2e_needs_git, ensure_repos};
@@ -29,8 +29,6 @@ pub(in crate::automation) fn rpc_session<H: Host>(
         "propose_tasks" => propose_tasks(st, host, &ws, session, None, params),
         "list_tasks" => list_tasks(st, host, &ws, params),
         "get_task_details" => task_details(st, host, &ws, params),
-        "list_goals" => list_goals(st, host, &ws, params),
-        "get_goal" => get_goal(st, host, &ws, params),
         "update_task" => {
             let id = req_str(params, "id")?.trim().to_string();
             update_checked(st, host, &ws, &id, params)?;
@@ -57,14 +55,14 @@ pub(in crate::automation) fn propose_tasks<H: Host>(
     source_task: Option<String>,
     params: &Value,
 ) -> Result<Value, String> {
-    let input = parse_proposal(params)?;
-    let kinds = ensure_repos(host, ws, input.tasks.iter().map(|s| s.repo.as_deref()))?;
-    check_e2e_needs_git(ws, &input.tasks, &kinds)?;
-    check_e2e_configured(ws, &input.tasks)?;
+    let specs = parse_proposal(params)?;
+    let kinds = ensure_repos(host, ws, specs.iter().map(|s| s.repo.as_deref()))?;
+    check_e2e_needs_git(ws, &specs, &kinds)?;
+    check_e2e_configured(ws, &specs)?;
     let now = now_millis();
     let bots = host.agent_bots();
     let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
-    let id = st.run(host, |r| r.propose(&ws.id, tab, source_task, input, ctx, now))?;
+    let id = st.run(host, |r| r.propose(&ws.id, tab, source_task, specs, ctx, now))?;
     Ok(json!({
         "proposal": id,
         "status": "pending",
@@ -95,35 +93,6 @@ pub(in crate::automation) fn task_details<H: Host>(
     let id = req_str(params, "id")?.trim();
     let view = st.run(host, |r| r.task_view(&ws.id, id)).ok_or_else(|| format!("task not found: {id}"))?;
     Ok(json!({ "task": view.to_json(true) }))
-}
-
-/// `list_goals`: una riga per goal di `ws` (solo gli aperti con `open_only`).
-pub(in crate::automation) fn list_goals<H: Host>(
-    st: &AutomationState,
-    host: &H,
-    ws: &Workspace,
-    params: &Value,
-) -> Result<Value, String> {
-    let open_only = match params.get("open_only") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(_) => return Err("open_only must be a boolean".to_string()),
-    };
-    let views = st.run(host, |r| r.goal_views(&ws.id));
-    let rows: Vec<Value> = views.iter().filter(|g| !open_only || g.goal.is_open()).map(|g| g.to_row_json()).collect();
-    Ok(json!({ "goals": rows }))
-}
-
-/// `get_goal`: il goal di `ws` con fase, attesa e i suoi task.
-pub(in crate::automation) fn get_goal<H: Host>(
-    st: &AutomationState,
-    host: &H,
-    ws: &Workspace,
-    params: &Value,
-) -> Result<Value, String> {
-    let id = req_str(params, "id")?.trim();
-    let goal = st.run(host, |r| r.goal_detail(&ws.id, id)).ok_or_else(|| format!("unknown goal: {id}"))?;
-    Ok(json!({ "goal": goal }))
 }
 
 /// `status` di `list_tasks`: elenco opzionale di stati validi.

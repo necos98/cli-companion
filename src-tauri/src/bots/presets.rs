@@ -211,13 +211,6 @@ pub fn find(id: &str) -> Option<&'static BotPreset> {
     PRESETS.iter().find(|p| p.id == id)
 }
 
-/// Il Bot `id` e' un preset spento di serie (`enabled_by_default: false`), anche
-/// se l'utente l'ha acceso. Un Bot creato dall'utente non lo e' mai: il suo id
-/// comincia con `USER_ID_PREFIX`, che nessun preset usa.
-pub fn off_by_default(id: &str) -> bool {
-    find(id).is_some_and(|p| !p.enabled_by_default)
-}
-
 /// Tutti i Bot predefiniti, come in un file nuovo.
 pub fn default_bots() -> Vec<AgentBot> {
     PRESETS.iter().map(BotPreset::bot).collect()

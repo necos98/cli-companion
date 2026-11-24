@@ -5,21 +5,15 @@
 use super::{Task, TaskKind};
 use crate::workspaces::{Delivery, DeliveryMode, RepoConfig};
 use free::{free_delivery_steps, free_environment, FREE_CHANGES, FREE_DONE, FREE_LABEL, REVIEWER_FREE};
-use goal::GOAL_DONE;
 use in_place::{in_place_description, root_planner_environment};
 use pr::pr_publish_steps;
 
-mod deliver;
 mod free;
-mod goal;
 mod in_place;
 mod pr;
 mod skill;
 mod standard;
 
-pub use deliver::{
-    deliver_delivery_steps, deliver_environment, deliver_instructions, pr_title_safe, DeliverInput, DeliverRepo,
-};
 pub use skill::skill_instruction;
 pub use standard::{ENGINEERING_STANDARD, INTERACTIVE_STANDARD, WORKER_GUARDRAILS};
 
@@ -37,10 +31,10 @@ const ASK_IN_TEXT: &str = "If you need a decision from the user, ask the questio
 /// Lo stesso con `ask_user` (Agents HUB acceso): la risposta arriva nel terminale come messaggio dell'utente.
 pub const ASK_WITH_TOOL: &str = "If a doubt really blocks you and the code cannot settle it, call ask_user with one clear question (with options when possible), then end your turn: the answer arrives as the user's next message in your terminal. Use it only for blocking doubts; never ask in plain text and never guess.";
 
-/// Riga delle istruzioni comuni quando `get_task` porta `dependencies` o `goal`.
+/// Riga delle istruzioni comuni quando `get_task` porta `dependencies`.
 pub const HANDOFF_NOTE: &str =
-    "Read `dependencies` and `goal` before starting. The tasks you depend on are delivered and already in your base: \
-build on what they did, do not redo it. The decisions listed in `goal` are final.";
+    "Read `dependencies` before starting. The tasks you depend on are delivered and already in your base: \
+build on what they did, do not redo it.";
 
 /// Regole sui cambiamenti e sulla chiusura nei task con git.
 const GIT_CHANGES: &str =
@@ -84,8 +78,6 @@ pub struct EnvInfo<'a> {
     pub branch: Option<&'a str>,
     /// Branch base (nome semplice, senza `origin/`), nelle modalita' con branch.
     pub base: Option<&'a str>,
-    /// `goal/<id>`, per un task di un goal in una cartella git.
-    pub goal_branch: Option<&'a str>,
     /// Configurazione del repository (setup gia' eseguito dall'app nel worktree).
     pub repo_cfg: Option<&'a RepoConfig>,
     /// Pianificatore sul posto in una cartella senza git: i repository git
@@ -93,13 +85,13 @@ pub struct EnvInfo<'a> {
     pub root_repos: Option<&'a [String]>,
     /// Modalita' libera: la cartella del task non e' un repository git.
     pub free: bool,
-    /// `get_task` porta `dependencies` o `goal`: le istruzioni lo dicono al worker.
+    /// `get_task` porta `dependencies`: le istruzioni lo dicono al worker.
     pub handoff: bool,
 }
 
 impl EnvInfo<'_> {
     fn worktree(&self) -> bool {
-        self.delivery.worktrees() || self.goal_branch.is_some()
+        self.delivery.worktrees()
     }
 
     /// La consegna come la leggono i worker: quella del workspace o la modalita' libera.
@@ -116,8 +108,7 @@ impl EnvInfo<'_> {
 /// il worker chiede le decisioni bloccanti con il tool invece che in testo semplice.
 pub fn instructions(e: &EnvInfo, workspace_rules: &str, ask_user: bool) -> String {
     let ask = if ask_user { ASK_WITH_TOOL } else { ASK_IN_TEXT };
-    let done = if e.goal_branch.is_some() { GOAL_DONE } else { GIT_DONE };
-    let (changes, done) = if e.free { (FREE_CHANGES, FREE_DONE) } else { (GIT_CHANGES, done) };
+    let (changes, done) = if e.free { (FREE_CHANGES, FREE_DONE) } else { (GIT_CHANGES, GIT_DONE) };
     let handoff = if e.handoff { format!("- {HANDOFF_NOTE}\n") } else { String::new() };
     let mut s = format!(
         "You are an automated cli-companion worker. The app does not deliver anything for you: you deliver the work yourself, \
@@ -146,7 +137,7 @@ pub fn reviewer_instructions(e: &EnvInfo, workspace_rules: &str, reviewed_e2e: b
     let mut s = format!(
         "You are an automated cli-companion reviewer. Work only inside {dir}; never touch other folders.\n\n{body}",
         dir = e.workdir,
-        body = goal::reviewer_body(e)
+        body = REVIEWER_INSTRUCTIONS
     );
     s.truncate(s.trim_end().len());
     s.push_str("\n\n");
@@ -243,11 +234,7 @@ pub fn environment(e: &EnvInfo) -> String {
     }
     s.push_str(&format!("- Repository checkout: {}\n", e.repo_dir));
     s.push_str(&format!("- Your working folder: {}\n", e.workdir));
-    let mode = match e.goal_branch {
-        Some(goal) => goal::mode_label(goal, e.base.unwrap_or("<base>")),
-        None => mode_label(e.delivery).to_string(),
-    };
-    s.push_str(&format!("- Delivery mode: {mode}\n"));
+    s.push_str(&format!("- Delivery mode: {}\n", mode_label(e.delivery)));
     let reviewing = t.kind == TaskKind::Review;
     match (e.worktree(), &t.worktree) {
         (true, Some(w)) if reviewing => s.push_str(&format!(
@@ -267,9 +254,7 @@ pub fn environment(e: &EnvInfo) -> String {
         _ => s.push_str("- No dedicated worktree: you work directly in the repository checkout, on the branch that is currently checked out.\n"),
     }
     if let (Some(b), Some(base)) = (e.branch, e.base) {
-        if let Some(goal) = e.goal_branch {
-            s.push_str(&goal::branch_line(reviewing, b, goal, base));
-        } else if reviewing {
+        if reviewing {
             s.push_str(&format!("- Base branch: {base}\n"));
         } else {
             s.push_str(&format!("- Task branch: {b}; base branch: {base}\n"));
@@ -315,9 +300,6 @@ fn push_e2e_step(e: &EnvInfo, steps: &mut Vec<String>) {
 pub fn delivery_steps(e: &EnvInfo) -> String {
     if e.free {
         return free_delivery_steps(e);
-    }
-    if let Some(goal) = e.goal_branch {
-        return goal::delivery_steps(e, goal);
     }
     let (branch, base) = (e.branch.unwrap_or("task/<id>"), e.base.unwrap_or("<base>"));
     let mut head = format!("Delivery: {}\n", mode_label(e.delivery));

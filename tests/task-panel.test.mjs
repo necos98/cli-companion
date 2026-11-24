@@ -34,8 +34,8 @@ const task = (id, status, extra = {}) => ({
 
 describe("stripMarkdown / specExcerpt", () => {
   it("toglie titoli, elenchi, enfasi, codice e link", () => {
-    const md = "## Goal\n- usa **grassetto** e `codice`\n1. vedi [la doc](http://x.y)\n```rust\nfn a(){}\n```";
-    assert.equal(stripMarkdown(md), "Goal usa grassetto e codice vedi la doc fn a(){}");
+    const md = "## Titolo\n- usa **grassetto** e `codice`\n1. vedi [la doc](http://x.y)\n```rust\nfn a(){}\n```";
+    assert.equal(stripMarkdown(md), "Titolo usa grassetto e codice vedi la doc fn a(){}");
   });
   it("accorcia con i puntini", () => {
     const out = specExcerpt("a".repeat(300), 50);

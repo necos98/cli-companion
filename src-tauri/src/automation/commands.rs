@@ -1,7 +1,6 @@
 //! Comandi Tauri dell'automazione, invocati dal frontend.
 
 use super::*;
-use crate::board::FollowUpState;
 
 /// Il frontend ha chiuso un tab automatico (utente, app o shell uscita).
 #[tauri::command]
@@ -44,7 +43,7 @@ pub async fn board_set(
     .await
 }
 
-/// Nuovo task creato a mano (senza proposta): `NewTaskSpec`, con il goal aperto facoltativo.
+/// Nuovo task creato a mano (senza proposta): `NewTaskSpec`.
 #[tauri::command]
 pub async fn task_create(app: AppHandle, workspace_id: String, spec: Value) -> Result<BoardView, String> {
     crate::blocking(move || {
@@ -102,138 +101,21 @@ pub async fn task_move(
     .await
 }
 
-/// "Chiudi goal": elimina i task `queued` e `failed` del goal, scarta le sue
-/// proposte e lo chiude `abandoned` (errore se un suo task e' in corso).
-#[tauri::command]
-pub async fn goal_close(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_close(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id)
-    })
-    .await
-}
-
-/// "Elimina branch": cancella i branch `goal/<id>` di un goal abbandonato (errore
-/// se e' aperto o consegnato, o se git ne rifiuta uno).
-#[tauri::command]
-pub async fn goal_delete_branches(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        let (st, host) = (app.state::<AutomationState>(), TauriHost(app.clone()));
-        boards::goal_delete_branches(&st, &host, &workspace_id, &goal_id)
-    })
-    .await
-}
-
-/// Aggiunge una nota dell'utente al registro delle decisioni di un goal aperto.
-#[tauri::command]
-pub async fn goal_add_note(
-    app: AppHandle,
-    workspace_id: String,
-    goal_id: String,
-    text: String,
-) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_add_note(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id, &text)
-    })
-    .await
-}
-
-/// Scarta (`dismissed`) o manda all'Intake (`promoted`) il follow-up `index` di un goal chiuso.
-#[tauri::command]
-pub async fn goal_set_follow_up(
-    app: AppHandle,
-    workspace_id: String,
-    goal_id: String,
-    index: usize,
-    state: FollowUpState,
-) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_set_follow_up(
-            &app.state::<AutomationState>(),
-            &TauriHost(app.clone()),
-            &workspace_id,
-            &goal_id,
-            index,
-            state,
-        )
-    })
-    .await
-}
-
-/// Accetta o scarta una proposta dell'Intake. Con una proposta accettata che crea
-/// un goal nuovo, `auto_deliver` e' la sua consegna automatica e `auto_fix` i suoi
-/// giri di correzione automatica (0..=3): errore se attivi e la proposta non crea
-/// un goal.
+/// Accetta o scarta una proposta dell'Intake.
 #[tauri::command]
 pub async fn proposal_decide(
     app: AppHandle,
     workspace_id: String,
     proposal_id: String,
     accept: bool,
-    auto_deliver: Option<bool>,
-    auto_fix: Option<u8>,
 ) -> Result<BoardView, String> {
     crate::blocking(move || {
-        let acceptance = board::Acceptance { auto_deliver, auto_fix, automatic: false, in_place: false };
-        boards::proposal_decide_with(
+        boards::proposal_decide(
             &app.state::<AutomationState>(),
             &TauriHost(app.clone()),
             &workspace_id,
             &proposal_id,
             accept,
-            acceptance,
-        )
-    })
-    .await
-}
-
-/// Giri di correzione automatica di un goal aperto (0..=3), dal dettaglio del goal.
-#[tauri::command]
-pub async fn goal_set_auto_fix(
-    app: AppHandle,
-    workspace_id: String,
-    goal_id: String,
-    max_rounds: u8,
-) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_set_auto_fix(
-            &app.state::<AutomationState>(),
-            &TauriHost(app.clone()),
-            &workspace_id,
-            &goal_id,
-            max_rounds,
-        )
-    })
-    .await
-}
-
-/// "Consegna" / "Consegna comunque": crea il task di consegna del goal pronto
-/// (anche se l'ultima review ha trovato problemi: e' la scelta dell'utente).
-#[tauri::command]
-pub async fn goal_deliver(app: AppHandle, workspace_id: String, goal_id: String) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_deliver(&app.state::<AutomationState>(), &TauriHost(app.clone()), &workspace_id, &goal_id)
-    })
-    .await
-}
-
-/// Impostazioni di consegna di un goal aperto: consegna automatica e/o Bot di
-/// consegna (acceso, con `work` fra i tipi di task).
-#[tauri::command]
-pub async fn goal_set_delivery(
-    app: AppHandle,
-    workspace_id: String,
-    goal_id: String,
-    auto_deliver: Option<bool>,
-    bot: Option<String>,
-) -> Result<BoardView, String> {
-    crate::blocking(move || {
-        boards::goal_set_delivery(
-            &app.state::<AutomationState>(),
-            &TauriHost(app.clone()),
-            &workspace_id,
-            &goal_id,
-            auto_deliver,
-            bot,
         )
     })
     .await

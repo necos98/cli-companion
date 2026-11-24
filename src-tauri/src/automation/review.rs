@@ -1,11 +1,10 @@
 //! Task di revisione lato automazione: cosa legge il revisore in `get_task` e i
-//! tool di sessione che gli sono concessi (`get_task_details`, `propose_tasks`,
-//! `get_goal`;
+//! tool di sessione che gli sono concessi (`get_task_details`, `propose_tasks`;
 //! quali sono lo dice la tabella di `roles`). Il resto del ciclo di vita e'
 //! quello di ogni worker; i tipi e la validazione del verdetto sono in
 //! `crate::board::review`.
 
-use super::boards::{get_goal, propose_tasks, task_details};
+use super::boards::{propose_tasks, task_details};
 use super::rpc::misrouted;
 use super::*;
 use crate::board::texts::{self, EnvInfo};
@@ -16,14 +15,13 @@ use serde_json::json;
 pub(super) fn get_task_json(info: &EnvInfo, workspace_rules: &str, board: &Board) -> Value {
     // Il revisore lancia gli E2E se almeno un task revisionato li richiede.
     let reviewed_e2e = info.task.depends_on.iter().any(|d| board.task(d).is_some_and(|t| t.e2e));
-    let mut out = json!({
+    let out = json!({
         "task": info.task.task,
         "title": info.task.title,
         "instructions": texts::reviewer_instructions(info, workspace_rules, reviewed_e2e),
         "environment": texts::environment(info),
         "reviewed_tasks": board::reviewed_tasks(board, info.task),
     });
-    board::Handoff::of_reviewer(board, info.task).add_to(&mut out);
     out
 }
 
@@ -44,7 +42,6 @@ pub(super) fn rpc_reviewer<H: Host>(
         Method::ProposeTasks => propose_tasks(st, host, &ws, session, Some(task_id), params),
         Method::GetTaskDetails => task_details(st, host, &ws, params),
         Method::GetWorkspaceSettings => Ok(settings::get_settings(st, host, &ws)),
-        Method::GetGoal => get_goal(st, host, &ws, params),
         other => Err(misrouted(other)),
     }
 }

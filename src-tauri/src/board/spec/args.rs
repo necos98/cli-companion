@@ -1,10 +1,8 @@
 //! Gli argomenti dei comandi Tauri `task_create` e `task_update` come li invia
-//! l'interfaccia: descrivono al frontend la forma del JSON che legge `parse_spec`
-//! (con il goal di `task_create`, letto da `parse_new_task`).
+//! l'interfaccia: descrivono al frontend la forma del JSON che legge `parse_spec`.
 
-use super::{parse_goal_id, parse_spec, TaskKind, TaskSpec, GOAL_KEY};
+use super::TaskKind;
 use serde::Serialize;
-use serde_json::Value;
 use ts_rs::TS;
 
 /// Argomento di `task_create` come lo invia l'interfaccia. Il comando riceve JSON
@@ -42,21 +40,6 @@ pub struct NewTaskSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub e2e: Option<bool>,
-    /// Goal aperto in cui entra il task; `null` o assente = task sciolto.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub goal: Option<String>,
-}
-
-/// Legge l'argomento di `task_create` (forma di `NewTaskSpec`): la specifica,
-/// letta da `parse_spec`, e il goal facoltativo, che non ne fa parte.
-pub fn parse_new_task(v: &Value) -> Result<(TaskSpec, Option<String>), String> {
-    let mut fields = v.as_object().ok_or_else(|| "each task must be an object".to_string())?.clone();
-    let goal = match fields.remove(GOAL_KEY) {
-        None | Some(Value::Null) => None,
-        Some(id) => Some(parse_goal_id(&id)?),
-    };
-    Ok((parse_spec(&Value::Object(fields), None)?, goal))
 }
 
 /// Argomento di `task_update` come lo invia l'interfaccia (letto da `parse_spec`

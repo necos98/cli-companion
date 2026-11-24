@@ -14,21 +14,15 @@ use serde_json::json;
 mod agent_ready;
 mod archive;
 mod auth;
-mod auto_fix;
 mod board_flow;
 mod bot_kinds;
 mod bot_settings;
 mod bot_tasks;
 mod bot_worker;
-mod deliver;
-mod deliver_flow;
 mod e2e;
 mod e2e_cancel;
 mod e2e_manual;
-mod follow_up;
 mod free_mode;
-mod goal_branch;
-mod goals;
 mod handoff;
 mod hub_hook;
 mod plan;
@@ -96,8 +90,6 @@ struct FakeHost {
     deleted: Arc<Mutex<Vec<String>>>,
     /// Task archiviati (workspace, task) e l'errore forzato di `archive_tasks`.
     archive_log: Arc<Mutex<Vec<(String, Task)>>>,
-    /// Goal archiviati (workspace, goal); `archive_err` vale anche per loro.
-    goal_archive_log: Arc<Mutex<Vec<(String, Goal)>>>,
     archive_err: Arc<Mutex<Option<String>>>,
     excludes: Arc<Mutex<Vec<String>>>,
     notices: Arc<Mutex<Vec<Notice>>>,
@@ -197,10 +189,6 @@ impl FakeHost {
     fn git_rule(&self, needle: &str, ok: bool, stdout: &str, stderr: &str) {
         let out = GitOut { ok, stdout: stdout.to_string(), stderr: stderr.to_string() };
         self.git_rules.lock().unwrap().push((needle.to_string(), out));
-    }
-    /// Da ora `goal/<goal>` "esiste" nei repository (il git finto non tiene i branch).
-    fn goal_branch_exists(&self, goal: &str) {
-        self.git_rule(&format!("rev-parse --verify --quiet refs/heads/goal/{goal}"), true, "", "");
     }
     /// Variabili preparate per il tab `tab_id` (vuote se nessuna).
     fn staged_env(&self, tab_id: &str) -> Vec<(String, String)> {
@@ -471,13 +459,6 @@ impl Host for FakeHost {
             return Err(e);
         }
         self.archive_log.lock().unwrap().extend(tasks.iter().map(|t| (ws_id.to_string(), t.clone())));
-        Ok(())
-    }
-    fn archive_goals(&self, ws_id: &str, goals: &[Goal]) -> Result<(), String> {
-        if let Some(e) = self.archive_err.lock().unwrap().clone() {
-            return Err(e);
-        }
-        self.goal_archive_log.lock().unwrap().extend(goals.iter().map(|g| (ws_id.to_string(), g.clone())));
         Ok(())
     }
     fn emit_board(&self, view: &BoardView) {

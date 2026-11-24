@@ -4,50 +4,22 @@
 
 import { displayStatus } from "./board.ts";
 import type { BoardView, Proposal, SettingsProposalView, Task } from "./board.ts";
-import { openFollowUpGroups } from "./followUps.ts";
-import type { FollowUpEntry } from "./followUps.ts";
-import { deliveryAction, findGoal, goalLabel, isGoalOpen } from "./goals.ts";
-import type { GoalView } from "./goals.ts";
 import { failureReason } from "./taskPanel.ts";
 
 export type NeedsYouItem =
-  | {
-      kind: "proposal";
-      proposal: Proposal;
-      /** Titolo del goal a cui appartiene (o che nascerebbe); null per i task sciolti. */
-      goal: string | null;
-      /** Giro che la proposta di correzione aprirebbe; null se non è una correzione. */
-      round: number | null;
-    }
+  | { kind: "proposal"; proposal: Proposal }
   | { kind: "settings"; proposal: SettingsProposalView }
-  /** Goal pronto da consegnare; `label` è il pulsante ("Consegna" o "Consegna comunque"). */
-  | { kind: "deliver"; goal: GoalView; label: string }
-  /** Follow-up aperti di un goal chiuso da poco (vedi `openFollowUpGroups`). */
-  | { kind: "follow_ups"; goal: GoalView; entries: FollowUpEntry[] }
-  | { kind: "attention"; task: Task; goal: string | null; question: boolean }
+  | { kind: "attention"; task: Task; question: boolean }
   | {
       kind: "failed";
       task: Task;
-      goal: string | null;
       /** Motivo su una riga ("" se non noto). */
       reason: string;
       /** Titoli dei task in coda che questo fallimento blocca. */
       blocking: string[];
     };
 
-type Source = Pick<BoardView, "tasks" | "proposals" | "settings_proposals" | "goals">;
-
-/** Titolo del goal di una proposta: quello nuovo che porta, o quello aperto a cui si aggiunge. */
-function proposalGoal(proposal: Proposal, board: Pick<Source, "goals">): string | null {
-  return proposal.goal?.title ?? goalLabel(board.goals ?? [], proposal.goal_id);
-}
-
-/** Una proposta del revisore su un goal esistente è una correzione: apre il giro successivo. */
-function correctionRound(proposal: Proposal, board: Pick<Source, "goals">): number | null {
-  if (!proposal.source_task) return null;
-  const goal = findGoal(board.goals ?? [], proposal.goal_id);
-  return goal ? goal.round + 1 : null;
-}
+type Source = Pick<BoardView, "tasks" | "proposals" | "settings_proposals">;
 
 /** I task in coda bloccati da `taskId` (campo `blocked_by` della vista), per titolo. */
 function blockedTitles(tasks: readonly Task[], taskId: string): string[] {
@@ -55,46 +27,27 @@ function blockedTitles(tasks: readonly Task[], taskId: string): string[] {
 }
 
 /**
- * Proposte di task, proposte di impostazioni, goal pronti da consegnare, task in corso che aspettano l'utente (domande prima
- * dell'attenzione), task falliti e, se si passa `now`, i follow-up aperti dei goal chiusi di recente (un elemento per
- * goal), nell'ordine della board dentro ogni gruppo.
+ * Proposte di task, proposte di impostazioni, task in corso che aspettano l'utente (domande prima dell'attenzione) e
+ * task falliti, nell'ordine della board dentro ogni gruppo.
  */
-export function needsYou(board: Source, now?: number): NeedsYouItem[] {
-  const goals = board.goals ?? [];
+export function needsYou(board: Source): NeedsYouItem[] {
   const items: NeedsYouItem[] = [];
-  for (const proposal of board.proposals) {
-    items.push({
-      kind: "proposal",
-      proposal,
-      goal: proposalGoal(proposal, board),
-      round: correctionRound(proposal, board),
-    });
-  }
+  for (const proposal of board.proposals) items.push({ kind: "proposal", proposal });
   for (const proposal of board.settings_proposals) items.push({ kind: "settings", proposal });
-  for (const goal of goals) {
-    const label = isGoalOpen(goal) && goal.waiting.includes("deliver") ? deliveryAction(goal) : null;
-    if (label) items.push({ kind: "deliver", goal, label });
-  }
   const waiting = board.tasks.flatMap((task) => {
     const shown = displayStatus(task);
     return shown === "question" || shown === "attention" ? [{ task, question: shown === "question" }] : [];
   });
   waiting.sort((a, b) => Number(b.question) - Number(a.question));
-  for (const { task, question } of waiting) {
-    items.push({ kind: "attention", task, goal: goalLabel(goals, task.goal), question });
-  }
+  for (const { task, question } of waiting) items.push({ kind: "attention", task, question });
   for (const task of board.tasks) {
     if (task.status !== "failed") continue;
     items.push({
       kind: "failed",
       task,
-      goal: goalLabel(goals, task.goal),
       reason: failureReason(task),
       blocking: blockedTitles(board.tasks, task.id),
     });
-  }
-  if (now !== undefined) {
-    for (const { goal, entries } of openFollowUpGroups(goals, now)) items.push({ kind: "follow_ups", goal, entries });
   }
   return items;
 }
@@ -105,9 +58,6 @@ export function needsYouKey(item: NeedsYouItem): string {
     case "proposal":
     case "settings":
       return `${item.kind}:${item.proposal.id}`;
-    case "deliver":
-    case "follow_ups":
-      return `${item.kind}:${item.goal.id}`;
     default:
       return `${item.kind}:${item.task.id}`;
   }

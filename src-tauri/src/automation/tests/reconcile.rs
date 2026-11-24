@@ -200,14 +200,12 @@ fn an_orphan_is_not_queued_if_a_task_with_its_id_appears_in_the_meantime() {
         },
         workspace: None,
         keep_unmerged: true,
-        goal_branch: None,
     };
     assert!(reg.queue_orphan_cleanup(target.clone()));
     assert_eq!(reg.take_effects().len(), 1);
     reg.create_task(
         "ws-1",
         crate::board::TaskSpec { id: "x".into(), title: "X".into(), task: "t".into(), ..Default::default() },
-        None,
         crate::board::SpecContext::default(),
         1,
     )
@@ -302,11 +300,25 @@ fn removing_a_workspace_without_worktrees_cleans_nothing() {
 }
 
 #[test]
-fn a_goal_branch_worktree_is_never_an_orphan() {
-    let h = with_listed(DeliveryMode::Pr, &[("goal-x", Some("goal/x"))]);
-    orphan_exists(&h, "goal-x");
+fn a_leftover_worktree_on_a_goal_branch_is_removed_but_its_branch_is_never_deleted() {
+    let h = FakeHost::with_delivery(DeliveryMode::Pr, true);
+    *h.repos.lock().unwrap() = vec![".".to_string()];
+    h.dirs.lock().unwrap().push("C:/p/.worktrees/g".to_string());
+    let target = CleanupTarget {
+        ws_id: "ws-1".into(),
+        task_id: "g".into(),
+        repo: None,
+        wt: WorktreeInfo {
+            path: "C:/p/.worktrees/g".into(),
+            branch: "goal/export".into(),
+            base: "main".into(),
+            setup_done: true,
+        },
+        workspace: None,
+        keep_unmerged: false,
+    };
     let st = AutomationState::default();
-    let report = st.reconcile_worktrees(&h);
-    assert!(report.queued.is_empty() && report.warnings.is_empty(), "{report:?}");
-    assert!(removals(&h).is_empty() && branch_deletions(&h).is_empty(), "{:?}", h.git_log());
+    assert!(st.run(&h, |r| r.queue_orphan_cleanup(target)));
+    assert_eq!(removals(&h), ["C:\\p|worktree remove C:/p/.worktrees/g"], "{:?}", h.git_log());
+    assert!(branch_deletions(&h).is_empty(), "the goal branch may hold undelivered work: {:?}", h.git_log());
 }

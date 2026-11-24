@@ -3,7 +3,6 @@ import { Handle, Position } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import { FolderOpen, GitBranch, RotateCw, TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
-import GoalTag from "./GoalTag";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { isReview } from "../../lib/review";
 import { isPlan } from "../../lib/plan";
@@ -27,14 +26,12 @@ export type TaskNodeData = {
   selected: boolean;
   /** Perché è fallito o da chi è bloccato (vedi `issueLabel`). */
   issue: string | null;
-  /** Titolo del goal del task; null = sciolto. */
-  goal: string | null;
 } & Record<string, unknown>;
 export type TaskFlowNode = Node<TaskNodeData, "task">;
 
 /** Nodo del grafo: un task con stato (anche "Richiede attenzione"), branch e ultimo report. */
 function TaskNode({ data }: NodeProps<TaskFlowNode>) {
-  const { task, selected, issue, goal } = data;
+  const { task, selected, issue } = data;
   const status = displayStatus(task);
   const sub = status === "attention" ? null : workerSubStatus(task);
   const report = shortReport(task);
@@ -97,7 +94,6 @@ function TaskNode({ data }: NodeProps<TaskFlowNode>) {
       </p>
       <p className="flex items-center gap-1.5 truncate font-mono text-[10px] text-faint">
         <span className="truncate">{task.id}</span>
-        {goal && <GoalTag title={goal} className="flex-shrink-0 text-[10px]" />}
         {task.repo && (
           <span
             className="max-w-[45%] flex-shrink-0 truncate rounded border border-border-strong px-1 text-muted-foreground"

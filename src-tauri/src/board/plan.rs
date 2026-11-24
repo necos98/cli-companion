@@ -4,7 +4,7 @@
 //! integrare o istruzioni di consegna. Lo crea solo l'app (vedi
 //! `automation::planner`), mai una proposta o un task manuale. Funzioni pure.
 
-use super::{ReportFields, TaskKind, TaskSpec, DELIVER_KIND_RESERVED};
+use super::{ReportFields, TaskKind, TaskSpec};
 
 /// Errore di un `kind: "plan"` arrivato da fuori (proposta, task manuale, modifica).
 pub const PLAN_KIND_RESERVED: &str =
@@ -20,16 +20,13 @@ impl TaskKind {
     }
 }
 
-/// `kind` letto da un input esterno: `plan` e `deliver` non si assegnano, e un
-/// task `plan` o `deliver` non cambia tipo. `base` e' il tipo attuale del task
-/// modificato.
+/// `kind` letto da un input esterno: `plan` non si assegna, e un task `plan`
+/// non cambia tipo. `base` e' il tipo attuale del task modificato.
 pub fn check_kind_input(kind: TaskKind, base: Option<TaskKind>) -> Result<(), String> {
     match (base, kind) {
-        (Some(TaskKind::Plan), TaskKind::Plan) | (Some(TaskKind::Deliver), TaskKind::Deliver) => Ok(()),
+        (Some(TaskKind::Plan), TaskKind::Plan) => Ok(()),
         (Some(TaskKind::Plan), _) => Err("the kind of a plan task cannot be changed".to_string()),
-        (Some(TaskKind::Deliver), _) => Err("the kind of a delivery task cannot be changed".to_string()),
         (_, TaskKind::Plan) => Err(PLAN_KIND_RESERVED.to_string()),
-        (_, TaskKind::Deliver) => Err(DELIVER_KIND_RESERVED.to_string()),
         _ => Ok(()),
     }
 }

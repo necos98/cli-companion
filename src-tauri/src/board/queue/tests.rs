@@ -61,7 +61,7 @@ fn a_model_the_agent_does_not_accept_rejects_the_creation() {
 fn a_proposal_keeps_the_agent_as_written_and_resolves_it_when_accepted() {
     let mut b = Board::new("ws-1");
     let specs = vec![spec("plain", None), spec("explicit", Some(default_id()))];
-    b.add_proposal("p-1".into(), "tab-1", None, specs.into(), SpecContext::default(), 1).unwrap();
+    b.add_proposal("p-1".into(), "tab-1", None, specs, SpecContext::default(), 1).unwrap();
     let kept: Vec<_> = b.proposal("p-1").unwrap().tasks.iter().map(|t| t.agent.clone()).collect();
     assert_eq!(kept, [None, Some(default_id().to_string())]);
 
@@ -80,7 +80,7 @@ fn a_proposal_keeps_the_agent_as_written_and_resolves_it_when_accepted() {
 fn a_proposal_with_an_unusable_agent_is_rejected_when_proposed() {
     let mut b = Board::new("ws-1");
     let err = b
-        .add_proposal("p-1".into(), "tab-1", None, vec![spec("a", Some(GONE))].into(), SpecContext::default(), 1)
+        .add_proposal("p-1".into(), "tab-1", None, vec![spec("a", Some(GONE))], SpecContext::default(), 1)
         .unwrap_err();
     assert_eq!(err, "task 'a': unknown agent: gone");
     assert!(b.proposals.is_empty());
@@ -209,7 +209,6 @@ fn proposal(kind: &str, bot: &str) -> Vec<TaskSpec> {
         {"id": "p", "title": "T", "task": "x", "bot": bot, "kind": kind, "depends_on": ["a"]}
     ]}))
     .unwrap()
-    .tasks
 }
 
 /// Una board con il task `a` (Bot `general`) da cui le proposte dipendono.
@@ -224,15 +223,15 @@ fn a_proposal_needs_a_bot_that_runs_the_kind_of_each_task() {
     let list = crate::bots::default_agent_bots();
     let ctx = SpecContext { workspace_agent: None, bots: &list };
     let b = board_with_a(ctx);
-    let refused = |kind: &str, bot: &str| b.check_specs(&proposal(kind, bot), &HashSet::new(), None, ctx).unwrap_err();
+    let refused = |kind: &str, bot: &str| b.check_specs(&proposal(kind, bot), &HashSet::new(), ctx).unwrap_err();
     assert_eq!(
         refused("review", "general"),
         "task 'p': bot General cannot run review tasks: choose a bot whose kinds include review (see \
          get_workspace_settings.bots)"
     );
     assert!(refused("work", "intake").starts_with("task 'p': bot Intake cannot run work tasks"));
-    assert!(b.check_specs(&proposal("review", "reviewer"), &HashSet::new(), None, ctx).is_ok());
-    assert!(b.check_specs(&proposal("work", "general"), &HashSet::new(), None, ctx).is_ok());
+    assert!(b.check_specs(&proposal("review", "reviewer"), &HashSet::new(), ctx).is_ok());
+    assert!(b.check_specs(&proposal("work", "general"), &HashSet::new(), ctx).is_ok());
 }
 
 #[test]

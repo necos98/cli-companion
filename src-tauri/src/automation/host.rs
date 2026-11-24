@@ -92,8 +92,6 @@ pub trait Host: Clone + Send + 'static {
     fn delete_board(&self, ws_id: &str);
     /// Aggiunge all'archivio del workspace i task conclusi usciti dalla board.
     fn archive_tasks(&self, ws_id: &str, tasks: &[Task]) -> Result<(), String>;
-    /// Aggiunge all'archivio dei goal del workspace i goal chiusi usciti dalla board.
-    fn archive_goals(&self, ws_id: &str, goals: &[Goal]) -> Result<(), String>;
     fn emit_board(&self, view: &BoardView);
     /// La vista e' stata appena pubblicata (revisione nuova, dopo `emit_board`):
     /// la riceve l'Agents HUB per gli eventi nei thread. Chiamato sotto il lock
@@ -372,10 +370,6 @@ impl Host for TauriHost {
 
     fn archive_tasks(&self, ws_id: &str, tasks: &[Task]) -> Result<(), String> {
         board_files::append_archive(&worktrees::boards_dir(&self.0)?, ws_id, tasks)
-    }
-
-    fn archive_goals(&self, ws_id: &str, goals: &[Goal]) -> Result<(), String> {
-        board_files::append_goal_archive(&worktrees::boards_dir(&self.0)?, ws_id, goals)
     }
 
     fn emit_board(&self, view: &BoardView) {

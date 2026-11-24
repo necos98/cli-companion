@@ -243,13 +243,11 @@ describe("preferenze", () => {
     const m = memory();
     const p = {
       view: "list",
-      goal: "export",
       list: {
         statuses: ["done"],
         repos: ["api"],
         agents: ["ag-one"],
         sort: { key: "title", desc: false },
-        groupByGoal: true,
       },
     };
     writePrefs(m, "w1", p);
@@ -257,6 +255,12 @@ describe("preferenze", () => {
     assert.deepEqual(readPrefs(m, "w1"), p);
     assert.equal(readPrefs(m, "w2").view, "graph");
     assert.deepEqual(readPrefs(m, "w3"), defaultPrefs());
+  });
+  it("campi di versioni precedenti ignorati", () => {
+    const m = memory(
+      JSON.stringify({ w: { view: "list", ["go" + "al"]: "x", list: { ["groupBy" + "Go" + "al"]: true } } }),
+    );
+    assert.deepEqual(readPrefs(m, "w"), { ...defaultPrefs(), view: "list" });
   });
   it("valori non validi scartati", () => {
     const m = memory(

@@ -149,6 +149,4 @@ fn only_the_risky_presets_start_disabled() {
         assert_eq!(p.bot().enabled, p.enabled_by_default, "{}", p.id);
     }
     assert!(find(GENERAL_ID).unwrap().enabled_by_default, "general is never disabled");
-    assert!(off_by_default("git-operator") && off_by_default("release"));
-    assert!(!off_by_default(GENERAL_ID) && !off_by_default("custom-git-operator") && !off_by_default("nope"));
 }

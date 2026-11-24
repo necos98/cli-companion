@@ -256,7 +256,7 @@ fn short(commit: &str) -> String {
     commit.chars().take(SHORT_COMMIT).collect()
 }
 
-/// Un `complete_task` "completed" di un task `work` o `deliver` marcato E2E richiede
+/// Un `complete_task` "completed" di un task `work` marcato E2E richiede
 /// un'ultima esecuzione passata sul codice attuale. `current` e' l'impronta
 /// del codice di adesso (`None` = non calcolata).
 pub fn check_gate(
@@ -265,7 +265,7 @@ pub fn check_gate(
     repo_has_e2e: bool,
     current: Option<&Result<CodeFingerprint, String>>,
 ) -> Result<GateOutcome, String> {
-    if !completed || !matches!(task.kind, TaskKind::Work | TaskKind::Deliver) || !task.e2e {
+    if !completed || task.kind != TaskKind::Work || !task.e2e {
         return Ok(GateOutcome::NotRequired);
     }
     if !repo_has_e2e {

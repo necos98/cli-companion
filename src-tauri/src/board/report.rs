@@ -9,9 +9,7 @@ use ts_rs::TS;
 const COMMIT_MAX: usize = 100;
 const PR_URL_MAX: usize = 500;
 const LIST_MAX: usize = 100;
-/// Voci massime di `commits` e `pr_urls` (uno per repository).
-pub const DELIVERED_MAX: usize = 20;
-pub(in crate::board) const LIST_ITEM_MAX: usize = 2000;
+const LIST_ITEM_MAX: usize = 2000;
 const FILES_MAX: usize = 500;
 const FILE_MAX: usize = 512;
 const TESTS_MAX: usize = 50;
@@ -42,12 +40,6 @@ pub struct TaskReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pr_url: Option<String>,
-    /// Commit finali consegnati, uno per repository (solo task `deliver`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commits: Vec<String>,
-    /// Link delle PR, una per repository (solo task `deliver`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pr_urls: Vec<String>,
     #[serde(default)]
     pub files_changed: Vec<String>,
     #[serde(default)]
@@ -75,8 +67,6 @@ pub struct TaskReport {
 pub struct ReportFields {
     pub commit: Option<String>,
     pub pr_url: Option<String>,
-    pub commits: Vec<String>,
-    pub pr_urls: Vec<String>,
     pub files_changed: Vec<String>,
     pub tests: Vec<TestRun>,
     pub follow_ups: Vec<String>,
@@ -102,11 +92,7 @@ fn str_list(v: &Value, label: &str, max_items: usize, max_len: usize) -> Result<
 
 /// Stringa opzionale senza spazi ne' caratteri di controllo (hash, link).
 fn token(p: &Value, key: &str, max: usize, what: &str) -> Result<Option<String>, String> {
-    token_of(p.get(key), key, max, what)
-}
-
-fn token_of(v: Option<&Value>, key: &str, max: usize, what: &str) -> Result<Option<String>, String> {
-    match v {
+    match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => {
             let s = s.trim();
@@ -119,32 +105,6 @@ fn token_of(v: Option<&Value>, key: &str, max: usize, what: &str) -> Result<Opti
             }
         }
         Some(_) => Err(format!("{key} must be a string")),
-    }
-}
-
-/// Elenco opzionale di `token`, al massimo `DELIVERED_MAX` voci; le vuote cadono.
-fn token_list(p: &Value, key: &str, max: usize, what: &str) -> Result<Vec<String>, String> {
-    let arr = match p.get(key) {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(Value::Array(arr)) => arr,
-        Some(_) => return Err(format!("{key} must be an array of strings")),
-    };
-    if arr.len() > DELIVERED_MAX {
-        return Err(format!("{key} has too many entries (max {DELIVERED_MAX})"));
-    }
-    let mut out = Vec::new();
-    for e in arr {
-        out.extend(token_of(Some(e), key, max, what)?);
-    }
-    Ok(out)
-}
-
-/// Un link di PR e' http(s).
-fn check_pr_url(url: &str, key: &str) -> Result<(), String> {
-    if url.starts_with("https://") || url.starts_with("http://") {
-        Ok(())
-    } else {
-        Err(format!("invalid {key} (an http(s) link)"))
     }
 }
 
@@ -176,10 +136,9 @@ pub fn parse_report_fields(p: &Value) -> Result<ReportFields, String> {
     let nonnull = |k: &str| p.get(k).filter(|v| !v.is_null());
     let commit = token(p, "commit", COMMIT_MAX, "a hash or ref")?;
     let pr_url = token(p, "pr_url", PR_URL_MAX, "a link")?;
-    pr_url.as_deref().map_or(Ok(()), |u| check_pr_url(u, "pr_url"))?;
-    let commits = token_list(p, "commits", COMMIT_MAX, "a hash or ref")?;
-    let pr_urls = token_list(p, "pr_urls", PR_URL_MAX, "a link")?;
-    pr_urls.iter().try_for_each(|u| check_pr_url(u, "pr_urls"))?;
+    if pr_url.as_deref().is_some_and(|u| !(u.starts_with("https://") || u.starts_with("http://"))) {
+        return Err("invalid pr_url (an http(s) link)".to_string());
+    }
     let files_changed =
         nonnull("files_changed").map(|v| str_list(v, "files_changed", FILES_MAX, FILE_MAX)).transpose()?;
     let follow_ups = nonnull("follow_ups").map(|v| str_list(v, "follow_ups", LIST_MAX, LIST_ITEM_MAX)).transpose()?;
@@ -197,8 +156,6 @@ pub fn parse_report_fields(p: &Value) -> Result<ReportFields, String> {
     Ok(ReportFields {
         commit,
         pr_url,
-        commits,
-        pr_urls,
         files_changed: files_changed.unwrap_or_default(),
         tests,
         follow_ups: follow_ups.unwrap_or_default(),
@@ -213,8 +170,6 @@ pub fn build_report(status: &str, summary: &str, f: ReportFields, diffstat: Opti
         summary: summary.to_string(),
         commit: f.commit,
         pr_url: f.pr_url,
-        commits: f.commits,
-        pr_urls: f.pr_urls,
         files_changed: f.files_changed,
         tests: f.tests,
         follow_ups: f.follow_ups,
@@ -224,6 +179,3 @@ pub fn build_report(status: &str, summary: &str, f: ReportFields, diffstat: Opti
         e2e: None,
     }
 }
-
-#[cfg(test)]
-mod tests;

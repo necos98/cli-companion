@@ -3,7 +3,6 @@ import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import AgentBadge from "./AgentBadge";
 import BotBadge from "./BotBadge";
-import GoalTag from "./GoalTag";
 import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
@@ -33,13 +32,11 @@ interface Props {
   selected: boolean;
   /** Mostra il repository davanti al sottotitolo (workspace multi-repo). */
   showRepo: boolean;
-  /** Titolo del goal del task; null = nessuna etichetta (sciolto, o già nell'intestazione del gruppo). */
-  goalTitle: string | null;
   onSelect: (id: string) => void;
 }
 
 /** Riga della Lista: un bottone (tastiera e lettori di schermo) con le celle in griglia. */
-function ListRow({ task, subtitle, agents, now, selected, showRepo, goalTitle, onSelect }: Props) {
+function ListRow({ task, subtitle, agents, now, selected, showRepo, onSelect }: Props) {
   const status = displayStatus(task);
   const sub = [showRepo ? task.repo || "." : null, unavailableText(agents, task.agent_unavailable), subtitle]
     .filter(Boolean)
@@ -75,7 +72,6 @@ function ListRow({ task, subtitle, agents, now, selected, showRepo, goalTitle, o
           <TaskE2eBadge task={task} className="text-[11px]" />
           <BotBadge bots={agents.bots} id={task.bot} className="text-[11px]" />
           <AgentBadge name={agentBadge(agents, task.agent)} className="text-[11px]" />
-          {goalTitle && <GoalTag title={goalTitle} className="text-[11px]" />}
         </span>
         {sub && <span className="truncate text-[11px] text-muted-foreground">{sub}</span>}
       </span>

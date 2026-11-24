@@ -1,18 +1,16 @@
 import { AlertTriangle, MessageCircleQuestion } from "lucide-react";
 import type { Task } from "../../lib/board";
 import { cn } from "@/lib/utils";
-import GoalTag from "./GoalTag";
 
 interface AttentionCardProps {
   task: Task;
-  goal: string | null;
   /** Domanda del worker (blu, decide l'utente) invece di semplice attenzione (arancione). */
   question: boolean;
   onClick: () => void;
 }
 
 /** Card compatta di un task in corso che aspetta l'utente: un solo pulsante. */
-export default function AttentionCard({ task, goal, question, onClick }: AttentionCardProps) {
+export default function AttentionCard({ task, question, onClick }: AttentionCardProps) {
   const Icon = question ? MessageCircleQuestion : AlertTriangle;
   return (
     <button
@@ -33,7 +31,6 @@ export default function AttentionCard({ task, goal, question, onClick }: Attenti
         <span className={cn("truncate text-[11px]", question ? "text-primary" : "text-status-attention")}>
           {question ? "Risposta attesa" : "Richiede attenzione"}
         </span>
-        {goal && <GoalTag title={goal} className="self-start text-[11px]" />}
       </span>
     </button>
   );

@@ -147,14 +147,12 @@ fn find_bot<'b>(spec: &TaskSpec, bot_id: &str, bots: &'b [AgentBot]) -> Result<&
         .ok_or_else(|| format!("task '{}': unknown bot: {bot_id} (see get_workspace_settings.bots)", spec.id))
 }
 
-/// Il Bot esegue i task del tipo della specifica (`TaskKind::bot_kind`: un
-/// `deliver` lo esegue chi esegue i `work`), senza ripieghi su un altro Bot.
+/// Il Bot esegue i task del tipo della specifica, senza ripieghi su un altro Bot.
 fn ensure_runs_kind(spec: &TaskSpec, bot: &AgentBot) -> Result<(), String> {
-    let kind = spec.kind.bot_kind();
-    if bot.runs(kind) {
+    if bot.runs(spec.kind) {
         return Ok(());
     }
-    let kind = kind.as_str();
+    let kind = spec.kind.as_str();
     Err(format!(
         "task '{}': bot {} cannot run {kind} tasks: choose a bot whose kinds include {kind} (see \
          get_workspace_settings.bots)",

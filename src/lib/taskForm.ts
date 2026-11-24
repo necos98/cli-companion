@@ -7,7 +7,6 @@ import { modelError, sanitizeModel } from "./model.ts";
 import { reviewDependencyError } from "./review.ts";
 import { botKindError } from "./taskBot.ts";
 import type { AgentBot } from "../bindings/AgentBot.ts";
-import type { GoalView } from "../bindings/GoalView.ts";
 import type { BoardView, Task, TaskKind, TaskPatch } from "./board.ts";
 
 export const TITLE_MAX = 80;
@@ -172,18 +171,4 @@ export function findCreatedTask(
   let best: Task | null = null;
   for (const t of pool) if (!best || t.created_at >= best.created_at) best = t;
   return best;
-}
-
-/**
- * Task che un task di `goalId` può avere come dipendenza (null = task sciolto): un task di un goal dipende solo da
- * task dello stesso goal; uno sciolto non dipende da task di un goal aperto (docs/GOALS.MD, sez. 3).
- */
-export function goalDependencyPool<T extends Pick<Task, "goal">>(
-  tasks: T[],
-  goals: readonly Pick<GoalView, "id" | "closed_at">[],
-  goalId: string | null,
-): T[] {
-  if (goalId !== null) return tasks.filter((t) => t.goal === goalId);
-  const open = new Set(goals.filter((g) => g.closed_at === undefined).map((g) => g.id));
-  return tasks.filter((t) => t.goal === undefined || !open.has(t.goal));
 }

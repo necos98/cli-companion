@@ -61,7 +61,7 @@ describe("markdown: inline", () => {
 
 describe("markdown: blocchi", () => {
   it("titoli e paragrafi", () => {
-    const b = parseMarkdown("# Goal\nfai la cosa\n\n## Context\ntesto");
+    const b = parseMarkdown("# Titolo\nfai la cosa\n\n## Context\ntesto");
     assert.deepEqual(
       b.map((x) => x.t),
       ["heading", "paragraph", "heading", "paragraph"],

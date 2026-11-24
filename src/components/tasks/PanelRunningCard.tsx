@@ -12,7 +12,6 @@ import { PlanBadge } from "./PlanBadge";
 import BotBadge from "./BotBadge";
 import type { AgentBot } from "../../bindings/AgentBot";
 import BotAvatar from "../BotAvatar";
-import GoalTag from "./GoalTag";
 import type { BotImage } from "../../lib/bots";
 
 interface PanelRunningCardProps {
@@ -24,8 +23,6 @@ interface PanelRunningCardProps {
   bot?: string;
   /** Nome dell'agente da mostrare (null = niente badge: una sola integrazione, quella del workspace). */
   agent?: string | null;
-  /** Titolo del goal del task (null = sciolto). */
-  goal?: string | null;
   /** Immagine del bot (se il suo nome ne ha una). */
   botImage?: BotImage;
   onClick: () => void;
@@ -41,7 +38,6 @@ export default function PanelRunningCard({
   now,
   bots,
   agent = null,
-  goal = null,
   bot,
   botImage,
   onClick,
@@ -100,7 +96,6 @@ export default function PanelRunningCard({
             {meta}
           </span>
         )}
-        {goal && <GoalTag title={goal} className="self-start text-[11px]" />}
       </span>
     </button>
   );
