@@ -5,7 +5,7 @@
 > implementato a far funzionare l'agente.**
 
 Questa guida spiega come aggiungere un agente (Claude Code è la prima integrazione
-di riferimento, OpenCode la seconda, descritta in fondo con ciò che è stato provato).
+di riferimento, OpenCode la seconda e Pi la terza, descritte in fondo con ciò che è stato provato).
 Vale una regola sola:
 **il core non nomina mai un agente specifico**. Tutto ciò che è proprio di un
 agente (comandi, flag, formato degli hook, cartelle di configurazione, sintassi
@@ -15,7 +15,8 @@ riferimento a un agente.
 
 Indice: [Il modello](#il-modello) · [I contratti](#i-contratti) ·
 [Procedura](#procedura-passo-passo) · [Checklist](#checklist-finale) ·
-[Integrazione di riferimento n. 2: OpenCode](#integrazione-di-riferimento-n-2-opencode)
+[Integrazione di riferimento n. 2: OpenCode](#integrazione-di-riferimento-n-2-opencode) ·
+[Integrazione di riferimento n. 3: Pi](#integrazione-di-riferimento-n-3-pi)
 
 ## Il modello
 
@@ -1180,3 +1181,151 @@ Emersi dall'integrazione (il core non si aggira con un `if`, si estende un contr
 
 Ognuno è un cambio del core coperto da test di conformità e dalla
 `FakeIntegration`, e va fatto con le integrazioni esistenti che continuano a passare.
+
+## Integrazione di riferimento n. 3: Pi
+
+Pi (pi coding agent, pacchetto npm `@earendil-works/pi-coding-agent`) è la terza
+integrazione, in `agents/pi_agent/`. L'id è `pi-agent` e non `pi`: il test
+architetturale cerca il nome di ogni agente come sottostringa nel core, e `pi`
+compare in `api`, `pipe`, `spinner`… La conformità passa senza nessun `if` nel core.
+L'unico cambio è nella suite di conformità: il file dei permessi si controlla solo
+per chi dichiara `worker_permissions`.
+
+### Versioni: solo la 1.x
+
+`pi --version` stampa `1.6.0`. `version.rs` accetta solo la major 1; con un'altra
+versione l'installazione è rifiutata con un messaggio che la nomina.
+
+### Nucleo
+
+- **Cartella dell'agente**: `PI_CODING_AGENT_DIR` (con `~` espansa) o `~/.pi/agent`.
+  Su WSL è letta con `bash -lc` nella distro e tradotta con `wsl_to_windows_path`
+  (`agent_dir.rs`).
+- **Estensione**: `extension.ts` è un modulo TypeScript che Pi carica da solo da
+  `<agente>/extensions/<nome>/index.ts`. `extension.rs` lo genera sostituendo i
+  segnaposto `__NOTIFY_COMMAND__`, `__AGENT_ID__`, `__MCP_SERVER__` e `__MCP_COMMAND__`.
+  Senza `CLI_COMPANION_SESSION` è inerte, quindi un `pi` lanciato fuori da
+  cli-companion non cambia.
+
+### 1. Pacchetto
+
+Destinazione `<agente>/extensions/cli-companion-notify/`, con `index.ts` e
+`skills/<preset>/SKILL.md`. Nessun file di configurazione di Pi (`settings.json`,
+`models.json`) viene toccato.
+- La riga di intestazione di `index.ts` fa da marcatore: una cartella con lo stesso
+  nome ma senza il marcatore è di qualcun altro e l'installazione la rifiuta.
+- In `plugin_root` restano una copia del pacchetto e `destination.txt` con la
+  destinazione, che serve alla disinstallazione.
+- `version` è l'fnv32 dei file generati, così un cambio del pacchetto si vede come
+  aggiornamento.
+
+L'estensione registra il server MCP con `pi.registerMcpServer` (`exposure: "direct"`)
+e le skill dei preset con l'evento `resources_discover`.
+
+### 2. Eventi degli hook
+
+| Evento di Pi | Evento del core |
+| --- | --- |
+| `session_start` | `session-start` |
+| `agent_before_settle`, `outcome: "completed"` | `finished` |
+| `agent_before_settle`, altro esito | `needs-input` (other) |
+| `ui_prompt_start` | `needs-input` (question, col titolo) |
+| `session_shutdown` | `session-end` |
+
+`hook_events.rs` normalizza `source`/`reason`:
+- `new` diventa `clear`;
+- `resume`, `fork` e `reload` diventano `resume`;
+- gli altri valori (`startup`, `quit`…) passano invariati.
+
+Il blocco del fine turno (`stop_block_output`) è `{"continue":"<motivo>"}`.
+L'estensione lo consegna con `pi.sendUserMessage(motivo, {deliverAs: "followUp"})` e
+risponde `{continue: true}` ad `agent_before_settle`.
+
+Limiti del processo di notifica, uguali a OpenCode:
+- timeout di 10 s;
+- stdout letto fino a 64 KB;
+- prompt troncato a 2000 caratteri;
+- eventi senza id di sessione ignorati.
+
+### 3. Ripresa della sessione
+
+Il comando è `{command} --session {id}`, con `command_names` `pi`, `pi.exe` e
+`pi.cmd`. Dal comando originale si tolgono `-c`/`--continue`, `-r`/`--resume`,
+`--session`, `--session-id`, `--fork` e `--no-session`.
+
+### 4. Automazione dei worker
+
+```
+pi [--model <provider/modello>] [--thinking <livello>] [--tools read,grep,find,ls] "<bootstrap>"
+```
+
+`--tools` compare solo in Plan. È una allowlist degli strumenti integrati: lascia
+quelli MCP, quindi il worker può ancora parlare con cli-companion. Non servono
+variabili d'ambiente (`env` vuoto).
+
+### 5. Permessi dei worker
+
+Non dichiarati: Pi non ha un sistema di permessi né un flag per disattivare le
+conferme. In Plan l'unico limite è `--tools`; nelle altre modalità i worker lavorano
+senza limiti. Lo si dice all'utente nel README.
+
+### 6-7. Preset e skill utente
+
+Le skill dei preset arrivano dal pacchetto e un preset si invoca con il prompt
+`/skill:<nome>`. Le skill dell'utente stanno in `<agente>/skills`.
+
+### 8. Limiti di utilizzo, 9. Consumi, 10. Profilo di input
+
+- **Limiti di utilizzo**: non dichiarati. Pi parla con provider diversi e nessuno
+  espone un piano comune.
+- **Consumi**: dal transcript JSONL v3 (`.../sessions/<cartella>/<file>.jsonl`). Si
+  sommano gli `usage` dei messaggi `assistant`, contati una volta per id di voce;
+  contesto e modello vengono dall'ultimo messaggio `assistant`. La lettura è
+  incrementale, con una cache degli offset limitata a 512 file.
+- **Profilo di input**: non dichiarato.
+
+### 11. Modelli
+
+Nessun catalogo e nessun suggerito: Pi usa i provider configurati dall'utente. Il
+nome è `provider/modello` e `is_valid` chiede:
+- `valid_model_shape`;
+- nessun `:` (in Pi il suffisso `:livello` è il thinking, che qui è l'effort);
+- al più 64 caratteri.
+
+### 12-13. Effort e avvio interattivo dei Bot
+
+L'effort Low…Max diventa `--thinking low…max`. L'avvio di un Bot è:
+
+```
+pi [--model m] [--thinking x] [--append-system-prompt "<file istruzioni>"] ["/skill:<nome>"]
+```
+
+Il comando di ripristino è lo stesso senza la skill.
+
+### Riepilogo: cosa dichiara Pi
+
+| Contratto | Pi |
+| --- | --- |
+| Pacchetto | estensione in `<agente>/extensions/cli-companion-notify/` |
+| Eventi | sì, dall'estensione |
+| Ripresa | `--session {id}` |
+| Automazione | sì; Plan con `--tools` |
+| Permessi dei worker | no |
+| Preset | sì, `/skill:<nome>` |
+| Skill utente | `<agente>/skills` |
+| Limiti di utilizzo | no |
+| Consumi | sì, dal JSONL |
+| Profilo di input | no |
+| Modelli | `provider/modello`, nessun suggerito |
+| Effort | `--thinking` |
+| Avvio interattivo | sì, con `--append-system-prompt` |
+
+### Cosa è stato verificato e cosa no
+
+Verificato con Pi 1.6.0 su Windows: un prototipo dell'estensione caricata da
+`extensions/`, gli eventi ricevuti, `registerMcpServer`, i flag `--tools`,
+`--thinking`, `--model`, `--append-system-prompt` e `--session`, e il formato JSONL
+delle sessioni.
+
+Da verificare: il pacchetto installato dall'app, da capo a fondo (installazione,
+notifiche, worker, consumi) e l'ambiente WSL.

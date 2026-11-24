@@ -233,6 +233,15 @@ I modelli hanno la forma `provider/modello` (es. `opencode/gpt-5.5`). Limiti: ch
 arriva un evento di fine sessione (un worker resta “in corso” finché non chiudi il tab); l'utilizzo e i
 limiti del piano non sono mostrati; su WSL serve un OpenCode installato nella distro.
 
+Per **Pi** (pi coding agent, solo la versione **1.x**): abilita l'integrazione in **Impostazioni → Generale →
+Integrazioni**, poi “Installa” sulla riga dell'ambiente. Il pacchetto è una cartella nostra,
+`extensions/cli-companion-notify/` dentro la cartella dell'agente (`PI_CODING_AGENT_DIR` o `~/.pi/agent`), scoperta
+da sola da Pi: nessun file di configurazione tuo viene toccato. L'estensione registra il server MCP e le skill dei
+preset solo nei terminali di cli-companion; un `pi` digitato altrove funziona come sempre. Pi **non ha permessi**:
+i worker in modalità Plan hanno solo strumenti di lettura (`--tools read,grep,find,ls`), nelle altre modalità
+lavorano senza conferme. I modelli hanno la forma `provider/modello` (nessun suggerito: Pi usa i provider che hai
+configurato); l'effort diventa `--thinking`. Utilizzo della sessione sì, limiti del piano no.
+
 Aggiungere un nuovo agente (guida completa, con OpenCode come seconda integrazione di riferimento:
 [docs/wiki/integrare-un-coding-agent.md](docs/wiki/integrare-un-coding-agent.md)): il core non sa come funziona un agente, offre dei
 contratti (`src-tauri/src/agents/contracts/`, uno per capacità) e ogni integrazione

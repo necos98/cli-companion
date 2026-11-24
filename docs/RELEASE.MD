@@ -308,6 +308,20 @@ vanno scritte qui sotto, per versione, prima del tag.
   worktree; il goal si chiude appena pronto, senza «Consegna». Con worktree attive resta il
   comportamento della v0.26.0. I goal già esistenti non cambiano.
 
+### v0.27.0: integrazione con Pi
+
+- **Pi come terzo coding agent.** Pi (pi coding agent, solo la 1.x) si abilita in
+  **Impostazioni → Generale → Integrazioni** e si installa dalla riga dell'ambiente. Il pacchetto
+  è un'estensione in `extensions/cli-companion-notify/` dentro la cartella dell'agente
+  (`PI_CODING_AGENT_DIR` o `~/.pi/agent`): nessun file di configurazione di Pi viene toccato, e un
+  `pi` lanciato fuori da cli-companion funziona come prima.
+- **Cosa funziona con Pi**: notifiche di fine turno e di domanda, server MCP, skill dei preset,
+  ripresa delle sessioni (`--session`), worker e Bot, consumi della sessione. I modelli si
+  scrivono `provider/modello`; l'effort diventa `--thinking`.
+- **Pi non ha permessi.** I worker in modalità Plan hanno solo gli strumenti di lettura
+  (`--tools read,grep,find,ls`, più quelli MCP); nelle altre modalità lavorano senza conferme. I
+  limiti del piano non sono mostrati.
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali

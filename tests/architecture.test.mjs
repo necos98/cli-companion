@@ -21,6 +21,7 @@ const INTEGRATIONS = [
     commands: ["opencode", "opencode.exe", "opencode.cmd"],
     models: ["big-pickle", "gpt-5.5", "gpt-5.4-mini"],
   },
+  { module: "pi_agent", id: "pi-agent", commands: ["pi", "pi.cmd"], models: [] },
 ];
 
 const SOURCE_FILE = /\.(ts|tsx|js|jsx|mjs)$/;

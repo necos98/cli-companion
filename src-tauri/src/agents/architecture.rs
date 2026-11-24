@@ -49,6 +49,7 @@ const INTEGRATIONS: &[Integration] = &[
         hook_values: &[],
         models: &["big-pickle", "gpt-5.5", "gpt-5.4-mini"],
     },
+    Integration { folder: "pi_agent", id: "pi-agent", commands: &["pi", "pi.cmd"], hook_values: &[], models: &[] },
 ];
 
 /// Cartelle di `agents/` che non sono integrazioni.

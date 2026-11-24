@@ -15,6 +15,25 @@ fn registered_names() -> Vec<String> {
     names
 }
 
+/// `name` compare come parola intera: un nome corto (es. "pi") non deve trovarsi dentro "api".
+fn contains_word(text: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric();
+    text.match_indices(name).any(|(i, _)| {
+        let before = text[..i].chars().next_back().is_none_or(|c| !is_word(c));
+        let after = text[i + name.len()..].chars().next().is_none_or(|c| !is_word(c));
+        before && after
+    })
+}
+
+#[test]
+fn names_match_as_whole_words() {
+    assert!(contains_word("use pi here", "pi"));
+    assert!(contains_word("pi", "pi"));
+    assert!(contains_word("(pi-agent)", "pi-agent"));
+    assert!(contains_word("claude-code", "claude"));
+    assert!(!contains_word("the api and a pipeline", "pi"));
+}
+
 #[test]
 fn skills_name_no_agent_and_no_model() {
     let mut banned = registered_names();
@@ -23,7 +42,7 @@ fn skills_name_no_agent_and_no_model() {
     for p in PRESETS {
         let skill = p.skill_text().to_lowercase();
         for name in &banned {
-            assert!(!skill.contains(name.as_str()), "skill {} names `{name}`", p.id);
+            assert!(!contains_word(&skill, name), "skill {} names `{name}`", p.id);
         }
     }
 }

@@ -37,6 +37,7 @@ mod launches;
 mod models;
 mod opencode;
 mod package;
+mod pi_agent;
 pub mod presets;
 mod readiness;
 pub mod registry;

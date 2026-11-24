@@ -222,6 +222,10 @@ fn automation(i: &dyn AgentIntegration, automation: &dyn WorkerAutomation) -> Ve
                 v.push(format!("automation: modello non valido accettato: {model:?}"));
             }
         }
+        // Il file dei permessi esiste solo per chi dichiara `worker_permissions`.
+        if i.capabilities().worker_permissions.is_none() {
+            continue;
+        }
         for file in ["C:/a$b/x.json", "C:/a`b/x.json", "C:/100%/x.json", "C:/a\"b/x.json", "C:/hi!/x.json"] {
             if run(&request(prompt, None, Some(file))).is_some() {
                 v.push(format!("automation: permissions_file non sicuro accettato: {file:?}"));

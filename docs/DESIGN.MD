@@ -685,6 +685,32 @@ le servono.
   - non dichiarati: `usage_limits`, `session_usage` (sessioni in SQLite, nessun transcript), `input_profile`.
   - limiti noti: chiudere il TUI non emette `session-end` (resta `running` fino alla chiusura del tab); solo la 2.x;
     WSL coperto solo da test unitari.
+- `pi_agent/` (Pi, pi coding agent 1.x, id `pi-agent`: un id `pi` comparirebbe dentro `api`, `pipe`… e farebbe
+  fallire il test architetturale del core). Un file per contratto più `extension.ts`, `extension.rs`, `agent_dir.rs`,
+  `version.rs`. Dettagli in [wiki/integrare-un-coding-agent.md](wiki/integrare-un-coding-agent.md).
+  - rilevamento: `pi --version` (`1.6.0`); `install` accetta solo la 1.x.
+  - cartella dell'agente: `PI_CODING_AGENT_DIR` (con `~` espansa) o `~/.pi/agent`; su WSL letta da `bash -lc` e
+    tradotta con `wsl_to_windows_path`.
+  - pacchetto: `<agente>/extensions/cli-companion-notify/` con `index.ts` e `skills/<preset>/SKILL.md`, scoperta da
+    Pi senza toccare `settings.json`. Riga di intestazione come marcatore, cartella altrui rifiutata, copia in
+    `plugin_root` con `destination.txt`, `version` = fnv32 dei file. L'estensione è inerte senza
+    `CLI_COMPANION_SESSION`; altrimenti registra il server MCP (`pi.registerMcpServer`, `exposure: "direct"`) e le
+    skill (`resources_discover`).
+  - eventi: `session_start` → `session-start`; `agent_before_settle` con `outcome: "completed"` → `finished`, altro
+    esito → `needs-input` (other); `ui_prompt_start` → `needs-input` (question); `session_shutdown` → `session-end`.
+    `source`/`reason` di Pi normalizzati per il core: `new` → `clear`; `resume`, `fork`, `reload` → `resume`.
+    Blocco del fine turno: `{"continue":"<motivo>"}`, l'estensione lo manda con `pi.sendUserMessage(..., {deliverAs:
+    "followUp"})` e ritorna `{continue: true}`.
+  - automazione e avvio: `pi [--model m] [--thinking x] [--tools read,grep,find,ls] "<bootstrap>"` (`--tools` solo in
+    Plan: è una allowlist che lascia gli strumenti MCP); Bot `pi [...] [--append-system-prompt "<istruzioni>"]
+    ["/skill:<nome>"]`. Ripresa `{command} --session {id}` (toglie `-c`, `-r`, `--session`, `--session-id`, `--fork`,
+    `--no-session`).
+  - consumi: transcript JSONL v3, somma `usage` dei messaggi `assistant` (lettura incrementale con cache degli offset).
+  - modelli `provider/modello` senza `:` (il livello di thinking è l'effort), nessun suggerito; effort Low…Max →
+    `--thinking low…max`; skill utente in `<agente>/skills`.
+  - non dichiarati: `worker_permissions` (Pi non ha permessi: fuori da Plan i worker non hanno limiti),
+    `usage_limits`, `input_profile`. Unico cambio del core: la conformità controlla il file dei permessi solo per chi
+    dichiara `worker_permissions`.
 - Estensioni del core nate da OpenCode: (1) **`AutomationLaunch { command, env }`**: `WorkerAutomation::command` ritorna
   anche variabili d'ambiente, validate da `is_valid_env_name` / `is_valid_env_value` / `first_invalid_env_name` (nome
   `[A-Z_][A-Z0-9_]{0,63}`, riservati `CLI_COMPANION_*`, `WSLENV`, `PATH`, `TERM`, `COLORTERM`; valore ≤ 32 KiB senza

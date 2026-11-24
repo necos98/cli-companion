@@ -7,13 +7,14 @@ use super::enablement;
 use super::integrations_store;
 use super::models::{effort_is_supported, model_is_valid, unsupported_effort_warning};
 use super::opencode;
+use super::pi_agent;
 use super::resolve::{self, AgentUnavailable, AgentUse};
 use crate::platform::TargetKind;
 
 /// Integrazioni supportate. Per aggiungerne una: una riga qui. Quali sono
 /// abilitate e quale e' il predefinito lo sceglie l'utente (`integrations.json`);
 /// finche' non sceglie, vale la prima.
-static INTEGRATIONS: &[&dyn AgentIntegration] = &[&claude_code::ClaudeCode, &opencode::OpenCode];
+static INTEGRATIONS: &[&dyn AgentIntegration] = &[&claude_code::ClaudeCode, &opencode::OpenCode, &pi_agent::PiAgent];
 
 /// Tutte le integrazioni registrate, abilitate o no: serve alla pagina delle
 /// integrazioni, alla conformita' e al client IPC. Chi mostra o avvia qualcosa
