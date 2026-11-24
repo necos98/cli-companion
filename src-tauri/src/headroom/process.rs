@@ -23,6 +23,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 struct Owned {
     child: Child,
     port: u16,
+    openai_upstream: String,
     started_at: Instant,
 }
 
@@ -45,9 +46,16 @@ pub fn set_data_dir(dir: PathBuf) {
 }
 
 /// Argomenti del proxy: `--no-rate-limit` perche' il limite predefinito
-/// (60 richieste al minuto) rompe i worker in parallelo.
-fn proxy_args(port: u16) -> Vec<String> {
-    ["proxy", "--port", &port.to_string(), "--no-rate-limit"].map(String::from).to_vec()
+/// (60 richieste al minuto) rompe i worker in parallelo. Con un upstream OpenAI
+/// configurato, `--openai-api-url`: Headroom compone l'URL inoltrato come
+/// `<upstream><percorso ricevuto>` (`/v1/chat/completions` diventa
+/// `<upstream>/v1/chat/completions`), quindi l'upstream non deve avere `/v1`.
+fn proxy_args(port: u16, openai_upstream: &str) -> Vec<String> {
+    let mut args: Vec<String> = ["proxy", "--port", &port.to_string(), "--no-rate-limit"].map(String::from).to_vec();
+    if !openai_upstream.is_empty() {
+        args.extend(["--openai-api-url".to_string(), openai_upstream.to_string()]);
+    }
+    args
 }
 
 /// Programmi da provare in ordine. Con un eseguibile indicato dall'utente solo quello;
@@ -77,10 +85,10 @@ fn open_log() -> (Stdio, Stdio) {
     }
 }
 
-fn spawn_program(program: &str, port: u16) -> std::io::Result<Child> {
+fn spawn_program(program: &str, settings: &HeadroomSettings) -> std::io::Result<Child> {
     let (out, err) = open_log();
     let mut cmd = Command::new(program);
-    cmd.args(proxy_args(port)).stdin(Stdio::null()).stdout(out).stderr(err);
+    cmd.args(proxy_args(settings.port, &settings.openai_upstream)).stdin(Stdio::null()).stdout(out).stderr(err);
     hide_window(&mut cmd);
     cmd.spawn()
 }
@@ -88,7 +96,7 @@ fn spawn_program(program: &str, port: u16) -> std::io::Result<Child> {
 fn spawn(settings: &HeadroomSettings) -> Result<Child, String> {
     let profile = std::env::var("USERPROFILE").ok();
     for program in program_candidates(&settings.executable, profile.as_deref()) {
-        match spawn_program(&program, settings.port) {
+        match spawn_program(&program, settings) {
             Ok(child) => return Ok(child),
             Err(e) if e.kind() == ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("could not start the proxy: {e}")),
@@ -110,12 +118,19 @@ fn claim_child(settings: &HeadroomSettings) -> Result<(u32, Instant), String> {
     let mut slot = lock();
     reap_dead(&mut slot);
     match slot.take() {
-        Some(owned) if owned.port == settings.port => *slot = Some(owned),
+        Some(owned) if owned.port == settings.port && owned.openai_upstream == settings.openai_upstream => {
+            *slot = Some(owned)
+        }
         Some(other) => kill_tree(other.child),
         None => {}
     }
     if slot.is_none() {
-        *slot = Some(Owned { child: spawn(settings)?, port: settings.port, started_at: Instant::now() });
+        *slot = Some(Owned {
+            child: spawn(settings)?,
+            port: settings.port,
+            openai_upstream: settings.openai_upstream.clone(),
+            started_at: Instant::now(),
+        });
     }
     let owned = slot.as_ref().ok_or("the proxy is not running")?;
     Ok((owned.child.id(), owned.started_at))
@@ -221,7 +236,15 @@ mod tests {
 
     #[test]
     fn args_disable_the_rate_limit() {
-        assert_eq!(proxy_args(9100), ["proxy", "--port", "9100", "--no-rate-limit"]);
+        assert_eq!(proxy_args(9100, ""), ["proxy", "--port", "9100", "--no-rate-limit"]);
+    }
+
+    #[test]
+    fn args_carry_the_openai_upstream_only_when_configured() {
+        assert_eq!(
+            proxy_args(9100, "https://api.deepseek.com"),
+            ["proxy", "--port", "9100", "--no-rate-limit", "--openai-api-url", "https://api.deepseek.com"]
+        );
     }
 
     #[test]

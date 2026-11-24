@@ -14,6 +14,7 @@ mod package;
 mod permissions;
 mod plugin;
 mod plugin_skills;
+mod proxy_routing;
 mod readable_dirs;
 mod resume;
 mod session_usage;
@@ -80,6 +81,7 @@ impl AgentIntegration for ClaudeCode {
             models: Some(self),
             effort: Some(self),
             interactive_launch: Some(self),
+            proxy_routing: Some(self),
         }
     }
 }

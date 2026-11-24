@@ -60,6 +60,7 @@ contratto); un contratto dichiarato ma fatto male è un difetto.
 | Modelli | `models` | `ModelCatalog` | `contracts/models.rs` |
 | Effort | `effort` | `EffortLevels` | `contracts/effort.rs` |
 | Avvio interattivo dei Bot | `interactive_launch` | `InteractiveLauncher` | `contracts/interactive_launch.rs` |
+| Instradamento su un proxy | `proxy_routing` | `ProxyRouting` | `contracts/proxy_routing.rs` |
 
 Il frontend non conosce i contratti per nome di agente: riceve i dati
 dichiarativi (`agent_profiles`: contratti dichiarati, regole di input, dati di
@@ -105,6 +106,7 @@ vede e usa dipende da quattro passi, tutti nel core: nessuno è codice dell'inte
 | Regole allow/deny dei worker per l'agente | `worker_permissions` | le regole sono rifiutate; `rule_format` è `null` |
 | Suggerimenti di modello (form dei task, impostazioni dei worker, tool MCP), validazione del nome | `models` | nessun suggerimento; il nome vale solo come forma sicura |
 | Voci “Bot” del menu di avvio (`bot:<id>`) e relativo avvio | `interactive_launch` | la voce c'è ma è bloccata: `<nome> non supporta l'avvio dei Bot.` |
+| Sessioni dell'agente instradate dal proxy Headroom (Windows) | `proxy_routing` | l'agente parte sempre diretto, senza avvisi |
 | Limiti di utilizzo, token per sessione, tasti propri | `usage_limits`, `session_usage`, `input_profile` | assenti |
 
 L'ordine delle voci nel registro è l'ordine in cui si mostrano le integrazioni e quello da cui si parte la
@@ -702,13 +704,51 @@ Il file di istruzioni va nella stessa variabile come `{"instructions":["<file>"]
 v2 "Instructions": un path assoluto è usato com'è scritto e le istruzioni configurate seguono gli
 `AGENTS.md`). L'effort è ignorato: OpenCode non dichiara `EffortLevels`.
 
+### 14. Instradamento su un proxy: `ProxyRouting`
+
+Con Headroom attivo (impostazioni globali, solo su Windows) il core sa dove sta il proxy
+locale ma non come un agente sceglie l'endpoint delle sue richieste: lo chiede al contratto.
+
+**Firma** (`contracts/proxy_routing.rs`).
+
+```rust
+pub struct ProxyTarget {
+    pub base_url: String,        // http://127.0.0.1:<porta>, senza "/" finale
+    pub openai_upstream: String, // upstream OpenAI effettivo del proxy, senza "/" finale
+}
+
+pub trait ProxyRouting: Sync {
+    fn proxy_env(&self, proxy: &ProxyTarget) -> Option<Vec<(String, String)>>;
+}
+```
+
+`proxy_env` restituisce le variabili d'ambiente da aggiungere al lancio perché l'agente usi
+`base_url` (`None` = non instradabile: la sessione parte diretta, senza avvisi).
+`openai_upstream` è l'URL a cui il proxy inoltra le richieste in formato OpenAI (campo
+**Upstream OpenAI** delle impostazioni di Headroom, predefinito `https://api.openai.com`): serve a
+un agente che deve riconoscere i propri provider OpenAI da ridirezionare. Headroom compone
+l'URL inoltrato come `<upstream><percorso ricevuto>` (`/v1/chat/completions` →
+`<upstream>/v1/chat/completions`), quindi l'upstream non ha `/v1`.
+
+**Core.** `headroom::launch_env` risolve l'integrazione dall'id e usa `capabilities().proxy_routing`:
+senza contratto, o con `None`, nessun cambiamento e nessun avviso. Se una delle variabili restituite è
+già impostata nell'ambiente dell'app, la sessione parte senza proxy e con un avviso che la nomina.
+Il core non conosce nessun nome di variabile.
+
+**Conformità** (`proxy_routing`): le variabili restituite hanno nomi e valori validi come quelle di
+`AutomationLaunch.env` (`is_valid_env_name`, `is_valid_env_value`, senza doppioni, quindi niente
+prefisso riservato `CLI_COMPANION_`) e un `Some` non è vuoto.
+
+**Claude Code.** `ANTHROPIC_BASE_URL=<base_url>`. **OpenCode.** Non dichiarato. **Pi.** Vedi
+l'integrazione di riferimento n. 3.
+
 ## Procedura passo passo
 
 1. **Leggi l'integrazione di riferimento.** `agents/claude_code/` ha un file per
    contratto (`package.rs`, `hook_events.rs`, `resume.rs`, `automation.rs`,
    `permissions.rs`, `plugin_skills.rs`, `skills.rs`, `usage_limits.rs`,
-   `session_usage.rs`, `input_profile.rs`, `models.rs`, `effort.rs`, `interactive_launch.rs`)
-   più il rilevamento in `mod.rs`.
+   `session_usage.rs`, `input_profile.rs`, `models.rs`, `effort.rs`, `interactive_launch.rs`,
+   `proxy_routing.rs`) più il rilevamento in `mod.rs`.
    Copia la *struttura*, non i dettagli.
 2. **Studia l'agente.** Per ogni contratto che vuoi dichiarare, scrivi su carta come
    l'agente lo realizza e *dove lo hai letto* (documentazione ufficiale, non
@@ -1302,6 +1342,27 @@ pi [--model m] [--thinking x] [--append-system-prompt "<file istruzioni>"] ["/sk
 
 Il comando di ripristino è lo stesso senza la skill.
 
+### 14. Proxy Headroom: `ProxyRouting`
+
+Pi non legge `ANTHROPIC_BASE_URL` né `OPENAI_BASE_URL`: l'endpoint è il `baseUrl` del provider
+(da `models.json` o da un'estensione), e l'app non modifica mai i file dell'utente. Il contratto
+(`proxy_routing.rs`) restituisce quindi due variabili lette dall'estensione `cli-companion-notify`:
+`COMPANION_PROXY_URL` (base URL del proxy) e `COMPANION_PROXY_OPENAI_UPSTREAM` (upstream OpenAI
+effettivo). I nomi non hanno il prefisso `CLI_COMPANION_`, riservato al core.
+
+A `session_start` l'estensione (sempre inerte senza `CLI_COMPANION_SESSION`) scorre
+`ctx.modelRegistry.getAll()`, che comprende anche i provider di `models.json`, e ridireziona con
+`pi.registerProvider(nome, { baseUrl })` (solo `baseUrl`: modelli, autenticazione e API restano) i provider:
+
+- con API `anthropic-messages` e `baseUrl` `https://api.anthropic.com` → l'URL del proxy;
+- con API `openai-completions` o `openai-responses` e `baseUrl` uguale all'upstream (confronto senza
+  maiuscole, senza `/` e `/v1` finali) → l'URL del proxy più `/v1`.
+
+Ogni errore è ignorato: la sessione non si rompe mai per il proxy. Verificato con un proxy Headroom con
+`--openai-api-url https://api.deepseek.com` e un provider `deepseek` (`openai-completions`) di
+`models.json`: `POST /v1/chat/completions` in entrata sul proxy, inoltrata a
+`https://api.deepseek.com/v1/chat/completions`.
+
 ### Riepilogo: cosa dichiara Pi
 
 | Contratto | Pi |
@@ -1319,6 +1380,7 @@ Il comando di ripristino è lo stesso senza la skill.
 | Modelli | `provider/modello`, nessun suggerito |
 | Effort | `--thinking` |
 | Avvio interattivo | sì, con `--append-system-prompt` |
+| Proxy Headroom | sì, tramite l'estensione (`COMPANION_PROXY_URL`, `COMPANION_PROXY_OPENAI_UPSTREAM`) |
 
 ### Cosa è stato verificato e cosa no
 

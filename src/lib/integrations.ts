@@ -27,6 +27,7 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   models: "Modelli",
   effort: "Effort",
   "interactive-launch": "Avvio dei Bot",
+  "proxy-routing": "Proxy Headroom",
 };
 
 const CAPABILITY_ORDER = Object.keys(CAPABILITY_LABELS) as Capability[];

@@ -1,4 +1,4 @@
-// Headroom (proxy locale di compressione per Claude Code): impostazioni
+// Headroom (proxy locale di compressione per Claude Code e Pi): impostazioni
 // globali. Funzioni pure + archivio, come `stores/ui.ts`.
 
 import { createStore } from "../lib/store.ts";
@@ -9,7 +9,7 @@ export interface HeadroomState {
 }
 
 export const INITIAL_HEADROOM: HeadroomState = {
-  settings: { enabled: false, port: 8787, auto_start: true, executable: "" },
+  settings: { enabled: false, port: 8787, auto_start: true, executable: "", openai_upstream: "" },
 };
 
 export function createHeadroomStore() {

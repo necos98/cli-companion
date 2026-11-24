@@ -29,6 +29,7 @@ mod interactive_launch;
 mod models;
 mod package;
 mod plugin_skills;
+mod proxy_routing;
 mod resume;
 mod session_usage;
 mod skills;
@@ -98,6 +99,7 @@ impl AgentIntegration for PiAgent {
             models: Some(self),
             effort: Some(self),
             interactive_launch: Some(self),
+            proxy_routing: Some(self),
         }
     }
 }
@@ -124,6 +126,7 @@ mod tests {
                 Capability::Models,
                 Capability::Effort,
                 Capability::InteractiveLaunch,
+                Capability::ProxyRouting,
             ]
         );
     }

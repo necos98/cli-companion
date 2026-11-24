@@ -74,6 +74,7 @@ fn core(i: &dyn AgentIntegration) -> Vec<String> {
         (caps.models.is_some(), Capability::Models),
         (caps.effort.is_some(), Capability::Effort),
         (caps.interactive_launch.is_some(), Capability::InteractiveLaunch),
+        (caps.proxy_routing.is_some(), Capability::ProxyRouting),
     ];
     let expected: Vec<_> = present.into_iter().filter_map(|(on, c)| on.then_some(c)).collect();
     if caps.declared() != expected {
@@ -464,6 +465,23 @@ fn session_usage(reader: &dyn SessionUsageReader) -> Vec<String> {
         .collect()
 }
 
+/// Le variabili restituite devono essere valide come quelle di un avvio
+/// automatico (nome, valore, niente duplicati); `Some` non puo' essere vuoto.
+fn proxy_routing(routing: &dyn ProxyRouting) -> Vec<String> {
+    let target = ProxyTarget {
+        base_url: "http://127.0.0.1:8787".to_string(),
+        openai_upstream: "https://api.openai.com".to_string(),
+    };
+    match routing.proxy_env(&target) {
+        None => Vec::new(),
+        Some(env) if env.is_empty() => vec!["proxy_routing: Some senza variabili (usare None)".to_string()],
+        Some(env) => first_invalid_env_name(&env)
+            .map(|name| format!("proxy_routing: variabile d'ambiente non valida o duplicata: {name:?}"))
+            .into_iter()
+            .collect(),
+    }
+}
+
 /// Tutte le violazioni dei contratti dichiarati da `i` (vuoto = conforme).
 fn violations(i: &dyn AgentIntegration) -> Vec<String> {
     let scratch = Scratch::new(i.id());
@@ -509,6 +527,9 @@ fn violations(i: &dyn AgentIntegration) -> Vec<String> {
     if let Some(c) = caps.interactive_launch {
         v.extend(interactive_launch(i, c));
     }
+    if let Some(c) = caps.proxy_routing {
+        v.extend(proxy_routing(c));
+    }
     v.into_iter().map(|m| format!("{}: {m}", i.id())).collect()
 }
 
@@ -543,6 +564,13 @@ fn an_invalid_automation_env_is_reported() {
         found.iter().any(|m| m.contains("automation:") && m.contains("variabile d'ambiente non valida")),
         "{found:?}"
     );
+}
+
+#[test]
+fn an_invalid_proxy_env_is_reported() {
+    let broken = FakeIntegration::full("broken-proxy").with_flaw(Flaw::ProxyInvalidEnv);
+    let found = violations(&broken);
+    assert!(found.iter().any(|m| m.contains("proxy_routing:") && m.contains("non valida")), "{found:?}");
 }
 
 #[test]

@@ -16,6 +16,7 @@ mod interactive_launch;
 mod models;
 mod package;
 mod plugin_skills;
+mod proxy_routing;
 mod session_resume;
 mod session_usage;
 mod usage_limits;
@@ -37,6 +38,7 @@ pub use interactive_launch::{
 pub use models::{ModelCatalog, ModelTier, SuggestedModel};
 pub use package::{fnv32, plugins_dir, sanitize_env_key, InstallCtx, IntegrationPackage, PackageFile};
 pub use plugin_skills::PluginSkills;
+pub use proxy_routing::{ProxyRouting, ProxyTarget};
 pub use session_resume::{ResumeFlag, ResumeSpec, SessionResume};
 #[cfg(test)]
 pub use session_resume::{COMMAND_PLACEHOLDER, SESSION_ID_PLACEHOLDER};

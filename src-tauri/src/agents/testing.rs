@@ -31,6 +31,8 @@ pub enum Flaw {
     LaunchAcceptsDollarSkill,
     /// L'avvio interattivo dichiara le istruzioni di sistema ma le ignora.
     InstructionsIgnored,
+    /// L'instradamento sul proxy restituisce una variabile d'ambiente con nome non valido.
+    ProxyInvalidEnv,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ impl FakeIntegration {
             Capability::Models,
             Capability::Effort,
             Capability::InteractiveLaunch,
+            Capability::ProxyRouting,
         ];
         Self { declares, ..Self::bare(id, "fake --yes") }
     }
@@ -152,6 +155,7 @@ impl AgentIntegration for FakeIntegration {
             models: on(Capability::Models).then_some(self as &dyn ModelCatalog),
             effort: on(Capability::Effort).then_some(self as &dyn EffortLevels),
             interactive_launch: on(Capability::InteractiveLaunch).then_some(self as &dyn InteractiveLauncher),
+            proxy_routing: on(Capability::ProxyRouting).then_some(self as &dyn ProxyRouting),
         }
     }
 }
@@ -407,6 +411,16 @@ impl EffortLevels for FakeIntegration {
     fn command_args(&self, effort: Effort) -> Option<String> {
         let separator = if self.flaw == Some(Flaw::EffortArgsUnsafe) { "$" } else { " " };
         Some(format!("--think{separator}{}", effort.as_str()))
+    }
+}
+
+/// Variabile con cui l'agente finto riceve l'indirizzo del proxy.
+pub const FAKE_PROXY_ENV: &str = "FAKE_AGENT_PROXY";
+
+impl ProxyRouting for FakeIntegration {
+    fn proxy_env(&self, proxy: &ProxyTarget) -> Option<Vec<(String, String)>> {
+        let name = if self.flaw == Some(Flaw::ProxyInvalidEnv) { "fake-proxy" } else { FAKE_PROXY_ENV };
+        Some(vec![(name.to_string(), proxy.base_url.clone())])
     }
 }
 

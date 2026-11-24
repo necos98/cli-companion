@@ -2,7 +2,7 @@
 
 export type HeadroomSettings = { 
 /**
- * Instrada le sessioni di Claude Code su Windows dal proxy.
+ * Instrada dal proxy le sessioni degli agenti che sanno farsi instradare, su Windows.
  */
 enabled: boolean, 
 /**
@@ -16,4 +16,9 @@ auto_start: boolean,
 /**
  * Eseguibile di `headroom`; vuoto = risolto in automatico.
  */
-executable: string, };
+executable: string, 
+/**
+ * Upstream compatibile OpenAI a cui il proxy inoltra le richieste in
+ * formato OpenAI (senza `/v1`); vuoto = quello predefinito di Headroom.
+ */
+openai_upstream: string, };

@@ -102,6 +102,8 @@ impl AgentIntegration for OpenCode {
             // La CLI non ha un flag di effort (solo `--model provider/modello#variante` in `run`).
             effort: None,
             interactive_launch: Some(self),
+            // Nessun instradamento verificato su un proxy: parte sempre diretto.
+            proxy_routing: None,
         }
     }
 }

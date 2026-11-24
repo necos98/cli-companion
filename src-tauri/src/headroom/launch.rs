@@ -2,12 +2,9 @@
 
 use super::settings::{self, HeadroomSettings};
 use super::{health, process};
-use crate::agents::CLAUDE_CODE_ID;
+use crate::agents::{registry, ProxyRouting, ProxyTarget};
 use crate::net::env_override;
 use crate::platform::TargetKind;
-
-/// Variabile con cui Claude Code sceglie l'endpoint dell'API.
-const BASE_URL_VAR: &str = "ANTHROPIC_BASE_URL";
 
 /// Ambiente da aggiungere al lancio e avviso per chi lo legge (in inglese:
 /// arriva anche ai modelli, attraverso gli avvisi dei worker).
@@ -43,9 +40,10 @@ enum Ensure {
 
 /// Ambiente Headroom per una sessione di `agent_id` su `kind`, con le
 /// impostazioni correnti e l'ambiente reale dell'app. Bloccante se serve il
-/// controllo di rete.
+/// controllo di rete. Un agente senza il contratto di instradamento parte diretto.
 pub fn launch_env(agent_id: &str, kind: TargetKind, patience: Patience) -> HeadroomLaunch {
-    decide(&settings::current(), agent_id, kind, env_override(BASE_URL_VAR), |s| ensure_proxy(s, patience))
+    let routing = registry::find(agent_id).ok().and_then(|integration| integration.capabilities().proxy_routing);
+    decide(&settings::current(), kind, routing, |name| env_override(name).is_some(), |s| ensure_proxy(s, patience))
 }
 
 /// Il proxy risponde, o con `auto_start` l'app lo avvia; senza, l'errore e' vuoto.
@@ -68,25 +66,30 @@ fn ensure_proxy(settings: &HeadroomSettings, patience: Patience) -> Ensure {
     }
 }
 
-/// Parte pura di `launch_env`: `parent_base_url` e' il valore di
-/// `ANTHROPIC_BASE_URL` nell'ambiente dell'app, `ensure` dice se il proxy
-/// risponde (avviandolo se serve), se sta partendo o perche' non va.
+/// Parte pura di `launch_env`: `routing` e' il contratto dell'agente (`None` =
+/// non instradabile), `is_set` dice se una variabile e' gia' impostata
+/// nell'ambiente dell'app, `ensure` dice se il proxy risponde (avviandolo se
+/// serve), se sta partendo o perche' non va.
 fn decide(
     settings: &HeadroomSettings,
-    agent_id: &str,
     kind: TargetKind,
-    parent_base_url: Option<String>,
+    routing: Option<&dyn ProxyRouting>,
+    is_set: impl Fn(&str) -> bool,
     ensure: impl FnOnce(&HeadroomSettings) -> Ensure,
 ) -> HeadroomLaunch {
-    if !settings.enabled || agent_id != CLAUDE_CODE_ID || kind != TargetKind::Windows {
+    if !settings.enabled || kind != TargetKind::Windows {
         return HeadroomLaunch::default();
     }
-    if parent_base_url.is_some() {
+    let url = settings.base_url();
+    let target = ProxyTarget { base_url: url.clone(), openai_upstream: settings.effective_openai_upstream() };
+    let Some(env) = routing.and_then(|r| r.proxy_env(&target)) else {
+        return HeadroomLaunch::default();
+    };
+    if let Some((name, _)) = env.iter().find(|(name, _)| is_set(name)) {
         return HeadroomLaunch::warn(format!(
-            "Headroom is enabled but {BASE_URL_VAR} is already set; the session starts without the Headroom proxy."
+            "Headroom is enabled but {name} is already set; the session starts without the Headroom proxy."
         ));
     }
-    let url = settings.base_url();
     match ensure(settings) {
         Ensure::Ready => {}
         Ensure::Starting => {
@@ -96,7 +99,7 @@ fn decide(
         }
         Ensure::Failed(err) => return HeadroomLaunch::warn(unreachable_warning(settings, &url, &err)),
     }
-    HeadroomLaunch { env: vec![(BASE_URL_VAR.to_string(), url)], warning: None }
+    HeadroomLaunch { env, warning: None }
 }
 
 fn unreachable_warning(settings: &HeadroomSettings, url: &str, err: &str) -> String {
@@ -129,12 +132,39 @@ mod tests {
         HeadroomSettings { auto_start: false, ..on() }
     }
 
-    fn run(s: &HeadroomSettings, agent: &str, kind: TargetKind, parent: Option<&str>, up: bool) -> HeadroomLaunch {
+    /// Agente finto: due variabili, la prima con il base URL, la seconda con l'upstream.
+    struct Routed;
+
+    impl ProxyRouting for Routed {
+        fn proxy_env(&self, proxy: &ProxyTarget) -> Option<Vec<(String, String)>> {
+            Some(vec![
+                ("PROXY_URL".to_string(), proxy.base_url.clone()),
+                ("PROXY_UPSTREAM".to_string(), proxy.openai_upstream.clone()),
+            ])
+        }
+    }
+
+    /// Agente che dichiara il contratto ma non e' instradabile.
+    struct Unroutable;
+
+    impl ProxyRouting for Unroutable {
+        fn proxy_env(&self, _: &ProxyTarget) -> Option<Vec<(String, String)>> {
+            None
+        }
+    }
+
+    fn run(
+        s: &HeadroomSettings,
+        kind: TargetKind,
+        routing: Option<&dyn ProxyRouting>,
+        set: &[&str],
+        up: bool,
+    ) -> HeadroomLaunch {
         decide(
             s,
-            agent,
             kind,
-            parent.map(String::from),
+            routing,
+            |name| set.contains(&name),
             |_| if up { Ensure::Ready } else { Ensure::Failed("boom".into()) },
         )
     }
@@ -142,26 +172,38 @@ mod tests {
     #[test]
     fn disabled_does_nothing() {
         let off = HeadroomSettings::default();
-        assert_eq!(run(&off, CLAUDE_CODE_ID, TargetKind::Windows, None, true), HeadroomLaunch::default());
-        assert_eq!(run(&off, CLAUDE_CODE_ID, TargetKind::Windows, Some("x"), false), HeadroomLaunch::default());
+        assert_eq!(run(&off, TargetKind::Windows, Some(&Routed), &[], true), HeadroomLaunch::default());
+        assert_eq!(run(&off, TargetKind::Windows, Some(&Routed), &["PROXY_URL"], false), HeadroomLaunch::default());
     }
 
     #[test]
-    fn other_agents_and_wsl_are_untouched_without_warning() {
-        assert_eq!(run(&on(), "opencode", TargetKind::Windows, None, true), HeadroomLaunch::default());
-        assert_eq!(run(&on(), CLAUDE_CODE_ID, TargetKind::Wsl, None, false), HeadroomLaunch::default());
+    fn agents_without_routing_and_wsl_are_untouched_without_warning() {
+        assert_eq!(run(&on(), TargetKind::Windows, None, &[], true), HeadroomLaunch::default());
+        assert_eq!(run(&on(), TargetKind::Windows, None, &["PROXY_URL"], false), HeadroomLaunch::default());
+        assert_eq!(
+            run(&on(), TargetKind::Windows, Some(&Unroutable), &["PROXY_URL"], false),
+            HeadroomLaunch::default()
+        );
+        assert_eq!(run(&on(), TargetKind::Wsl, Some(&Routed), &[], false), HeadroomLaunch::default());
     }
 
     #[test]
-    fn inherited_base_url_wins_with_a_warning() {
-        let out = run(&on(), CLAUDE_CODE_ID, TargetKind::Windows, Some("http://x"), true);
-        assert!(out.env.is_empty());
-        assert!(out.warning.unwrap().contains("ANTHROPIC_BASE_URL is already set"));
+    fn any_inherited_variable_wins_with_a_warning_naming_it() {
+        for name in ["PROXY_URL", "PROXY_UPSTREAM"] {
+            let out = run(&on(), TargetKind::Windows, Some(&Routed), &[name], true);
+            assert!(out.env.is_empty());
+            assert_eq!(
+                out.warning.unwrap(),
+                format!(
+                    "Headroom is enabled but {name} is already set; the session starts without the Headroom proxy."
+                )
+            );
+        }
     }
 
     #[test]
     fn failed_auto_start_warns_with_the_url_and_the_error() {
-        let out = run(&on(), CLAUDE_CODE_ID, TargetKind::Windows, None, false);
+        let out = run(&on(), TargetKind::Windows, Some(&Routed), &[], false);
         assert!(out.env.is_empty());
         assert_eq!(
             out.warning.unwrap(),
@@ -171,7 +213,7 @@ mod tests {
 
     #[test]
     fn a_proxy_that_is_starting_warns_without_waiting() {
-        let out = decide(&on(), CLAUDE_CODE_ID, TargetKind::Windows, None, |_| Ensure::Starting);
+        let out = decide(&on(), TargetKind::Windows, Some(&Routed), |_| false, |_| Ensure::Starting);
         assert!(out.env.is_empty());
         assert_eq!(
             out.warning.unwrap(),
@@ -181,7 +223,7 @@ mod tests {
 
     #[test]
     fn unreachable_proxy_without_auto_start_keeps_the_plain_warning() {
-        let out = run(&no_auto(), CLAUDE_CODE_ID, TargetKind::Windows, None, false);
+        let out = run(&no_auto(), TargetKind::Windows, Some(&Routed), &[], false);
         assert_eq!(
             out.warning.unwrap(),
             "Headroom proxy not reachable at http://127.0.0.1:8787: the session starts without it."
@@ -189,21 +231,39 @@ mod tests {
     }
 
     #[test]
-    fn reachable_proxy_sets_the_base_url_on_the_configured_port() {
-        let custom = HeadroomSettings { port: 9100, ..on() };
+    fn reachable_proxy_returns_the_agent_env_for_the_configured_port_and_upstream() {
+        let custom = HeadroomSettings { port: 9100, openai_upstream: "https://api.deepseek.com/".to_string(), ..on() };
         let seen = std::cell::Cell::new(0);
-        let out = decide(&custom, CLAUDE_CODE_ID, TargetKind::Windows, None, |s| {
-            seen.set(s.port);
-            Ensure::Ready
-        });
+        let out = decide(
+            &custom,
+            TargetKind::Windows,
+            Some(&Routed),
+            |_| false,
+            |s| {
+                seen.set(s.port);
+                Ensure::Ready
+            },
+        );
         assert_eq!(seen.get(), 9100);
-        assert_eq!(out.env, vec![("ANTHROPIC_BASE_URL".to_string(), "http://127.0.0.1:9100".to_string())]);
+        assert_eq!(
+            out.env,
+            vec![
+                ("PROXY_URL".to_string(), "http://127.0.0.1:9100".to_string()),
+                ("PROXY_UPSTREAM".to_string(), "https://api.deepseek.com".to_string()),
+            ]
+        );
         assert_eq!(out.warning, None);
     }
 
     #[test]
+    fn the_default_upstream_is_passed_when_none_is_configured() {
+        let out = run(&on(), TargetKind::Windows, Some(&Routed), &[], true);
+        assert_eq!(out.env[1], ("PROXY_UPSTREAM".to_string(), "https://api.openai.com".to_string()));
+    }
+
+    #[test]
     fn default_settings_leave_the_launch_unchanged() {
-        assert_eq!(launch_env(CLAUDE_CODE_ID, TargetKind::Windows, Patience::Wait), HeadroomLaunch::default());
+        assert_eq!(launch_env("no-such-agent", TargetKind::Windows, Patience::Wait), HeadroomLaunch::default());
     }
 
     #[test]

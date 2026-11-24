@@ -49,7 +49,6 @@ pub(crate) mod testing;
 mod worker_rules;
 mod worker_skill;
 
-pub use claude_code::AGENT_ID as CLAUDE_CODE_ID;
 pub use commands::*;
 pub use contracts::*;
 pub use integrations_commands::*;

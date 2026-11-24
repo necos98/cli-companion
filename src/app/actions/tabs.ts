@@ -65,7 +65,7 @@ export function spawnTab(ws: Workspace, launch?: Launch | BuiltinLaunch): void {
 
 /**
  * Avvio integrato di un agente: prima il backend prepara l'ambiente del tab
- * (es. il proxy Headroom per Claude Code), che `pty_spawn` applica una volta
+ * (es. il proxy Headroom per Claude Code e Pi), che `pty_spawn` applica una volta
  * sola; se non risponde il tab si apre comunque, senza.
  */
 async function spawnAgentTab(ws: Workspace, chosen: Launch | BuiltinLaunch | undefined, key: string): Promise<void> {

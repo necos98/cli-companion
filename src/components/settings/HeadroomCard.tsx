@@ -11,13 +11,14 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Section } from "./shared";
 
-/** Generale › Integrazioni: Headroom, il proxy locale che comprime il contesto di Claude Code. */
+/** Generale › Integrazioni: Headroom, il proxy locale che comprime il contesto di Claude Code e Pi. */
 export default function HeadroomCard() {
   const settings = useStore(headroomStore, (s) => s.settings);
   const [port, setPort] = useState(String(settings.port));
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<HeadroomStatus | null>(null);
   const [executable, setExecutable] = useState(settings.executable);
+  const [openaiUpstream, setOpenaiUpstream] = useState(settings.openai_upstream);
   const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
   const busy = checking || starting;
@@ -26,6 +27,8 @@ export default function HeadroomCard() {
   useEffect(() => setPort(String(settings.port)), [settings.port]);
 
   useEffect(() => setExecutable(settings.executable), [settings.executable]);
+
+  useEffect(() => setOpenaiUpstream(settings.openai_upstream), [settings.openai_upstream]);
 
   const verify = useCallback(() => {
     setChecking(true);
@@ -72,6 +75,7 @@ export default function HeadroomCard() {
     } catch (e) {
       setError(errorMessage(e));
       setPort(String(settings.port));
+      setOpenaiUpstream(settings.openai_upstream);
     }
   };
 
@@ -88,6 +92,12 @@ export default function HeadroomCard() {
     else void save({ ...settings, executable: value });
   };
 
+  const commitOpenaiUpstream = () => {
+    const value = openaiUpstream.trim();
+    if (value === settings.openai_upstream) setOpenaiUpstream(settings.openai_upstream);
+    else void save({ ...settings, openai_upstream: value });
+  };
+
   return (
     <Section>
       <p className="text-xs font-semibold">Headroom</p>
@@ -99,7 +109,7 @@ export default function HeadroomCard() {
           onChange={(e) => void save({ ...settings, enabled: e.target.checked })}
           className="h-3.5 w-3.5 accent-primary"
         />
-        Usa Headroom per Claude Code
+        Usa Headroom per Claude Code e Pi
       </label>
 
       <label className="flex items-center gap-2 text-[13px]">
@@ -144,6 +154,25 @@ export default function HeadroomCard() {
         />
       </div>
 
+      <div className="flex items-center gap-2">
+        <label htmlFor="headroom-openai-upstream" className="text-xs">
+          Indirizzo OpenAI-compatibile
+        </label>
+        <Input
+          id="headroom-openai-upstream"
+          value={openaiUpstream}
+          placeholder="https://api.openai.com"
+          onChange={(e) => setOpenaiUpstream(e.target.value)}
+          onBlur={commitOpenaiUpstream}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          className="h-8 flex-1"
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Es. <code className="font-mono">https://api.deepseek.com</code> per DeepSeek; vuoto = OpenAI. Le sessioni Pi
+        con un provider OpenAI-compatibile allo stesso indirizzo passano dal proxy, che riparte quando lo cambi.
+      </p>
+
       {error && <p className="whitespace-pre-wrap text-xs text-destructive">{error}</p>}
 
       {settings.enabled && (
@@ -165,7 +194,7 @@ export default function HeadroomCard() {
       )}
 
       <p className="text-[11px] text-muted-foreground">
-        Solo per le sessioni Claude Code su Windows. Con l&apos;avvio automatico l&apos;app lancia{" "}
+        Solo per le sessioni Claude Code e Pi su Windows. Con l&apos;avvio automatico l&apos;app lancia{" "}
         <code className="font-mono">headroom proxy</code> (senza rate limit) e lo ferma all&apos;uscita o quando
         disattivi Headroom, senza mai toccare un proxy avviato altrove. L&apos;avvio richiede circa un minuto: i worker
         lo aspettano, i terminali interattivi aperti nel frattempo partono senza; il log è in{" "}

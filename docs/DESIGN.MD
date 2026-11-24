@@ -167,7 +167,7 @@ domanda (`hub/direct_answer.rs`, senza passare dal modello) e il tool `relay_ans
 | `store/` | persistenza JSON comune: busta versionata, migrazioni, backup, avvisi (`StoreWarning`), `write_atomic` |
 | `workspaces/` | il `Workspace` (target, avvii, impostazioni dei worker, consegna, repository, archiviazione), il suo store in memoria e `workspaces.json`, i comandi Tauri, le patch di impostazioni proposte dagli agenti |
 | `agents/` | contratti (`contracts/`), registro, rilevamento, pacchetti/plugin, preset, regole dei worker; `claude_code/` è l'unica integrazione |
-| `headroom/` | proxy Headroom di compressione del contesto: impostazioni globali (`headroom.json`), controllo `/health` con cache breve, `process` (il proxy avviato dall'app con `auto_start`: un solo figlio condiviso (lock mai tenuto durante l'attesa di `/health`, fino a 120 s per i worker; i terminali interattivi non attendono), log in `logs/headroom-proxy.log`, fermato all'uscita o alla disattivazione, mai un proxy altrui), `launch_env` (la decisione che aggiunge `ANTHROPIC_BASE_URL` ai lanci di Claude Code su Windows) e comandi Tauri |
+| `headroom/` | proxy Headroom di compressione del contesto: impostazioni globali (`headroom.json`), controllo `/health` con cache breve, `process` (il proxy avviato dall'app con `auto_start`: un solo figlio condiviso (lock mai tenuto durante l'attesa di `/health`, fino a 120 s per i worker; i terminali interattivi non attendono), log in `logs/headroom-proxy.log`, fermato all'uscita o alla disattivazione, mai un proxy altrui), `launch_env` (la decisione che, su Windows, aggiunge ai lanci le variabili del contratto `ProxyRouting` dell'agente, senza conoscerne nessuna; l'impostazione `openai_upstream` diventa `--openai-api-url` del proxy) e comandi Tauri |
 | `board/` | la coda dei task di un workspace: modello, ciclo di vita, scheduler, vista, formato su disco, recupero, archivio (pura) |
 | `automation/` | registro di worker e board, scheduler a timer, avvio e pulizia dei worktree, E2E, RPC dei tool MCP, autenticazione per sessione, salvataggio delle board |
 | `pty/` | una shell per tab in un PTY, con output su un `Channel` |
@@ -696,6 +696,10 @@ le servono.
     `plugin_root` con `destination.txt`, `version` = fnv32 dei file. L'estensione è inerte senza
     `CLI_COMPANION_SESSION`; altrimenti registra il server MCP (`pi.registerMcpServer`, `exposure: "direct"`) e le
     skill (`resources_discover`).
+  - Headroom (`proxy_routing.rs`): Pi non legge variabili per l'endpoint; il contratto passa all'estensione
+    `COMPANION_PROXY_URL` e `COMPANION_PROXY_OPENAI_UPSTREAM`, e a `session_start` l'estensione ridireziona con
+    `pi.registerProvider(nome, { baseUrl })` i provider Anthropic (`https://api.anthropic.com`) e quelli OpenAI il cui
+    `baseUrl` coincide con l'upstream (anche da `models.json`; il `baseUrl` diventa proxy `+ /v1`).
   - eventi: `session_start` → `session-start`; `agent_before_settle` con `outcome: "completed"` → `finished`, altro
     esito → `needs-input` (other); `ui_prompt_start` → `needs-input` (question); `session_shutdown` → `session-end`.
     `source`/`reason` di Pi normalizzati per il core: `new` → `clear`; `resume`, `fork`, `reload` → `resume`.

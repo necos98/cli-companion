@@ -11,6 +11,12 @@ const STDOUT_MAX = 65536
 const TEXT_MAX = 300
 const PROMPT_MAX = 2000
 
+/** Variables set by cli-companion when the session is routed through the Headroom proxy. */
+const PROXY_URL_VAR = "COMPANION_PROXY_URL"
+const PROXY_UPSTREAM_VAR = "COMPANION_PROXY_OPENAI_UPSTREAM"
+const ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
+const OPENAI_APIS = ["openai-completions", "openai-responses"]
+
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Active only in a terminal managed by cli-companion. */
@@ -77,6 +83,36 @@ const transcriptPath = (ctx: any): string | undefined => {
   }
 }
 
+/** URL without case, trailing slashes and a trailing /v1, to compare upstreams. */
+const normalizeUrl = (url: string): string =>
+  url.trim().toLowerCase().replace(/\/+$/, "").replace(/\/v1$/, "").replace(/\/+$/, "")
+
+/**
+ * Points the providers whose upstream is the one the proxy forwards to at the proxy
+ * (only `baseUrl`: models, auth and API of each provider stay as they are).
+ * Anthropic Messages clients append /v1/messages, OpenAI clients append the route
+ * (/chat/completions, /responses) to a base that already ends in /v1.
+ */
+function redirectProviders(pi: any, ctx: any): void {
+  const proxy = text(process.env[PROXY_URL_VAR], 300)?.replace(/\/+$/, "")
+  if (!proxy) return
+  const openai = normalizeUrl(text(process.env[PROXY_UPSTREAM_VAR], 300) ?? "https://api.openai.com")
+  const done = new Set<string>()
+  for (const model of ctx?.modelRegistry?.getAll?.() ?? []) {
+    try {
+      const provider = text(model?.provider, 200)
+      const base = text(model?.baseUrl, 500)
+      if (!provider || !base || done.has(provider)) continue
+      let target: string | undefined
+      if (model.api === "anthropic-messages" && normalizeUrl(base) === ANTHROPIC_UPSTREAM) target = proxy
+      else if (OPENAI_APIS.includes(model.api) && normalizeUrl(base) === openai) target = `${proxy}/v1`
+      if (!target) continue
+      done.add(provider)
+      pi.registerProvider(provider, { baseUrl: target })
+    } catch {}
+  }
+}
+
 export default function (pi: any) {
   if (!active()) return
   try {
@@ -88,6 +124,9 @@ export default function (pi: any) {
   let continuing = false
 
   pi.on("session_start", async (e: any, ctx: any) => {
+    try {
+      redirectProviders(pi, ctx)
+    } catch {}
     try {
       const id = sessionId(ctx)
       if (!id) return

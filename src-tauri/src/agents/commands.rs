@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(v["is_default"], false);
         let full = FakeIntegration::full("full");
         let p = &collect_profiles(&[&full], "other")[0];
-        assert_eq!(p.capabilities.len(), 13);
+        assert_eq!(p.capabilities.len(), 14);
         assert!(!p.input_profile.rules.is_empty());
         let v = serde_json::to_value(p).unwrap();
         assert_eq!(v["is_default"], false);

@@ -17,7 +17,7 @@ use ts_rs::TS;
 pub struct HeadroomStatus {
     /// Il proxy risponde sulla porta configurata.
     pub reachable: bool,
-    /// Base URL che riceverebbe `ANTHROPIC_BASE_URL`.
+    /// Base URL del proxy, quello con cui le sessioni instradate scelgono l'endpoint.
     pub url: String,
     pub dashboard_url: String,
     /// Il proxy che serve la porta e' quello avviato dall'app.
@@ -51,7 +51,11 @@ pub async fn headroom_settings_set(app: AppHandle, settings: HeadroomSettings) -
     if !saved.enabled {
         close_dashboard(&app);
     }
-    if !saved.enabled || saved.port != before.port || saved.executable != before.executable {
+    if !saved.enabled
+        || saved.port != before.port
+        || saved.executable != before.executable
+        || saved.openai_upstream != before.openai_upstream
+    {
         process::stop_owned();
     }
     if saved.enabled && saved.auto_start {

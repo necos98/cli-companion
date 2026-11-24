@@ -9,7 +9,7 @@ export type HeadroomStatus = {
  */
 reachable: boolean, 
 /**
- * Base URL che riceverebbe `ANTHROPIC_BASE_URL`.
+ * Base URL del proxy, quello con cui le sessioni instradate scelgono l'endpoint.
  */
 url: string, dashboard_url: string, 
 /**
