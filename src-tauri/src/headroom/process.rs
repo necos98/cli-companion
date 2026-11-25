@@ -50,13 +50,34 @@ pub fn set_data_dir(dir: PathBuf) {
 /// configurato, `--openai-api-url`: Headroom compone l'URL inoltrato come
 /// `<upstream><percorso ricevuto>` (`/v1/chat/completions` diventa
 /// `<upstream>/v1/chat/completions`), quindi l'upstream non deve avere `/v1`.
+///
+/// `--protect-tool-results`: i risultati dei tool MCP di cli-companion (il testo
+/// del task di `get_task` prima di tutto) non vengono mai compressi, per
+/// qualunque agente. Compressi, il modello li recupera, il proxy li ricomprime
+/// alla richiesta dopo e il modello crede di non aver mai letto il task. Il
+/// glob copre i nomi con il prefisso del server (`mcp__plugin_cli-companion-notify_cli-companion__get_task`,
+/// `cli-companion_get_task`), i nomi nudi gli agenti che li espongono senza
+/// prefisso. Effetto collaterale voluto di Headroom: con questa opzione anche i
+/// risultati vecchi di Read/Grep/Edit restano protetti.
 fn proxy_args(port: u16, openai_upstream: &str) -> Vec<String> {
     let mut args: Vec<String> = ["proxy", "--port", &port.to_string(), "--no-rate-limit"].map(String::from).to_vec();
+    args.extend(["--protect-tool-results".to_string(), protected_tools()]);
     if !openai_upstream.is_empty() {
         args.extend(["--openai-api-url".to_string(), openai_upstream.to_string()]);
     }
     args
 }
+
+/// Pattern dei tool da non comprimere: il glob del server e i nomi nudi dei suoi tool.
+fn protected_tools() -> String {
+    let mut patterns = vec![PROTECTED_SERVER_GLOB.to_string()];
+    patterns.extend(crate::mcp::all_tool_names());
+    patterns.join(",")
+}
+
+/// Qualunque tool il cui nome contiene il nome del server MCP (Headroom confronta
+/// con `fnmatch`, senza distinguere maiuscole).
+const PROTECTED_SERVER_GLOB: &str = "*cli-companion*";
 
 /// Programmi da provare in ordine. Con un eseguibile indicato dall'utente solo quello;
 /// altrimenti `headroom` nel PATH e poi la cartella degli strumenti di uv.
@@ -235,16 +256,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn args_disable_the_rate_limit() {
-        assert_eq!(proxy_args(9100, ""), ["proxy", "--port", "9100", "--no-rate-limit"]);
+    fn args_disable_the_rate_limit_and_protect_the_cli_companion_tools() {
+        let args = proxy_args(9100, "");
+        assert_eq!(args[..4], ["proxy", "--port", "9100", "--no-rate-limit"]);
+        assert_eq!(args[4], "--protect-tool-results");
+        assert_eq!(args.len(), 6);
+    }
+
+    #[test]
+    fn protected_tools_cover_the_server_glob_and_every_bare_tool_name() {
+        let list = protected_tools();
+        let entries: Vec<&str> = list.split(',').collect();
+        assert_eq!(entries[0], "*cli-companion*");
+        for name in ["get_task", "complete_task", "propose_tasks", "list_tasks", "update_task"] {
+            assert!(entries.contains(&name), "{name} missing from {list}");
+        }
+        assert!(entries.iter().all(|e| !e.is_empty() && !e.contains(' ')));
     }
 
     #[test]
     fn args_carry_the_openai_upstream_only_when_configured() {
-        assert_eq!(
-            proxy_args(9100, "https://api.deepseek.com"),
-            ["proxy", "--port", "9100", "--no-rate-limit", "--openai-api-url", "https://api.deepseek.com"]
-        );
+        let args = proxy_args(9100, "https://api.deepseek.com");
+        assert_eq!(args[args.len() - 2..], ["--openai-api-url", "https://api.deepseek.com"]);
+        assert!(!proxy_args(9100, "").contains(&"--openai-api-url".to_string()));
     }
 
     #[test]

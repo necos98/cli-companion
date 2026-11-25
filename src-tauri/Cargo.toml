@@ -1,6 +1,6 @@
 [package]
 name = "cli-companion"
-version = "0.28.0"
+version = "0.28.1"
 description = "CLI companion con terminali integrati Windows + WSL"
 authors = ["necos98"]
 edition = "2021"

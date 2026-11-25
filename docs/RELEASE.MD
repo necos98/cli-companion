@@ -339,6 +339,18 @@ vanno scritte qui sotto, per versione, prima del tag.
   OpenAI** (nuovo campo delle impostazioni di Headroom, per esempio `https://api.deepseek.com`).
   Claude Code continua con `ANTHROPIC_BASE_URL`; OpenCode parte diretto.
 
+### v0.28.1: Headroom non comprime più i tool di cli-companion
+
+- **Fine del loop «non ho letto il task».** Il proxy Headroom comprimeva il risultato di `get_task`:
+  il modello lo recuperava, il proxy lo ricomprimeva alla richiesta successiva e il modello tornava a
+  credere di non aver letto il task, si scusava e ricominciava. Ora l'app avvia il proxy con
+  `--protect-tool-results`, che esclude dalla compressione tutti i tool MCP di cli-companion per
+  qualunque agente (Claude Code, Pi, OpenCode). Effetto collaterale di Headroom: anche i risultati
+  vecchi di Read/Grep/Edit restano interi, quindi si risparmia un po' meno ma il contesto è affidabile.
+- **Proxy avviati fuori dall'app.** Un proxy avviato a mano, o rimasto orfano dopo un crash, non
+  riceve l'opzione: va fermato (l'app ne avvia uno nuovo) oppure avviato con
+  `HEADROOM_PROTECT_TOOL_RESULTS=*cli-companion*`.
+
 ## 6. Checklist release
 
 - [ ] `updater.config.json`: `owner`/`repo` reali

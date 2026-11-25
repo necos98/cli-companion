@@ -176,8 +176,11 @@ l'indirizzo dalla sua estensione, che ridireziona i provider Anthropic e quelli 
 `baseUrl` coincide con l'upstream. `openai_upstream` (campo **Upstream OpenAI**) è l'URL compatibile OpenAI a cui
 il proxy inoltra le richieste in formato OpenAI (per esempio `https://api.deepseek.com`, senza `/v1`); vuoto, vale
 `https://api.openai.com` e il proxy parte con `--openai-api-url` solo se è impostato. Con `auto_start` l'app avvia il proxy da sola
-(`headroom proxy --port <porta> --no-rate-limit`, senza finestra; `--no-rate-limit` serve perché il
-limite predefinito di 60 richieste al minuto rompe i worker in parallelo) all'avvio, al salvataggio
+(`headroom proxy --port <porta> --no-rate-limit --protect-tool-results <tool>`, senza finestra; `--no-rate-limit` serve perché il
+limite predefinito di 60 richieste al minuto rompe i worker in parallelo; `--protect-tool-results` riceve
+`*cli-companion*` e i nomi dei tool MCP di cli-companion, perché il proxy non comprima mai i loro risultati: un
+testo del task compresso, recuperato e ricompresso a ogni richiesta fa credere al modello di non averlo
+mai letto) all'avvio, al salvataggio
 delle impostazioni o al primo lancio che lo trova spento, e il proxy impiega circa un minuto a rispondere (carica un modello). I worker attendono `GET /health`
 fino a 120 s; i terminali interattivi (avvio integrato, Bot) non aspettano: avviano il proxy in
 background e partono senza, con un avviso, mentre le sessioni successive lo useranno.

@@ -570,6 +570,18 @@ pub fn tools_for(role: Role, hub: bool) -> Vec<Value> {
     tools
 }
 
+/// Nomi di tutti i tool del server, di qualunque ruolo (ordinati, senza doppioni).
+pub fn all_tool_names() -> Vec<String> {
+    let mut names: Vec<String> = [Role::Session, Role::Worker, Role::Reviewer, Role::Planner]
+        .into_iter()
+        .flat_map(|role| tools_for(role, true))
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Istruzioni generali restituite in `initialize`.
 pub fn instructions(role: Option<Role>, workspace: Option<&str>, hub: bool) -> String {
     match role {

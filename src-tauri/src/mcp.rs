@@ -35,6 +35,7 @@ use crate::ipc::{app_port, rpc_call, RpcRequest, RpcResponse, SESSION_ENV, TOKEN
 use retry::{SystemClock, RETRY_POLICY};
 use session::Session;
 pub use state::Server;
+pub use tools::all_tool_names;
 use tools::{instructions, tools_for};
 
 /// Versioni del protocollo MCP che sappiamo parlare (la prima e' il default).
