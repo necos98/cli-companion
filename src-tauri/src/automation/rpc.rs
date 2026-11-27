@@ -83,9 +83,12 @@ pub fn dispatch<H: Host>(
             Role::Reviewer => review::rpc_reviewer(st, host, session, method, params),
             Role::Worker | Role::Planner => Err(denied(method, role)),
         },
-        Method::ListTasks | Method::UpdateTask | Method::DeleteTask => {
-            boards::rpc_session(st, host, session, method.name(), params)
-        }
+        Method::ListTasks
+        | Method::UpdateTask
+        | Method::DeleteTask
+        | Method::GetProposal
+        | Method::UpdateProposal
+        | Method::DiscardProposal => boards::rpc_session(st, host, session, method.name(), params),
         Method::SaveSkill | Method::ListSkills | Method::DeleteSkill => skills::rpc(host, method, params),
         Method::GetWorkspaceSettings | Method::ProposeSettings => settings::rpc(st, host, session, method, params),
     }

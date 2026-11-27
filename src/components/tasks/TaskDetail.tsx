@@ -11,7 +11,7 @@ import DetailQuestion from "./DetailQuestion";
 import DetailResult from "./DetailResult";
 import DetailSection from "./DetailSection";
 import Markdown from "./Markdown";
-import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { FixOriginBadge, ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import TaskEditForm from "./TaskEditForm";
 import { useCommand } from "./useDetailCommand";
@@ -121,6 +121,7 @@ export default function TaskDetail({
           </span>
           {isReview(task) && <ReviewBadge className="text-xs" />}
           {isPlan(task) && <PlanBadge className="text-xs" />}
+          <FixOriginBadge task={task} tasks={board.tasks} className="text-xs" />
           <VerdictBadge task={task} className="text-xs" />
           <TaskE2eBadge task={task} className="text-xs" />
           <BotBadge bots={agents.bots} id={task.bot} className="text-xs" />

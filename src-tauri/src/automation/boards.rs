@@ -21,7 +21,7 @@ pub(super) use commands::{
 };
 #[cfg(test)]
 pub(super) use lifecycle::START_TIMEOUT_MS;
-pub(super) use session::{list_tasks, propose_tasks, rpc_session, session_workspace, task_details};
+pub(super) use session::{check_new_tasks, list_tasks, propose_tasks, rpc_session, session_workspace, task_details};
 
 // ---------------------------------------------------------------------------
 // Registry: board
@@ -113,9 +113,44 @@ impl Registry {
         Ok(id)
     }
 
+    /// Correzioni di un revisore: entrano subito in coda (`Board::queue_review_fixes`),
+    /// senza proposta, e l'utente ne e' avvisato con una notifica `fixes`.
+    /// `proposal` = task e `blocks` del revisore.
+    pub fn queue_review_fixes(
+        &mut self,
+        ws: &str,
+        tab: &str,
+        review_id: &str,
+        proposal: (Vec<TaskSpec>, Vec<String>),
+        ctx: SpecContext<'_>,
+        now: i64,
+    ) -> Result<board::ReviewFixes, String> {
+        let (specs, blocks) = proposal;
+        let out = self.edit(ws, |b| b.queue_review_fixes(review_id, specs, &blocks, ctx, now))?;
+        self.notify_fixes(ws, review_id, tab, &out);
+        Ok(out)
+    }
+
     /// Task di una proposta pendente (per verificarne i repository).
     pub fn proposal_specs(&self, ws: &str, id: &str) -> Result<Vec<TaskSpec>, String> {
         self.boards.get(ws).ok_or_else(|| format!("proposal not found: {id}"))?.proposal(id).map(|p| p.tasks.clone())
+    }
+
+    /// La proposta pendente `id` di `ws`, per `get_proposal`.
+    pub fn pending_proposal(&self, ws: &str, id: &str) -> Result<board::Proposal, String> {
+        self.boards.get(ws).ok_or_else(|| format!("proposal not found: {id}"))?.proposal(id).cloned()
+    }
+
+    /// Sostituisce i task di una proposta pendente (`Board::update_proposal`).
+    pub fn update_proposal(
+        &mut self,
+        ws: &str,
+        id: &str,
+        specs: Vec<TaskSpec>,
+        ctx: SpecContext<'_>,
+        now: i64,
+    ) -> Result<(), String> {
+        self.edit(ws, |b| b.update_proposal(id, specs, ctx, now))
     }
 
     pub fn decide_proposal(

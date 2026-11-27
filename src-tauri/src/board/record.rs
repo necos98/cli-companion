@@ -31,6 +31,7 @@ pub(super) struct TaskRecord {
     kind: TaskKind,
     e2e: bool,
     no_git: bool,
+    origin: Option<String>,
     status: TaskStatus,
     fail_reason: Option<FailReason>,
     worker_status: Option<WorkerStatus>,
@@ -97,6 +98,7 @@ impl From<TaskRecord> for Task {
             kind: r.kind,
             e2e: r.e2e,
             no_git: r.no_git,
+            origin: r.origin,
             state,
             attempts: r.attempts,
             last_report: r.last_report,
@@ -137,6 +139,9 @@ struct TaskRecordRef<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     no_git: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<String>", optional)]
+    origin: &'a Option<String>,
     status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -209,6 +214,7 @@ impl Serialize for Task {
             kind: self.kind,
             e2e: self.e2e,
             no_git: self.no_git,
+            origin: &self.origin,
             status: self.status(),
             fail_reason: self.fail_reason(),
             worker_status: self.worker_status(),

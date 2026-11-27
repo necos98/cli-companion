@@ -8,7 +8,12 @@ import type { HubSessionSettings } from "./HubSessionSettings";
  * Le impostazioni per il frontend: quelle salvate piu' la sola presenza della
  * API key (mai la chiave).
  */
-export type HubSettingsView = { api_key_set: boolean, enabled: boolean, provider: HubProvider, language: HubLanguage, session: HubSessionSettings, 
+export type HubSettingsView = { api_key_set: boolean, 
+/**
+ * `false` finche' l'integrazione e' disabilitata (`HUB_AVAILABLE`): in quel caso
+ * `enabled` e' sempre `false`, qualunque cosa dica il file.
+ */
+available: boolean, enabled: boolean, provider: HubProvider, language: HubLanguage, session: HubSessionSettings, 
 /**
  * Al massimo `secretaries::SECRETARIES_MAX`, nomi unici.
  */

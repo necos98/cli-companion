@@ -4,7 +4,7 @@ import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import AgentBadge from "./AgentBadge";
 import BotBadge from "./BotBadge";
-import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { FixOriginBadge, ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import { isPlan } from "../../lib/plan";
@@ -92,6 +92,7 @@ function KanbanCard({
         )}
         {isReview(task) && <ReviewBadge />}
         {isPlan(task) && <PlanBadge />}
+        <FixOriginBadge task={task} tasks={tasks} />
         <VerdictBadge task={task} />
         <TaskE2eBadge task={task} />
         <BotBadge bots={agents.bots} id={task.bot} />

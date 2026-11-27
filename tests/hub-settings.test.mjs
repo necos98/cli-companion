@@ -4,6 +4,7 @@ import {
   API_KEY_MAX,
   BASE_URL_MAX,
   EMPTY_DRAFT,
+  HUB_UNAVAILABLE_NOTICE,
   MODEL_MAX,
   SECRETARY_TOOLS,
   SYSTEM_PROMPT_MAX,
@@ -13,6 +14,7 @@ import {
   checkSecretaryName,
   checkSession,
   draftOf,
+  hubAvailable,
   isLocalEndpoint,
   modelSummary,
   secretariesSummary,
@@ -243,5 +245,17 @@ describe("segretari", () => {
   it("checkDraft: il prompt si conta in caratteri, non in unità UTF-16", () => {
     const prompt = "🙂".repeat(SYSTEM_PROMPT_MAX);
     assert.equal(checkDraft({ ...EMPTY_DRAFT, name: "mario", systemPrompt: prompt }, []).ok, true);
+  });
+});
+
+describe("hubAvailable", () => {
+  it("avvisa solo quando il backend dichiara l'HUB non disponibile", () => {
+    assert.equal(hubAvailable(null), true);
+    assert.equal(hubAvailable({ available: true }), true);
+    assert.equal(hubAvailable({ available: false }), false);
+  });
+
+  it("l'avviso dice che l'integrazione è disabilitata", () => {
+    assert.match(HUB_UNAVAILABLE_NOTICE, /momentaneamente disabilitata/);
   });
 });

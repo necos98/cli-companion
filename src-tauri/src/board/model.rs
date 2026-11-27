@@ -120,6 +120,9 @@ pub struct Task {
     /// lavora sul posto, senza worktree, branch ne' consegna git). Si aggiorna
     /// alla creazione e all'accettazione e, in modo autorevole, all'avvio.
     pub no_git: bool,
+    /// Id del task di revisione il cui revisore ha messo in coda questo task di
+    /// correzione (`Board::queue_review_fixes`); `None` = task normale.
+    pub origin: Option<String>,
     pub(in crate::board) state: TaskState,
     pub(in crate::board) attempts: u32,
     pub(in crate::board) last_report: Option<String>,

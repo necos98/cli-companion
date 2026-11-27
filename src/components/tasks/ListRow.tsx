@@ -3,7 +3,7 @@ import { TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import AgentBadge from "./AgentBadge";
 import BotBadge from "./BotBadge";
-import { ReviewBadge, VerdictBadge } from "./ReviewBadges";
+import { FixOriginBadge, ReviewBadge, VerdictBadge } from "./ReviewBadges";
 import { TaskE2eBadge } from "./E2eBadges";
 import { isReview } from "../../lib/review";
 import { isPlan } from "../../lib/plan";
@@ -25,6 +25,8 @@ export const LIST_GRID = "grid grid-cols-[150px_minmax(220px,1fr)_96px_110px_80p
 
 interface Props {
   task: Task;
+  /** Tutti i task: serve al titolo della review che ha messo in coda la correzione. */
+  tasks: Task[];
   subtitle: string;
   /** Agenti del workspace: badge e motivo di un agente non pronto. */
   agents: TaskAgents;
@@ -36,7 +38,7 @@ interface Props {
 }
 
 /** Riga della Lista: un bottone (tastiera e lettori di schermo) con le celle in griglia. */
-function ListRow({ task, subtitle, agents, now, selected, showRepo, onSelect }: Props) {
+function ListRow({ task, tasks, subtitle, agents, now, selected, showRepo, onSelect }: Props) {
   const status = displayStatus(task);
   const sub = [showRepo ? task.repo || "." : null, unavailableText(agents, task.agent_unavailable), subtitle]
     .filter(Boolean)
@@ -68,6 +70,7 @@ function ListRow({ task, subtitle, agents, now, selected, showRepo, onSelect }: 
           <span className="truncate">{task.title}</span>
           {isReview(task) && <ReviewBadge className="text-[11px]" />}
           {isPlan(task) && <PlanBadge className="text-[11px]" />}
+          <FixOriginBadge task={task} tasks={tasks} className="text-[11px]" />
           <VerdictBadge task={task} className="text-[11px]" />
           <TaskE2eBadge task={task} className="text-[11px]" />
           <BotBadge bots={agents.bots} id={task.bot} className="text-[11px]" />

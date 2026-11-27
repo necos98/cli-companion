@@ -62,6 +62,9 @@ pub enum Method {
     GetTaskDetails,
     UpdateTask,
     DeleteTask,
+    GetProposal,
+    UpdateProposal,
+    DiscardProposal,
     SaveSkill,
     ListSkills,
     DeleteSkill,
@@ -81,8 +84,8 @@ const E2E_RUNNERS: &[Role] = &[Role::Worker, Role::Reviewer];
 const PROPOSERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
 /// Dettaglio dei task: anche il revisore e il pianificatore.
 const TASK_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
-/// Lettura della coda: anche il pianificatore.
-const SESSION_AND_PLANNER: &[Role] = &[Role::Session, Role::Planner];
+/// Lettura della coda: anche il revisore (deve vedere cosa aspetta il suo lavoro) e il pianificatore.
+const QUEUE_READERS: &[Role] = &[Role::Session, Role::Reviewer, Role::Planner];
 /// Lettura delle impostazioni (Bot, agenti, modelli): anche il revisore, che deve
 /// scegliere Bot e modello dei task di correzione e della nuova revisione. Sola lettura:
 /// `propose_settings` resta della sessione.
@@ -96,7 +99,7 @@ const SESSION_ONLY: &[Role] = &[Role::Session];
 const ASKERS: &[Role] = &[Role::Worker, Role::Planner];
 
 impl Method {
-    pub const ALL: [Method; 16] = [
+    pub const ALL: [Method; 19] = [
         Method::Whoami,
         Method::GetTask,
         Method::CompleteTask,
@@ -107,6 +110,9 @@ impl Method {
         Method::GetTaskDetails,
         Method::UpdateTask,
         Method::DeleteTask,
+        Method::GetProposal,
+        Method::UpdateProposal,
+        Method::DiscardProposal,
         Method::SaveSkill,
         Method::ListSkills,
         Method::DeleteSkill,
@@ -128,6 +134,9 @@ impl Method {
             Method::GetTaskDetails => "get_task_details",
             Method::UpdateTask => "update_task",
             Method::DeleteTask => "delete_task",
+            Method::GetProposal => "get_proposal",
+            Method::UpdateProposal => "update_proposal",
+            Method::DiscardProposal => "discard_proposal",
             Method::SaveSkill => "save_skill",
             Method::ListSkills => "list_skills",
             Method::DeleteSkill => "delete_skill",
@@ -150,10 +159,13 @@ impl Method {
             Method::RunE2e | Method::GetE2eResult => E2E_RUNNERS,
             Method::ProposeTasks => PROPOSERS,
             Method::GetTaskDetails => TASK_READERS,
-            Method::ListTasks => SESSION_AND_PLANNER,
+            Method::ListTasks => QUEUE_READERS,
             Method::GetWorkspaceSettings => SETTINGS_READERS,
             Method::UpdateTask
             | Method::DeleteTask
+            | Method::GetProposal
+            | Method::UpdateProposal
+            | Method::DiscardProposal
             | Method::SaveSkill
             | Method::ListSkills
             | Method::DeleteSkill
@@ -180,6 +192,9 @@ impl Method {
             | Method::GetTaskDetails
             | Method::UpdateTask
             | Method::DeleteTask
+            | Method::GetProposal
+            | Method::UpdateProposal
+            | Method::DiscardProposal
             | Method::SaveSkill
             | Method::ListSkills
             | Method::DeleteSkill
@@ -201,6 +216,9 @@ impl Method {
             | Method::GetTaskDetails
             | Method::UpdateTask
             | Method::DeleteTask
+            | Method::GetProposal
+            | Method::UpdateProposal
+            | Method::DiscardProposal
             | Method::SaveSkill
             | Method::ListSkills
             | Method::DeleteSkill
@@ -281,11 +299,14 @@ mod tests {
         }
         assert_eq!(who(Method::ProposeTasks), vec![Role::Session, Role::Reviewer, Role::Planner]);
         assert_eq!(who(Method::GetTaskDetails), vec![Role::Session, Role::Reviewer, Role::Planner]);
-        assert_eq!(who(Method::ListTasks), vec![Role::Session, Role::Planner]);
+        assert_eq!(who(Method::ListTasks), vec![Role::Session, Role::Reviewer, Role::Planner]);
         assert_eq!(who(Method::GetWorkspaceSettings), vec![Role::Session, Role::Reviewer, Role::Planner]);
         for m in [
             Method::UpdateTask,
             Method::DeleteTask,
+            Method::GetProposal,
+            Method::UpdateProposal,
+            Method::DiscardProposal,
             Method::SaveSkill,
             Method::ListSkills,
             Method::DeleteSkill,

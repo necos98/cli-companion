@@ -8,7 +8,7 @@
 use crate::agents::{registry, tier_models, PermissionMode, TierModels};
 use crate::automation::settings::REASON_MAX;
 use crate::automation::{Method, Role};
-use crate::board::{OPTIONS_MAX, OPTION_MAX, QUESTION_MAX};
+use crate::board::{MAX_TASKS_PER_BOARD, OPTIONS_MAX, OPTION_MAX, QUESTION_MAX};
 use crate::workspaces::{
     DeliveryMode, MergeMethod, MAX_COMMAND_LEN, MAX_E2E_TIMEOUT_MIN, MAX_LAUNCH_NAME_LEN, MAX_PATCH_AGENTS,
     MAX_PATCH_LAUNCHES, MAX_PATCH_REPOS, MAX_REPO_COMMANDS, MAX_REPO_COMMAND_LEN, MAX_REPO_PATH_LEN, MAX_RULES_LEN,
@@ -123,7 +123,29 @@ fn task_properties(with_id: bool) -> Value {
     props
 }
 
+/// `propose_tasks` per sessioni e pianificatore: una proposta che l'utente decide.
 fn propose_tasks_tool() -> Value {
+    propose_tasks_schema(
+        "Propose tasks for this workspace's queue. The user accepts or discards it in the app; nothing starts \
+         before and you get no answer: never wait. All-or-nothing validation: unique ids (also vs queue and \
+         proposals), valid dependencies, no cycles, existing repo. Returns {proposal, status: \"pending\"}.",
+        false,
+    )
+}
+
+/// `propose_tasks` del revisore: niente decisione dell'utente, le correzioni
+/// entrano subito in testa alla coda e `blocks` fa aspettare altri task.
+fn reviewer_propose_tasks_tool() -> Value {
+    propose_tasks_schema(
+        "Queue the fix tasks and the new review. No approval: after all-or-nothing validation they are accepted at \
+         once, at the HEAD of the queue; queued tasks depending on the reviewed work wait for the new review. \
+         Returns {status: \"accepted\", tasks, waiting}.",
+        true,
+    )
+}
+
+/// Campo `tasks` di `propose_tasks`: i task proposti, in ordine di coda.
+fn proposed_tasks_property() -> Value {
     let mut proposed = task_properties(true);
     proposed["model"] = json!({
         "type": ["string", "null"],
@@ -132,27 +154,32 @@ fn propose_tasks_tool() -> Value {
     });
     proposed["bot"] = json!({ "type": "string", "description": BOT_DESCRIPTION });
     proposed["agent"] = json!({ "type": "string", "description": "Must equal the Bot's agent: omit." });
-    tool(
-        "propose_tasks",
-        "Propose tasks for this workspace's queue. The user accepts or discards it in the app; nothing starts \
-         before and you get no answer: never wait. All-or-nothing validation: unique ids (also vs queue and \
-         proposals), valid dependencies, no cycles, existing repo. Returns {proposal, status: \"pending\"}.",
-        json!({
-            "tasks": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 20,
-                "items": {
-                    "type": "object",
-                    "properties": proposed,
-                    "required": ["id", "title", "task", "bot"],
-                    "additionalProperties": false
-                },
-                "description": "In queue order."
-            }
-        }),
-        &["tasks"],
-    )
+    json!({
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+            "type": "object",
+            "properties": proposed,
+            "required": ["id", "title", "task", "bot"],
+            "additionalProperties": false
+        },
+        "description": "In queue order."
+    })
+}
+
+fn propose_tasks_schema(description: &str, with_blocks: bool) -> Value {
+    let mut props = json!({ "tasks": proposed_tasks_property() });
+    if with_blocks {
+        props["blocks"] = json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "maxItems": MAX_TASKS_PER_BOARD,
+            "description": "Other queued tasks to hold until the new review is done (same code, or they assume \
+                            the reviewed result works)."
+        });
+    }
+    tool("propose_tasks", description, props, &["tasks"])
 }
 
 fn get_task_details_tool() -> Value {
@@ -176,12 +203,23 @@ fn read_settings_tool() -> Value {
 }
 
 fn list_tasks_tool() -> Value {
-    tool(
-        "list_tasks",
+    queue_tool(
         "List the task queue: counts per status, pending proposals and one \
          compact row per task (id, title, status, kind unless work, verdict for reviews, attention, waiting_on, summary, note, fail_reason, blocked_by). \
          fail_reason: worker_failed|worker_exited|stopped|interrupted|start_failed. \
          blocked_by: failed tasks it depends on.",
+    )
+}
+
+/// `list_tasks` del revisore: gli serve solo l'ordine e le attese, per scegliere `blocks`.
+fn reviewer_list_tasks_tool() -> Value {
+    queue_tool("List the queue: one row per task (id, title, status, kind, waiting_on, origin), in queue order.")
+}
+
+fn queue_tool(description: &str) -> Value {
+    tool(
+        "list_tasks",
+        description,
         json!({
             "status": {
                 "type": "array",
@@ -190,6 +228,31 @@ fn list_tasks_tool() -> Value {
             }
         }),
         &[],
+    )
+}
+
+/// Tool che prende solo l'id di una proposta pendente.
+fn proposal_tool(name: &str, description: &str) -> Value {
+    tool(name, description, json!({ "id": { "type": "string", "description": "Proposal id." } }), &["id"])
+}
+
+/// `update_proposal`: i task sono quelli di `propose_tasks`; lo schema non li ripete (pesa
+/// quanto `propose_tasks`) e li valida il server con lo stesso parser.
+fn update_proposal_tool() -> Value {
+    tool(
+        "update_proposal",
+        "Replace the tasks of a pending proposal (same fields and validation as propose_tasks). All-or-nothing;          accepting stays the user's.",
+        json!({
+            "id": { "type": "string", "description": "Proposal id." },
+            "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": { "type": "object" },
+                "description": "The new tasks, objects exactly as in propose_tasks."
+            }
+        }),
+        &["id", "tasks"],
     )
 }
 
@@ -213,6 +276,9 @@ pub fn session_tools() -> Vec<Value> {
             json!({ "id": { "type": "string", "description": "Id of the task." } }),
             &["id"],
         ),
+        proposal_tool("get_proposal", "A pending proposal with its full task specs (ids are in list_tasks)."),
+        update_proposal_tool(),
+        proposal_tool("discard_proposal", "Discard a pending proposal (e.g. a duplicate or wrong one)."),
         tool(
             "save_skill",
             "Create or update a global user skill, usable in every project as /<name>. The app generates \
@@ -521,7 +587,8 @@ pub fn reviewer_tools() -> Vec<Value> {
             &["status", "summary"],
         ),
         get_task_details_tool(),
-        propose_tasks_tool(),
+        reviewer_propose_tasks_tool(),
+        reviewer_list_tasks_tool(),
         read_settings_tool(),
     ];
     tools.extend(e2e_tools());
@@ -589,7 +656,7 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>, hub: bool) -> S
             let mut text = "cli-companion: you may propose tasks for this workspace's queue with propose_tasks. The user \
                 accepts or discards them in the app and automated workers deliver them on their own. Never wait for workers \
                 or for the decision (no sleep, polling or repeated calls): end your turn. list_tasks, get_task_details, \
-                update_task and delete_task inspect and fix the queue. Write task texts in the language of the conversation. \
+                update_task and delete_task inspect and fix the queue; get_proposal, update_proposal and discard_proposal                 correct or drop a pending proposal. Write task texts in the language of the conversation. \
                 save_skill, list_skills and delete_skill manage the user's global skills. get_workspace_settings and \
                 propose_settings read and propose changes to the workspace settings; the user approves them in the app."
                 .to_string();
@@ -611,9 +678,9 @@ pub fn instructions(role: Option<Role>, workspace: Option<&str>, hub: bool) -> S
             )
         }
         Some(Role::Reviewer) => "cli-companion: you are an automated reviewer. Call get_task first and follow its instructions: verify \
-             the integrated result of the reviewed tasks without changing files, propose fix tasks with propose_tasks when needed \
-             and ALWAYS finish with complete_task and a verdict. If you need a decision from the user, ask in plain text and end \
-             your turn."
+             the integrated result without changing files; on problems call list_tasks, then propose_tasks (fixes + new \
+             review: queued at once at the head, dependent tasks wait; `blocks` holds others). ALWAYS finish with complete_task \
+             and a verdict. For a user decision, ask in plain text and end your turn."
             .to_string(),
         Some(Role::Planner) => planner_instructions(hub).to_string(),
         None => "cli-companion: tools are only available in cli-companion terminals with the app running.".to_string(),

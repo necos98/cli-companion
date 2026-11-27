@@ -14,6 +14,7 @@
 //! - `tolerant`: la lettura che non perde il file per un valore sconosciuto;
 //! - `commands`: i comandi Tauri.
 
+mod availability;
 pub mod commands;
 mod language;
 pub mod presets;
@@ -23,6 +24,7 @@ mod secretary;
 mod session;
 mod tolerant;
 
+pub use availability::{check_request, effective, HUB_AVAILABLE};
 pub use language::Language;
 pub use provider::Provider;
 #[cfg(test)]
@@ -77,6 +79,17 @@ pub struct HubSettingsView {
     #[serde(flatten)]
     pub settings: HubSettings,
     pub api_key_set: bool,
+    /// `false` finche' l'integrazione e' disabilitata (`HUB_AVAILABLE`): in quel caso
+    /// `enabled` e' sempre `false`, qualunque cosa dica il file.
+    pub available: bool,
+}
+
+impl HubSettingsView {
+    /// Con l'HUB non disponibile `enabled` risulta spento, senza toccare il file.
+    pub fn new(mut settings: HubSettings, api_key_set: bool, available: bool) -> Self {
+        settings.enabled = effective(available, settings.enabled);
+        Self { settings, api_key_set, available }
+    }
 }
 
 static SETTINGS_FILE: JsonFile<HubSettings> = JsonFile::new("hub_settings.json", &[adopt_envelope]);
@@ -95,8 +108,15 @@ pub fn load_from_disk(app: &tauri::App) {
     }
 }
 
+impl HubSettings {
+    /// L'HUB e' davvero acceso: salvato come acceso e integrazione disponibile.
+    pub fn is_on(&self) -> bool {
+        effective(HUB_AVAILABLE, self.enabled)
+    }
+}
+
 pub fn is_enabled(app: &AppHandle) -> bool {
-    app.state::<HubSettingsStore>().read(|s| s.enabled)
+    app.state::<HubSettingsStore>().read(HubSettings::is_on)
 }
 
 #[cfg(test)]
@@ -173,13 +193,24 @@ mod tests {
 
     #[test]
     fn the_view_flattens_the_settings_and_has_no_key() {
-        let view = HubSettingsView { settings: full(), api_key_set: true };
+        let view = HubSettingsView::new(full(), true, true);
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["enabled"], true);
         assert_eq!(json["api_key_set"], true);
+        assert_eq!(json["available"], true);
         assert_eq!(json["provider"]["model"], "qwen");
         assert_eq!(json["secretaries"][0]["name"], "mario");
         assert!(json.get("api_key").is_none() && json.get("settings").is_none());
+    }
+
+    #[test]
+    fn an_unavailable_hub_reports_enabled_false_even_with_a_saved_true() {
+        let view = HubSettingsView::new(full(), false, false);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["enabled"], false);
+        assert_eq!(json["available"], false);
+        assert!(full().enabled, "il file salvato non cambia");
+        assert!(HubSettingsView::new(full(), false, true).settings.enabled);
     }
 
     #[test]

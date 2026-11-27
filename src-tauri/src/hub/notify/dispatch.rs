@@ -125,7 +125,7 @@ impl HubNotifier {
 }
 
 fn targets_of(app: &AppHandle, has_sinks: bool) -> Targets {
-    app.state::<HubSettingsStore>().read(|s| Targets::resolve(s.enabled, s.notifications, has_sinks))
+    app.state::<HubSettingsStore>().read(|s| Targets::resolve(s.is_on(), s.notifications, has_sinks))
 }
 
 fn candidate(

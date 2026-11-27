@@ -4,7 +4,7 @@
 use super::commands::update_checked;
 use crate::automation::worktrees::{check_e2e_configured, check_e2e_needs_git, ensure_repos};
 use crate::automation::*;
-use crate::board::{parse_proposal, SpecContext, TaskStatus};
+use crate::board::{parse_proposal, SpecContext, TaskSpec, TaskStatus};
 use serde_json::json;
 
 /// Workspace del tab che chiama un tool di sessione.
@@ -40,8 +40,23 @@ pub(in crate::automation) fn rpc_session<H: Host>(
             st.run(host, |r| r.delete_task(&ws.id, &id, now))?;
             Ok(json!({ "deleted": id }))
         }
+        "get_proposal" => get_proposal(st, host, &ws, params),
+        "update_proposal" => update_proposal(st, host, &ws, params),
+        "discard_proposal" => discard_proposal(st, host, &ws, params),
         _ => Err(format!("unknown method: {method}")),
     }
+}
+
+/// Controlli sui task nuovi che toccano il disco o le impostazioni: repository
+/// (e cartelle senza git), E2E possibili. Quelli sulla board li fa `check_specs`.
+pub(in crate::automation) fn check_new_tasks<H: Host>(
+    host: &H,
+    ws: &Workspace,
+    specs: &[TaskSpec],
+) -> Result<(), String> {
+    let kinds = ensure_repos(host, ws, specs.iter().map(|s| s.repo.as_deref()))?;
+    check_e2e_needs_git(ws, specs, &kinds)?;
+    check_e2e_configured(ws, specs)
 }
 
 /// `propose_tasks`: proposta di task per la coda di `ws`. `tab` e' il tab che la fa;
@@ -56,9 +71,7 @@ pub(in crate::automation) fn propose_tasks<H: Host>(
     params: &Value,
 ) -> Result<Value, String> {
     let specs = parse_proposal(params)?;
-    let kinds = ensure_repos(host, ws, specs.iter().map(|s| s.repo.as_deref()))?;
-    check_e2e_needs_git(ws, &specs, &kinds)?;
-    check_e2e_configured(ws, &specs)?;
+    check_new_tasks(host, ws, &specs)?;
     let now = now_millis();
     let bots = host.agent_bots();
     let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
@@ -68,6 +81,42 @@ pub(in crate::automation) fn propose_tasks<H: Host>(
         "status": "pending",
         "message": "The user will accept or discard it in the app. Do not wait for the decision."
     }))
+}
+
+/// Id della proposta pendente nei parametri.
+fn proposal_id(params: &Value) -> Result<String, String> {
+    Ok(req_str(params, "id")?.trim().to_string())
+}
+
+/// `get_proposal`: la proposta pendente con le specifiche complete.
+fn get_proposal<H: Host>(st: &AutomationState, host: &H, ws: &Workspace, params: &Value) -> Result<Value, String> {
+    let id = proposal_id(params)?;
+    let proposal = st.run(host, |r| r.pending_proposal(&ws.id, &id))?;
+    Ok(json!({ "proposal": proposal }))
+}
+
+/// `update_proposal`: sostituisce i task di una proposta pendente, con le
+/// stesse verifiche di `propose_tasks`; id e origine della proposta restano.
+fn update_proposal<H: Host>(st: &AutomationState, host: &H, ws: &Workspace, params: &Value) -> Result<Value, String> {
+    let id = proposal_id(params)?;
+    let specs = parse_proposal(&json!({ "tasks": params.get("tasks") }))?;
+    check_new_tasks(host, ws, &specs)?;
+    let now = now_millis();
+    let bots = host.agent_bots();
+    let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
+    let count = specs.len();
+    st.run(host, |r| r.update_proposal(&ws.id, &id, specs, ctx, now))?;
+    Ok(json!({ "proposal": id, "status": "pending", "tasks": count }))
+}
+
+/// `discard_proposal`: scarta una proposta pendente, come fa l'utente nell'app.
+fn discard_proposal<H: Host>(st: &AutomationState, host: &H, ws: &Workspace, params: &Value) -> Result<Value, String> {
+    let id = proposal_id(params)?;
+    let now = now_millis();
+    let bots = host.agent_bots();
+    let ctx = SpecContext { workspace_agent: ws.agent.as_deref(), bots: &bots };
+    st.run(host, |r| r.decide_proposal(&ws.id, &id, false, ctx, now))?;
+    Ok(json!({ "discarded": id }))
 }
 
 /// `list_tasks`: la coda di `ws` in forma compatta, filtrata per stato.

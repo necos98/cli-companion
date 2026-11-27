@@ -2,6 +2,7 @@ import { useState } from "react";
 import { setHubEnabled } from "../../app/actions/hub";
 import { errorMessage } from "../../lib/errors";
 import { useStore } from "../../hooks/useStore";
+import { HUB_UNAVAILABLE_NOTICE, hubAvailable } from "../../lib/hubSettings";
 import { hubStore } from "../../stores/hub";
 import ModelSection from "./hub/ModelSection";
 import SecretariesSection from "./hub/SecretariesSection";
@@ -15,6 +16,7 @@ import { Section, SettingsPage } from "./shared";
 export default function HubPage() {
   const enabled = useStore(hubStore, (s) => s.enabled);
   const settings = useStore(hubStore, (s) => s.settings);
+  const available = hubAvailable(settings);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +43,7 @@ export default function HubPage() {
           <input
             type="checkbox"
             checked={enabled}
-            disabled={saving}
+            disabled={saving || !available}
             onChange={(e) => void change(e.target.checked)}
             className="h-3.5 w-3.5 accent-primary"
           />
@@ -51,6 +53,11 @@ export default function HubPage() {
           Modalità opzionale: spenta, l’app resta com’è. Accesa, compare un pulsante nella sidebar che apre la vista; i
           thread già scritti restano salvati anche se la spegni.
         </p>
+        {!available && (
+          <p role="status" className="text-[11px] text-amber-500">
+            {HUB_UNAVAILABLE_NOTICE}
+          </p>
+        )}
         {error && <p className="text-[11px] text-destructive">{error}</p>}
       </Section>
       {settings === null ? (

@@ -128,7 +128,7 @@ impl BoardView {
 }
 
 /// La riga compatta di un task: id, titolo, stato e solo i campi che lo
-/// distinguono (attenzione, attesa, tipo, agente, E2E, cartella senza git, report, domanda, nota).
+/// distinguono (attenzione, attesa, tipo, agente, E2E, cartella senza git, origine, report, domanda, nota).
 pub fn compact_row(v: &TaskView) -> Value {
     let t = &v.task;
     let mut o = json!({ "id": t.id, "title": t.title, "status": t.status().as_str() });
@@ -155,6 +155,9 @@ pub fn compact_row(v: &TaskView) -> Value {
     }
     if t.no_git {
         o["no_git"] = Value::Bool(true);
+    }
+    if let Some(origin) = &t.origin {
+        o["origin"] = json!(origin);
     }
     if let Some(r) = t.report() {
         o["summary"] = Value::from(clip_with_ellipsis(&r.summary, COMPACT_SUMMARY_MAX));

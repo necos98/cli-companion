@@ -881,9 +881,9 @@ dati, consegna, scheduler, tool, UI): [BOARD.MD](BOARD.MD). Struttura a strati, 
   | `run_e2e`, `get_e2e_result` | sì | sì | no | no |
   | `propose_tasks` | no | sì | sì | sì |
   | `get_task_details` | no | sì | sì | sì |
-  | `list_tasks` | no | no | sì | sì |
+  | `list_tasks` | no | sì | sì | sì |
   | `get_workspace_settings` | no | sì | sì | sì |
-  | `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
+  | `update_task`, `delete_task`, `get_proposal`, `update_proposal`, `discard_proposal`, `propose_settings` | no | no | no | sì |
   | `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
 
   Il ruolo viene dal tab: il worker di un task `work` è `worker`, quello di un task `review` è `reviewer`, quello di

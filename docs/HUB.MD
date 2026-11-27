@@ -1,5 +1,11 @@
 # Agents HUB
 
+> **Temporaneamente disabilitato.** L'integrazione dell'Agents HUB è momentaneamente disabilitata: era un'implementazione
+> sperimentale e non è più usata. Il codice resta, ma `hub::settings::HUB_AVAILABLE` è `false`: l'HUB risulta spento
+> ovunque (avvio, feed, segretari, notifiche, connettori) anche se `hub_settings.json` dice `enabled: true`, e
+> `hub_set_enabled(true)` restituisce un errore. Il file delle impostazioni non viene toccato. Per riattivarla basta
+> mettere la costante a `true` (`src-tauri/src/hub/settings/availability.rs`).
+
 L'**Agents HUB** è una modalità opzionale di cli-companion: uno spazio stile Slack con un **canale per
 workspace** più un canale **Generale**, e dentro ogni canale dei **thread** di messaggi. Nel backend ci sono
 l'interruttore globale, il modello dati, la persistenza, i comandi Tauri, l'evento verso il frontend e gli

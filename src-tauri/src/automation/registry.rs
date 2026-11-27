@@ -19,7 +19,7 @@ pub struct Notice {
     pub task_id: String,
     /// Tab del worker, se esiste ancora (il toast cliccabile porta li').
     pub tab_id: Option<String>,
-    /// `attention` | `failed` | `question`.
+    /// `attention` | `failed` | `question` | `fixes` (un revisore ha messo in coda delle correzioni).
     pub kind: &'static str,
     /// Titolo del task.
     pub title: String,
@@ -231,12 +231,31 @@ impl Registry {
             "question" => format!("{} ha una domanda", t.title),
             _ => format!("{} è fallito", t.title),
         };
+        self.push_notice(ws, tid, tab, kind, body);
+    }
+
+    /// Notifica `fixes`: il revisore `review_id` ha messo in coda delle correzioni.
+    pub(super) fn notify_fixes(&mut self, ws: &str, review_id: &str, tab: &str, fixes: &board::ReviewFixes) {
+        let Some(t) = self.boards.get(ws).and_then(|b| b.task(review_id)) else {
+            return;
+        };
+        let mut body = format!("{}: {} correzioni in coda", t.title, fixes.tasks.len());
+        if !fixes.waiting.is_empty() {
+            body.push_str(&format!(", {} task in attesa", fixes.waiting.len()));
+        }
+        self.push_notice(ws, review_id, Some(tab), "fixes", body);
+    }
+
+    fn push_notice(&mut self, ws: &str, tid: &str, tab: Option<&str>, kind: &'static str, body: String) {
+        let Some(title) = self.boards.get(ws).and_then(|b| b.task(tid)).map(|t| t.title.clone()) else {
+            return;
+        };
         let notice = Notice {
             workspace_id: ws.to_string(),
             task_id: tid.to_string(),
             tab_id: tab.map(str::to_string),
             kind,
-            title: t.title.clone(),
+            title,
             body,
         };
         self.effects.push(Effect::Notify(Box::new(notice)));

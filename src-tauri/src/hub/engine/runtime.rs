@@ -72,7 +72,7 @@ impl SecretaryEngine {
     /// scrive i thread): fuori dal main thread.
     pub fn on_message(&self, app: &AppHandle, channel: &Channel, thread_id: &str, message: &Message) {
         let settings = app.state::<HubSettingsStore>().get();
-        if !settings.enabled || message.author != Author::User {
+        if !settings.is_on() || message.author != Author::User {
             return;
         }
         let key = ThreadKey::new(channel, thread_id);
@@ -115,7 +115,7 @@ impl SecretaryEngine {
             return;
         }
         let settings = app.state::<HubSettingsStore>().get();
-        if !settings.enabled {
+        if !settings.is_on() {
             return;
         }
         let idle = idle_ms(&settings.session);
@@ -147,7 +147,7 @@ impl SecretaryEngine {
     /// accoda soltanto.
     pub fn on_external(&self, app: &AppHandle, channel: &Channel, thread_id: &str, trigger_id: &str, secretary: &str) {
         let settings = app.state::<HubSettingsStore>().get();
-        if !settings.enabled {
+        if !settings.is_on() {
             return;
         }
         let key = ThreadKey::new(channel, thread_id);

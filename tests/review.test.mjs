@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   REVIEW_NEEDS_DEPENDENCY,
+  fixOriginLabel,
   isReview,
   proposalHeading,
   reviewDependencyError,
@@ -128,5 +129,18 @@ describe("flag E2E nel form", () => {
     const marked = task({ e2e: true });
     assert.equal(formFromTask(marked).e2e, true);
     assert.deepEqual(buildPatch(marked, { ...formFromTask(marked), e2e: false }, false), { e2e: false });
+  });
+});
+
+describe("marcatore delle correzioni", () => {
+  const tasks = [{ id: "r1", title: "Review login" }];
+
+  it("usa il titolo della review, altrimenti l'id", () => {
+    assert.equal(fixOriginLabel({ origin: "r1" }, tasks), "Correzione di Review login");
+    assert.equal(fixOriginLabel({ origin: "zz" }, tasks), "Correzione di zz");
+  });
+
+  it("niente marcatore senza origine", () => {
+    assert.equal(fixOriginLabel({}, tasks), null);
   });
 });

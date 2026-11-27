@@ -220,3 +220,12 @@ export function checkDraft(draft: SecretaryDraft, taken: readonly string[]): Che
   if (draft.channels !== null && draft.channels.length === 0) return fail("Scegli almeno un canale, oppure tutti.");
   return ok({ ...draft, name: name.value, systemPrompt: prompt });
 }
+
+/** Avviso mostrato al posto dell'interruttore finché l'integrazione è disabilitata (`HUB_AVAILABLE` nel backend). */
+export const HUB_UNAVAILABLE_NOTICE =
+  "L’integrazione dell’Agents HUB è momentaneamente disabilitata: era un’implementazione sperimentale.";
+
+/** `false` solo se il backend dichiara l'HUB non disponibile; con le impostazioni non ancora lette non avvisa. */
+export function hubAvailable(settings: { available: boolean } | null): boolean {
+  return settings === null || settings.available;
+}

@@ -83,6 +83,7 @@ export default function ListView({
     <ListRow
       key={t.id}
       task={t}
+      tasks={board.tasks}
       subtitle={listSubtitle(t, board.tasks, positions)}
       agents={agents}
       now={now}

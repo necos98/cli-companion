@@ -17,6 +17,16 @@ export function isReview(item: Pick<Task, "kind">): boolean {
   return item.kind === "review";
 }
 
+/** Testo del marcatore di una correzione messa in coda da un revisore; `null` se il task non ne ha. */
+export function fixOriginLabel(
+  task: Pick<Task, "origin">,
+  tasks: readonly Pick<Task, "id" | "title">[],
+): string | null {
+  if (!task.origin) return null;
+  const title = tasks.find((t) => t.id === task.origin)?.title;
+  return `Correzione di ${title || task.origin}`;
+}
+
 export interface VerdictBadge {
   verdict: ReviewVerdict;
   label: string;

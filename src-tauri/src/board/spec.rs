@@ -242,9 +242,16 @@ pub fn parse_spec(v: &Value, base: Option<&TaskSpec>) -> Result<TaskSpec, String
 
 /// Parametri di `propose_tasks`: `{ tasks: [TaskSpec] }`, ogni task con id.
 pub fn parse_proposal(p: &Value) -> Result<Vec<TaskSpec>, String> {
+    parse_proposal_allowing(p, &[])
+}
+
+/// Come `parse_proposal`, ma accetta anche i campi di primo livello `extra`
+/// (che il chiamante legge per conto suo): `propose_tasks` del revisore.
+pub(super) fn parse_proposal_allowing(p: &Value, extra: &[&str]) -> Result<Vec<TaskSpec>, String> {
     let obj = p.as_object().ok_or_else(|| "params must be an object".to_string())?;
-    if let Some(k) = obj.keys().find(|k| k.as_str() != "tasks") {
-        return Err(format!("unknown field '{k}' (allowed: tasks)"));
+    if let Some(k) = obj.keys().find(|k| k.as_str() != "tasks" && !extra.contains(&k.as_str())) {
+        let allowed = std::iter::once("tasks").chain(extra.iter().copied()).collect::<Vec<_>>().join(", ");
+        return Err(format!("unknown field '{k}' (allowed: {allowed})"));
     }
     let arr = obj
         .get("tasks")

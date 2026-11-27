@@ -37,6 +37,7 @@ mod recovery;
 mod relocation;
 mod report;
 mod review;
+mod review_fixes;
 mod scheduler;
 mod settings;
 mod spec;
@@ -70,6 +71,7 @@ pub use question::{parse_question, TaskQuestion, ANSWER_MAX, OPTIONS_MAX, OPTION
 pub use relocation::{relocation_blockers, relocation_refusal};
 pub use report::{build_report, parse_report_fields, ReportFields, TaskReport, TestRun, DIFFSTAT_MAX};
 pub use review::{check_review_deps, check_verdict, reviewed_tasks, TaskKind, Verdict};
+pub use review_fixes::{parse_review_proposal, ReviewFixes};
 pub use scheduler::{schedule, SchedCtx};
 pub use settings::{SettingsProposal, SettingsProposalView};
 pub use spec::{

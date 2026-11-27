@@ -48,6 +48,7 @@ describe("doppioni con task-notify", () => {
 
   it("un tipo sconosciuto non e' coperto: task-notify lo mostra", () => {
     assert.equal(hubCoversTaskNotice(hub(true), "other"), false);
+    assert.equal(hubCoversTaskNotice(hub(true), "fixes"), false);
   });
 
   it("interruttore spento: task-notify torna com'era", () => {

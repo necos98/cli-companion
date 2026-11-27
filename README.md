@@ -332,7 +332,7 @@ retry) e `complete_task` (`completed` | `failed`, riassunto, `commit`, `pr_url`,
 `files_changed`, `tests`, `follow_ups`; il tab si chiude dopo ~1,5 s).
 
 Sessioni normali (Intake compreso, nel workspace del tab): `propose_tasks`, `list_tasks`,
-`get_task_details`, `update_task`, `delete_task`, `get_workspace_settings`, `propose_settings`.
+`get_task_details`, `update_task`, `delete_task`, `get_proposal`, `update_proposal`, `discard_proposal`, `get_workspace_settings`, `propose_settings`.
 
 ### Impostazioni proposte dall'agente
 

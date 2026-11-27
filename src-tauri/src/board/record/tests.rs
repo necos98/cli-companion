@@ -392,3 +392,17 @@ fn a_failed_record_without_a_reason_is_unknown_and_other_states_ignore_it() {
     assert_eq!(read(json!({"status": "queued", "fail_reason": "stopped"})).fail_reason(), None);
     assert!(serde_json::to_value(read(json!({"status": "failed"}))).unwrap().get("fail_reason").is_none());
 }
+
+#[test]
+fn the_origin_review_is_written_only_when_set_and_read_back() {
+    let plain = Task::from_spec(TaskSpec { id: "a".into(), ..TaskSpec::default() }, 1);
+    assert!(serde_json::to_value(&plain).unwrap().get("origin").is_none());
+    let fix = Task { origin: Some("rev".into()), ..plain.clone() };
+    let wire = serde_json::to_value(&fix).unwrap();
+    assert_eq!(wire["origin"], "rev");
+    let back: Task = serde_json::from_value(wire).unwrap();
+    assert_eq!(back.origin.as_deref(), Some("rev"));
+    // Un file scritto prima del campo si legge come task senza origine.
+    let old: Task = serde_json::from_value(serde_json::to_value(&plain).unwrap()).unwrap();
+    assert_eq!(old.origin, None);
+}

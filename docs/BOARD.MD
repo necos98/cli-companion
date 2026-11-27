@@ -78,6 +78,7 @@ Task:
   "depends_on": ["task-schema"],         // id esistenti, niente cicli, max 50
   "kind": "work",           // work | review | plan (default work, vedi "Task di review" e "Task di pianificazione"); una review richiede almeno una dipendenza; plan lo crea solo l'app
   "e2e": false,             // true = deve superare gli E2E del repository; omesso se false (vedi "Test E2E")
+  "origin": "review-x",     // solo le correzioni messe in coda da un revisore: id della review (omesso se assente; la UI mostra "Correzione di <titolo>")
   "no_git": false,          // true = la cartella del task non è un repository git: modalità libera (vedi "Cartelle senza git"); omesso se false; deciso a creazione/accettazione, riletto all'avvio
   "repo": null,             // cartella relativa alla root; null = la root (multi-repo)
   "agent": "claude-code",   // sempre valorizzato: risolto alla creazione (agente del task, poi del workspace, poi il predefinito globale) e non cambia con i predefiniti
@@ -261,8 +262,9 @@ worker o cosa si può scegliere. Compaiono in `KanbanCard`, `ListRow`, `TaskDeta
 
 | Badge | Origine del dato | Effetto |
 |---|---|---|
-| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks`, nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`; la proposta torna nel thread d'origine. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
+| **Review** | `kind: review` | Ruolo Reviewer: `get_task` con `reviewed_tasks`, nessuna consegna, verdetto e `findings` obbligatori; `propose_tasks` (senza approvazione: le correzioni entrano subito in coda), `list_tasks`, `get_task_details` e `get_workspace_settings` ma niente `ask_user`; almeno una dipendenza (i task rivisti); notifica `ReviewDone`. Serve un Bot con `review` fra i `kinds` (`Reviewer`) |
 | **Pianificazione** | `kind: plan`, solo task creati dall'app (HUB e `create_plan_task`) | Ruolo Planner: worktree isolato sempre, non occupa il repository nello scheduler, niente setup, consegna, commit né E2E; `list_tasks`, `get_workspace_settings` e `ask_user`; notifica `PlanWithoutProposal` se chiude senza proposta; escluso dalla chiusura automatica del thread. Il `kind` è riservato all'app. Serve un Bot con `plan` (`Planner`) |
+| **Correzione di <review>** | `origin` del task (id della review; la UI ne cerca il titolo nella board, altrimenti mostra l'id) | Solo informativo: il task è una correzione messa in coda da un revisore (Kanban, Lista, dettaglio) |
 | **Verificato** / **Problemi trovati** | verdetto del report di una review `done` | Solo informativo: i `findings` si leggono nel dettaglio |
 | **E2E richiesto** / esito | `e2e` del task e ultima esecuzione (`e2e_run` o `report.e2e`) | "E2E richiesto" finché il task marcato non ha mai eseguito gli E2E, poi l'esito (vedi "Test E2E") |
 | **Bot** (avatar e nome) | `bot` del task (snapshot all'accettazione); assente nei task vecchi | Dice chi esegue il task; il selettore del Bot offre solo i Bot abilitati con quel `kind` |
@@ -653,7 +655,7 @@ esecuzioni in corso; archiviare o rimuovere il workspace annulla quelle di tutto
   senza `answer`) e riprende il worker. Un permesso richiesto durante la domanda porta il worker a
   `needs_input` → `attention`: lì Invio approva il permesso e non chiude la domanda, e
   `answer_question` è rifiutata finché il permesso non è risolto.
-- Notifiche di sistema (in italiano): quando un task entra in `attention` ("<titolo>
+- Notifiche di sistema (in italiano): un reviewer che mette in coda delle correzioni (`kind: "fixes"`, vedi "Task di review"); quando un task entra in `attention` ("<titolo>
   richiede attenzione"), in `failed` ("<titolo> è fallito") o il suo worker comincia ad aspettare
   una risposta ("<titolo> ha una domanda"). Niente notifica per `done`.
 
@@ -696,9 +698,9 @@ automated sessions" (a un worker); un tab di un workspace archiviato risponde "w
 | `run_e2e`, `get_e2e_result` | sì | sì | no | no |
 | `propose_tasks` | no | sì | sì | sì |
 | `get_task_details` | no | sì | sì | sì |
-| `list_tasks` | no | no | sì | sì |
+| `list_tasks` | no | sì | sì | sì |
 | `get_workspace_settings` | no | sì | sì | sì |
-| `update_task`, `delete_task`, `propose_settings` | no | no | no | sì |
+| `update_task`, `delete_task`, `get_proposal`, `update_proposal`, `discard_proposal`, `propose_settings` | no | no | no | sì |
 | `save_skill`, `list_skills`, `delete_skill` | no | no | no | sì |
 
 `ask_user` richiede l'Agents HUB (`Method::requires_hub`): è l'HUB che porta la domanda all'utente e raccoglie la risposta; senza HUB
@@ -745,7 +747,7 @@ Worker:
   `RPC_TIMEOUT` del server MCP; il chiamante ripete finché lo stato non è più `running`.
   Valore fuori range: "wait_seconds must be an integer from 0 to 25".
 
-Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_tasks`,
+Reviewer (worker di un task `review`; mai `update_task`, `delete_task`,
 `propose_settings` o tool di skill; tutti gli altri metodi di sessione restano vietati):
 - `get_task` → `{ task, title, instructions, environment, reviewed_tasks, previous_attempt? }`.
   `instructions` sono quelle del reviewer, **senza `delivery`**. `reviewed_tasks` ha, per ogni
@@ -759,8 +761,14 @@ Reviewer (worker di un task `review`; mai `update_task`, `delete_task`, `list_ta
   limiti di `follow_ups`: max 100 voci, 1..=2000 caratteri) è obbligatorio e non vuoto con
   `issues`, ammesso come suggerimenti con `passed`. Con `status: "failed"` `verdict` è un
   errore (`findings` ammessi).
-- `get_task_details { id }` e `propose_tasks { tasks }`: come per la sessione, ma la RPC li
-  consente solo ai worker dei task `review`. I worker normali non vedono niente di nuovo.
+- `get_task_details { id }`: come per la sessione, ma la RPC lo consente solo ai worker dei task
+  `review`. I worker normali non vedono niente di nuovo.
+- `list_tasks { status? }`: righe compatte `{ id, title, status, kind?, waiting_on?, origin? }` in ordine di
+  coda (al reviewer servono l'ordine e le attese per scegliere `blocks`).
+- `propose_tasks { tasks, blocks? }`: stessa validazione della sessione (più `blocks`: id di task in coda da far
+  aspettare), ma **senza proposta pendente**: ritorna `{ status: "accepted", tasks, waiting, message }` e
+  le correzioni sono già in coda (vedi "Task di review", "Problemi"). La RPC lo consente solo ai worker
+  dei task `review`.
 - `get_workspace_settings {}`: sola lettura, nel workspace del task (come per il planner, con la
   descrizione che non cita `propose_settings`): il reviewer sceglie da `bots` il Bot e da
   `agents[].models` l'eventuale `model` dei task di correzione e della nuova review.
@@ -869,6 +877,7 @@ Sessione (workspace = quello del tab):
   eseguire il nuovo tipo (vedi "Tipi di task dei Bot"). Il titolo di un task il cui agente è stato disabilitato
   si modifica comunque.
 - `delete_task { id }` — solo `queued`/`failed` e senza dipendenti non `done`.
+- `get_proposal { id }` → la proposta pendente con le specifiche complete (`tasks`, `source_task`); `update_proposal { id, tasks }` sostituisce i task di una proposta pendente (stesso schema e stesse verifiche di `propose_tasks`, con gli id delle *altre* proposte pendenti come riservati; tutto o niente, id e origine restano, ritorna `{ proposal, status: "pending", tasks }`); `discard_proposal { id }` la scarta (stesso percorso dello scarto dell'utente: la board viene pubblicata e salvata). Non esiste un tool per accettare: resta all'utente.
 - `get_workspace_settings {}` → `{ settings, agents, bots, repos, allowed, limits, pending_settings_proposals }`:
   `bots` elenca **tutti** i Bot (abilitati o no), nell'ordine della lista, ognuno con `{ id, name, task, enabled,
   agent, agent_error, readiness, model, model_choice, effort, skill, kinds }`: `task` è a cosa serve il Bot (inglese),
@@ -1057,13 +1066,25 @@ tutti `done` (nessuna modifica allo scheduler).
 - **Esito**: `complete_task` con `verdict` `passed` o `issues` (+ `findings`), salvati nel
   `TaskReport`. La review completata va sempre a `done`, anche con `issues`; se non può essere
   eseguita, `status: "failed"` e resta `failed`.
-- **Problemi**: il reviewer chiama `propose_tasks` con task di correzione autosufficienti
-  (Goal, Context, Constraints, Done when, Verify; `model` obbligatorio; nella lingua del testo
+- **Problemi**: il reviewer guarda la coda con `list_tasks`, poi chiama `propose_tasks` con task di
+  correzione autosufficienti (Goal, Context, Constraints, Done when, Verify; nella lingua del testo
   dei task) più una nuova `review` che dipende dalle correzioni e riafferma l'obiettivo, poi
-  `complete_task` con `verdict: "issues"`. Non attende la decisione sulla proposta, che porta
-  `source_task`.
-- **Nessun ciclo automatico**: le correzioni le decide l'utente accettando o scartando la
-  proposta.
+  `complete_task` con `verdict: "issues"`. Non c'è nessuna proposta da accettare:
+  `Board::queue_review_fixes` (`board/review_fixes.rs`) mette subito in coda i task, **davanti al primo
+  `queued`**, e ognuno riceve `origin` = id della review. Il **gate** è la nuova review della proposta (o
+  tutti i task proposti se non ce n'è nessuna). Ogni task `queued` fuori dalla proposta che dipende,
+  direttamente o no, dalla review o dai task rivisti, più gli id del parametro facoltativo `blocks`,
+  aspetta il gate: gli si aggiunge a `depends_on`. Si riscrivono solo i `queued`: un task già
+  `running` non si può bloccare (ha il suo worker e le dipendenze si leggono all'avvio), `done` e
+  `failed` restano come sono; `blocks` con un task non `queued`, la review stessa o un task della
+  proposta è un errore. La validazione è tutto-o-niente: un ciclo (una correzione che dipende da un
+  task che deve aspettare le correzioni), troppe dipendenze o un limite superato rifiutano la proposta
+  senza toccare la board. Il risultato è `{ status: "accepted", tasks, waiting, message }` (`waiting` =
+  task già in coda che ora aspettano). Il reviewer non attende l'esecuzione delle correzioni.
+- **Notifica**: ogni proposta accettata emette `task-notify` con `kind: "fixes"` ("<titolo della
+  review>: N correzioni in coda[, M task in attesa]"); il toast porta al tab del reviewer. A differenza di `attention`, `failed` e `question`, non è coperta dalle notifiche dell'HUB: il toast resta.
+- **Nessun ciclo infinito**: la nuova review ricontrolla le correzioni e, se trova altri problemi, ne mette
+  in coda di nuove; l'utente può sempre annullare o eliminare i task in coda.
 
 ## Task di pianificazione
 
@@ -1187,11 +1208,11 @@ Codice in `automation/worktrees/start/free.rs` (avvio) e `board/texts/free.rs` (
 - `propose_tasks` aggiunge una `Proposal` alla board → `board-update`.
 - UI: card "Proposta da Task Intake" in cima al pannello Task del workspace (e nel Tasks
   Manager) con titolo/i, estratto della specifica, dipendenze, modello e **Scarta** /
-  **Accetta**. Nessuna modifica: per cambiarla l'utente la chiede all'Intake.
+  **Accetta**. Nessuna modifica dalla card: per cambiarla l'utente la chiede all'Intake, che può correggerla (`update_proposal`) o scartarla (`discard_proposal`).
 - Accetta → i task entrano in coda (`queued`, in fondo, nell'ordine della proposta) dopo una
   nuova validazione; se fallisce (es. un id nel frattempo occupato) la card mostra l'errore.
 - Scarta → la proposta sparisce. Nessun feedback all'Intake.
-- Una proposta fatta dal reviewer di una review registra `source_task` (id della review) e
+- Le correzioni di un reviewer non passano da una proposta: entrano subito in coda (vedi "Task di review"). `source_task` resta per le proposte del pianificatore.
 
 
 ### Proposte di impostazioni
@@ -1242,8 +1263,8 @@ nomina mai un agente o un modello: li legge da `get_workspace_settings.agents`.
   mostra all'utente in chat ogni task (titolo + specifica) prima di proporlo; poi
   `propose_tasks`; spiega che l'approvazione avviene nel pannello Task. Modello della
   specifica: **Goal, Context, Constraints, Done when, Verify** (comandi). Non implementare
-  mai il lavoro, non toccare file, non fare merge; può usare `list_tasks`,
-  `get_task_details`, `update_task`, `delete_task` per lo stato della coda. Ogni task ha
+  mai il lavoro e non fare merge; può fare da sé solo micro-modifiche di testo (documentazione, markdown, typo, note), mai codice, e dopo ne mostra il risultato e chiede se fare commit, commit e push, pull request o lasciarle non committate; può usare `list_tasks`,
+  `get_task_details`, `update_task`, `delete_task` per lo stato della coda e `get_proposal`, `update_proposal`, `discard_proposal` per correggere o scartare le proprie proposte pendenti. Ogni task ha
   sempre `bot`, scelto fra i Bot di `get_workspace_settings.bots` abilitati e con agente `ready` i cui `kinds`
   includono il `kind` del task, e fra questi quello il cui `task` corrisponde al lavoro (la skill non nomina id fissi
   di Bot, quindi anche i Bot nuovi sono scelti), altrimenti avvisa l'utente; `model` è solo un override
@@ -1573,8 +1594,9 @@ repository"), Pausa, "+ Nuovo task", "Task Intake". Le proposte pendenti compaio
 I task `review` si riconoscono dal badge **Review** in Kanban, Lista, coda e card in corso del
 pannello, nodo del grafo, dettaglio e righe di una proposta. Una review `done` mostra il verdetto:
 **Verificato** (`passed`) oppure **Problemi trovati** (`issues`, colore di avviso: il task non è
-fallito); con `issues` il dettaglio elenca i `findings` sopra il sommario. Una proposta con
-`source_task` si intitola "Proposta dal reviewer" e mostra il task di origine (titolo, o id se non
+fallito); con `issues` il dettaglio elenca i `findings` sopra il sommario. I task messi in coda da un reviewer portano il marcatore **Correzione di <review>** (`origin`; Kanban, Lista e
+dettaglio, `FixOriginBadge`). Una proposta con
+`source_task` (il reviewer non ne fa più: le sue correzioni entrano subito in coda) si intitola "Proposta dal reviewer" e mostra il task di origine (titolo, o id se non
 è più nella board); senza, resta "Proposta da Task Intake". Il form "Nuovo task" e la modifica
 (solo dove il task è modificabile) hanno l'opzione "Task di revisione" (`kind: "review"`): senza
 almeno una dipendenza il form blocca il salvataggio, come il backend. Logica in `src/lib/review.ts`.

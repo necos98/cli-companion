@@ -74,7 +74,7 @@ impl Board {
         Ok(resolved)
     }
 
-    fn pending_ids(&self, except: Option<&str>) -> HashSet<&str> {
+    pub(super) fn pending_ids(&self, except: Option<&str>) -> HashSet<&str> {
         self.proposals
             .iter()
             .filter(|p| Some(p.id.as_str()) != except)
@@ -135,6 +135,25 @@ impl Board {
 
     pub fn proposal(&self, id: &str) -> Result<&Proposal, String> {
         self.proposals.iter().find(|p| p.id == id).ok_or_else(|| format!("proposal not found: {id}"))
+    }
+
+    /// Sostituisce i task di una proposta pendente (l'Intake corregge un errore
+    /// senza farla accettare). Stessa validazione di `add_proposal`, con gli id
+    /// riservati delle sole altre proposte; tutto o niente, id e origine restano.
+    pub fn update_proposal(
+        &mut self,
+        id: &str,
+        specs: Vec<TaskSpec>,
+        ctx: SpecContext<'_>,
+        now: i64,
+    ) -> Result<(), String> {
+        self.proposal(id)?;
+        self.check_specs(&specs, &self.pending_ids(Some(id)), ctx)?;
+        if let Some(p) = self.proposals.iter_mut().find(|p| p.id == id) {
+            p.tasks = specs;
+        }
+        self.updated_at = now;
+        Ok(())
     }
 
     /// Accetta una proposta: dopo una nuova validazione i task entrano in
@@ -284,5 +303,7 @@ impl Board {
     }
 }
 
+#[cfg(test)]
+mod proposal_tests;
 #[cfg(test)]
 mod tests;

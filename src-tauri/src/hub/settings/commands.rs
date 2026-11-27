@@ -8,7 +8,7 @@ use super::presets::{self, SecretaryPresetView};
 use super::provider::Provider;
 use super::secretary::SecretaryDraft;
 use super::session::SessionSettings;
-use super::{secretaries, HubSettings, HubSettingsStore, HubSettingsView};
+use super::{check_request, secretaries, HubSettings, HubSettingsStore, HubSettingsView, HUB_AVAILABLE};
 use crate::bots::validate_image;
 use crate::hub::api_key::ApiKey;
 use crate::hub::engine::SecretaryEngine;
@@ -36,6 +36,11 @@ pub async fn hub_get_settings(app: AppHandle) -> Result<HubSettingsView, String>
 #[tauri::command]
 pub async fn hub_set_enabled(app: AppHandle, enabled: bool) -> Result<HubSettingsView, String> {
     crate::blocking(move || {
+        check_request(HUB_AVAILABLE, enabled)?;
+        if !HUB_AVAILABLE {
+            // Spegnere un HUB non disponibile e' innocuo: il file salvato non si tocca.
+            return Ok(view(&app, app.state::<HubSettingsStore>().get()));
+        }
         let mut was_enabled = false;
         let saved = save(&app, |s| {
             was_enabled = s.enabled;
@@ -231,5 +236,5 @@ fn view(app: &AppHandle, settings: HubSettings) -> HubSettingsView {
         log::error!("hub: presenza della API key non verificabile: {e}");
         false
     });
-    HubSettingsView { settings, api_key_set }
+    HubSettingsView::new(settings, api_key_set, HUB_AVAILABLE)
 }

@@ -80,11 +80,11 @@ fn a_review_starts_after_its_dependencies_and_its_worker_is_a_reviewer() {
 }
 
 #[test]
-fn only_the_reviewer_gets_the_three_session_tools() {
+fn only_the_reviewer_gets_the_four_session_tools() {
     let (st, h, r) = reviewer(DeliveryMode::Commit, false);
     let a = session_of_done(&st, &h);
     // Un worker normale non le ha.
-    for m in ["get_task_details", "propose_tasks", "get_workspace_settings"] {
+    for m in ["get_task_details", "propose_tasks", "list_tasks", "get_workspace_settings"] {
         let e = call(&st, &h, &a, m, json!({"id": "a"})).unwrap_err();
         assert!(e.contains("not available to automated sessions"), "{m}: {e}");
     }
@@ -93,15 +93,19 @@ fn only_the_reviewer_gets_the_three_session_tools() {
     assert_eq!(d["task"]["task"], "do a");
     assert_eq!(d["task"]["id"], "a");
     let p = call(&st, &h, &r, "propose_tasks", json!({"tasks": [spec("fix", &[])]})).unwrap();
-    assert_eq!(p["status"], "pending");
+    assert_eq!(p["status"], "accepted");
+    assert_eq!(task(&st, &h, "fix")["origin"], "rev");
+    assert!(call(&st, &h, &r, "list_tasks", json!({})).unwrap()["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == "fix"));
     assert!(call(&st, &h, &r, "get_task_details", json!({"id": "nope"})).unwrap_err().contains("task not found"));
     // Legge i Bot e i modelli del workspace del suo task, senza poterli cambiare.
     let s = call(&st, &h, &r, "get_workspace_settings", json!({})).unwrap();
     assert!(s["bots"].is_array() && s["agents"].is_array(), "{s}");
     // Tutto il resto resta vietato.
-    for m in
-        ["list_tasks", "update_task", "delete_task", "propose_settings", "list_skills", "save_skill", "delete_skill"]
-    {
+    for m in ["update_task", "delete_task", "propose_settings", "list_skills", "save_skill", "delete_skill"] {
         let e = call(&st, &h, &r, m, json!({"id": "a"})).unwrap_err();
         assert!(e.contains("not available to automated sessions"), "{m}: {e}");
     }
@@ -114,18 +118,17 @@ pub(super) fn session_of_done(st: &AutomationState, h: &FakeHost) -> String {
 }
 
 #[test]
-fn proposals_remember_the_review_that_made_them() {
+fn only_intake_proposals_stay_pending_while_the_reviewer_queues_its_own() {
     let (st, h, r) = reviewer(DeliveryMode::Commit, false);
     call(&st, &h, &r, "propose_tasks", json!({"tasks": [spec("fix", &[]), review_spec("rev2", &["fix"])]})).unwrap();
     call(&st, &h, INTAKE, "propose_tasks", json!({"tasks": [spec("other", &[])]})).unwrap();
     let proposals = view(&st, &h).proposals;
-    assert_eq!(proposals.len(), 2);
-    assert_eq!((proposals[0].source_task.as_deref(), proposals[0].source_tab.as_str()), (Some("rev"), r.as_str()));
-    assert_eq!((proposals[1].source_task.as_deref(), proposals[1].source_tab.as_str()), (None, INTAKE));
-    // Accettata, la revisione di seguito entra in coda dopo le correzioni.
-    boards::proposal_decide(&st, &h, "ws-1", &proposals[0].id, true).unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!((proposals[0].source_task.as_deref(), proposals[0].source_tab.as_str()), (None, INTAKE));
+    // La revisione di seguito e' gia' in coda dopo le correzioni, con l'origine.
     assert_eq!(task(&st, &h, "rev2")["kind"], "review");
     assert_eq!(task(&st, &h, "rev2")["depends_on"], json!(["fix"]));
+    assert_eq!(task(&st, &h, "rev2")["origin"], "rev");
     // Una revisione senza dipendenze non passa nemmeno dal revisore.
     let err = call(&st, &h, &r, "propose_tasks", json!({"tasks": [review_spec("bad", &[])]})).unwrap_err();
     assert!(err.contains("dependency"), "{err}");

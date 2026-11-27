@@ -10,7 +10,7 @@ export type Notice = { workspace_id: string, task_id: string,
  */
 tab_id: string | null, 
 /**
- * `attention` | `failed` | `question`.
+ * `attention` | `failed` | `question` | `fixes` (un revisore ha messo in coda delle correzioni).
  */
 kind: string, 
 /**

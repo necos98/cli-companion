@@ -27,7 +27,8 @@ use std::time::Instant;
 /// 9_800 = 9_700 plus the longer generic model pattern (`MODEL_SHAPE_PATTERN`, twice; measured 9_748).
 /// 10_100 = 9_800 plus the `bot` field of the tasks (propose_tasks, update_task), the model/agent overrides and the Bots
 /// in get_workspace_settings (measured 10_038).
-const SESSION_TOOLS_CEILING: usize = 10_100;
+/// 11_100 = 10_100 plus get_proposal, update_proposal (a light tasks schema) and discard_proposal (measured 11_052).
+const SESSION_TOOLS_CEILING: usize = 11_100;
 /// 3_050 = 2_600 plus run_e2e and get_e2e_result (measured 3_002).
 const WORKER_TOOLS_CEILING: usize = 3_050;
 /// The reviewer set (measured 4_005, with the `e2e` flag of propose_tasks): its own get_task and complete_task (verdict, findings, tests) plus the shared
@@ -35,10 +36,12 @@ const WORKER_TOOLS_CEILING: usize = 3_050;
 /// 5_200 = 4_050 plus run_e2e and get_e2e_result (measured 5_163).
 /// 5_300 = 5_200 plus the `bot` field and the model/agent override descriptions of propose_tasks (measured 5_244).
 /// The read-only get_workspace_settings joined the set under the same ceiling: other descriptions were shortened.
-const REVIEWER_TOOLS_CEILING: usize = 5_300;
+/// 5_850 = 5_300 plus the reviewer-only propose_tasks (accepted at once, `blocks`) and a short list_tasks (measured 5_809).
+const REVIEWER_TOOLS_CEILING: usize = 5_850;
 /// The worker set with the Agents HUB on: the hub-off set plus ask_user (measured 3_698).
 const WORKER_HUB_TOOLS_CEILING: usize = 3_750;
-const SESSION_INSTRUCTIONS_CEILING: usize = 700;
+/// 800 = 700 plus the pending-proposal tools (measured 762).
+const SESSION_INSTRUCTIONS_CEILING: usize = 800;
 /// The worker server instructions with the Agents HUB on (measured 238).
 const WORKER_HUB_INSTRUCTIONS_CEILING: usize = 300;
 /// The reviewer server instructions (measured 345).
@@ -237,6 +240,9 @@ fn tools_list_depends_on_role() {
             "get_task_details",
             "update_task",
             "delete_task",
+            "get_proposal",
+            "update_proposal",
+            "discard_proposal",
             "save_skill",
             "list_skills",
             "delete_skill",
@@ -256,6 +262,7 @@ fn tools_list_depends_on_role() {
             "complete_task",
             "get_task_details",
             "propose_tasks",
+            "list_tasks",
             "get_workspace_settings",
             "run_e2e",
             "get_e2e_result"
@@ -629,12 +636,24 @@ fn reviewer_complete_task_schema_has_verdict_and_findings() {
     assert_eq!(props["findings"]["items"]["maxLength"], 2000);
     // I `tests` sono gli stessi del worker.
     assert_eq!(props["tests"], worker_tools()[1]["inputSchema"]["properties"]["tests"]);
-    // propose_tasks e get_task_details sono le definizioni della sessione.
+    // propose_tasks del revisore ha la sua definizione (accettazione immediata, `blocks`); la lista della
+    // coda e' quella corta del revisore.
     let session = session_tools();
-    for name in ["propose_tasks", "get_task_details"] {
-        let of = |tools: &[Value]| tools.iter().find(|t| t["name"] == name).unwrap().clone();
-        assert_eq!(of(&tools), of(&session), "{name}");
-    }
+    let of = |tools: &[Value], name: &str| tools.iter().find(|t| t["name"] == name).unwrap().clone();
+    assert_eq!(of(&tools, "get_task_details"), of(&session, "get_task_details"));
+    let propose = of(&tools, "propose_tasks");
+    assert_ne!(propose, of(&session, "propose_tasks"));
+    assert!(propose["description"].as_str().unwrap().contains("accepted at once"));
+    assert_eq!(propose["inputSchema"]["properties"]["blocks"]["items"]["type"], "string");
+    assert_eq!(
+        propose["inputSchema"]["properties"]["tasks"],
+        of(&session, "propose_tasks")["inputSchema"]["properties"]["tasks"]
+    );
+    assert!(of(&session, "propose_tasks")["inputSchema"]["properties"].get("blocks").is_none());
+    assert!(
+        of(&tools, "list_tasks")["description"].as_str().unwrap().len()
+            < of(&session, "list_tasks")["description"].as_str().unwrap().len()
+    );
     // Il worker non ha ne' verdetto ne' findings.
     let worker = &worker_tools()[1]["inputSchema"]["properties"];
     assert!(worker.get("verdict").is_none() && worker.get("findings").is_none());
@@ -696,10 +715,10 @@ fn e2e_calls_are_gated_by_role_and_forwarded_for_workers() {
 }
 
 #[test]
-fn a_reviewer_cannot_call_the_queue_or_settings_changing_tools() {
+fn a_reviewer_cannot_call_the_queue_changing_or_settings_changing_tools() {
     let b = Fake::new("reviewer");
     let s = Server::default();
-    for name in ["list_tasks", "update_task", "delete_task", "save_skill", "propose_settings"] {
+    for name in ["update_task", "delete_task", "save_skill", "propose_settings"] {
         let r =
             send(&s, &b, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}))
                 .unwrap();
