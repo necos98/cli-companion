@@ -6,6 +6,7 @@
 mod automation;
 mod config_dir;
 mod effort;
+mod exploration;
 mod hook_events;
 mod input_profile;
 mod interactive_launch;
@@ -32,6 +33,8 @@ pub const AGENT_ID: &str = "claude-code";
 const INTERACTIVE_COMMAND: &str = "claude --dangerously-skip-permissions";
 const MARKETPLACE: &str = "cli-companion-local";
 const PLUGIN: &str = "cli-companion-notify";
+/// Nome del sotto-agente esploratore distribuito con il plugin (`agents/<nome>.md`).
+const EXPLORER_AGENT: &str = "explorer";
 /// Id come lo riporta `claude plugin list --json`.
 const PLUGIN_ID: &str = "cli-companion-notify@cli-companion-local";
 /// Regola di permesso che copre tutti i tool del server MCP del plugin
@@ -82,6 +85,7 @@ impl AgentIntegration for ClaudeCode {
             effort: Some(self),
             interactive_launch: Some(self),
             proxy_routing: Some(self),
+            exploration_delegation: Some(self),
         }
     }
 }

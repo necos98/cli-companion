@@ -8,12 +8,13 @@
 //! plugins/cli-companion-notify/hooks/hooks.json
 //! plugins/cli-companion-notify/.mcp.json
 //! plugins/cli-companion-notify/skills/<preset id>/SKILL.md   (uno per preset)
+//! plugins/cli-companion-notify/agents/explorer.md            (sotto-agente di sola lettura)
 //! ```
 //! Il marketplace locale e' caricato sul posto: la cartella deve restare su
 //! disco finche' il plugin e' installato.
 
 use super::plugin_skills::skill_path;
-use super::{AGENT_ID, MARKETPLACE, PLUGIN};
+use super::{AGENT_ID, EXPLORER_AGENT, MARKETPLACE, PLUGIN};
 use crate::agents::fnv32;
 use crate::agents::presets::{Preset, PRESETS};
 
@@ -26,6 +27,11 @@ const MCP_SERVER: &str = "cli-companion";
 /// Tutte le skill dei preset in un solo testo (serve alla versione del plugin).
 fn skills_blob() -> String {
     PRESETS.iter().map(Preset::skill_text).collect::<Vec<_>>().join("\n")
+}
+
+/// Il sotto-agente esploratore (`agents/explorer.md`), con fine riga LF qualunque sia il checkout.
+fn explorer_text() -> String {
+    include_str!("explorer.md").replace("\r\n", "\n")
 }
 
 fn marketplace_json() -> String {
@@ -78,18 +84,19 @@ fn mcp_json(exe: &str) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 
-/// La versione dipende dalla release dell'app e da hook, server MCP e skill:
+/// La versione dipende dalla release dell'app e da hook, server MCP, skill e
+/// sotto-agente esploratore:
 /// Claude Code copia il plugin in una cache per versione, quindi se cambia il
-/// percorso dell'exe (app spostata), il testo della skill o la release (ogni
+/// percorso dell'exe (app spostata), il testo della skill o dell'esploratore o la release (ogni
 /// aggiornamento forza la reinstallazione) la versione deve cambiare, altrimenti
 /// resterebbe la copia vecchia. Semver valido: il suffisso e' un prerelease alfanumerico.
-fn plugin_version(hooks: &str, mcp: &str, skills: &str) -> String {
-    format!("{}-h{:08x}", env!("CARGO_PKG_VERSION"), fnv32(&format!("{hooks}\n{mcp}\n{skills}")))
+fn plugin_version(hooks: &str, mcp: &str, skills: &str, explorer: &str) -> String {
+    format!("{}-h{:08x}", env!("CARGO_PKG_VERSION"), fnv32(&format!("{hooks}\n{mcp}\n{skills}\n{explorer}")))
 }
 
 /// Versione che avrebbe il plugin generato ora per `exe` (come lo vede l'agente).
 pub(super) fn plugin_version_for(exe: &str) -> String {
-    plugin_version(&hooks_json(exe), &mcp_json(exe), &skills_blob())
+    plugin_version(&hooks_json(exe), &mcp_json(exe), &skills_blob(), &explorer_text())
 }
 
 fn plugin_json(version: &str) -> String {
@@ -107,7 +114,8 @@ fn plugin_json(version: &str) -> String {
 pub(super) fn plugin_files(exe: &str) -> Vec<(String, String)> {
     let hooks = hooks_json(exe);
     let mcp = mcp_json(exe);
-    let version = plugin_json(&plugin_version(&hooks, &mcp, &skills_blob()));
+    let explorer = explorer_text();
+    let version = plugin_json(&plugin_version(&hooks, &mcp, &skills_blob(), &explorer));
     let mut files = vec![
         (".claude-plugin/marketplace.json".to_string(), marketplace_json()),
         (format!("plugins/{PLUGIN}/.claude-plugin/plugin.json"), version),
@@ -115,6 +123,7 @@ pub(super) fn plugin_files(exe: &str) -> Vec<(String, String)> {
         (format!("plugins/{PLUGIN}/.mcp.json"), mcp),
     ];
     files.extend(PRESETS.iter().map(|p| (skill_path(p), p.skill_text())));
+    files.push((format!("plugins/{PLUGIN}/agents/{EXPLORER_AGENT}.md"), explorer));
     files
 }
 
@@ -197,16 +206,19 @@ mod tests {
     }
 
     #[test]
-    fn version_depends_on_hooks_mcp_and_skill() {
+    fn version_depends_on_hooks_mcp_skill_and_explorer() {
         let (hooks, mcp) = (hooks_json("C:/a.exe"), mcp_json("C:/a.exe"));
         let skill = skills_blob();
-        let v1 = plugin_version(&hooks, &mcp, &skill);
-        assert_eq!(v1, plugin_version(&hooks, &mcp, &skill));
+        let explorer = explorer_text();
+        let v1 = plugin_version(&hooks, &mcp, &skill, &explorer);
+        assert_eq!(v1, plugin_version(&hooks, &mcp, &skill, &explorer));
         assert_eq!(v1, plugin_version_for("C:/a.exe"));
         // Stessi hook, MCP diverso => versione diversa.
-        assert_ne!(v1, plugin_version(&hooks, &mcp_json("C:/b.exe"), &skill));
-        assert_ne!(v1, plugin_version(&hooks_json("C:/b.exe"), &mcp, &skill));
-        assert_ne!(v1, plugin_version(&hooks, &mcp, "altra skill"));
+        assert_ne!(v1, plugin_version(&hooks, &mcp_json("C:/b.exe"), &skill, &explorer));
+        assert_ne!(v1, plugin_version(&hooks_json("C:/b.exe"), &mcp, &skill, &explorer));
+        assert_ne!(v1, plugin_version(&hooks, &mcp, "altra skill", &explorer));
+        // Un altro testo dell'esploratore => versione diversa (altrimenti resta la cache vecchia).
+        assert_ne!(v1, plugin_version(&hooks, &mcp, &skill, "altro esploratore"));
     }
 
     #[test]
@@ -241,11 +253,30 @@ mod tests {
     }
 
     #[test]
+    fn plugin_ships_the_read_only_explorer_subagent() {
+        let files = plugin_files("C:/a.exe");
+        let (_, text) = files
+            .iter()
+            .find(|(p, _)| p == "plugins/cli-companion-notify/agents/explorer.md")
+            .expect("agents/explorer.md nel plugin");
+        assert!(!text.contains('\r'));
+        let front = text.strip_prefix("---\n").and_then(|t| t.split_once("\n---\n")).expect("frontmatter").0;
+        let field = |name: &str| front.lines().find_map(|l| l.strip_prefix(name)).map(str::trim);
+        assert_eq!(field("name:"), Some("explorer"));
+        assert_eq!(field("model:"), Some("haiku"));
+        // Niente Bash: un permesso richiesto fermerebbe un worker non presidiato.
+        assert_eq!(field("tools:"), Some("Read, Grep, Glob"));
+        assert!(field("description:").is_some_and(|d| !d.is_empty()));
+        assert_eq!(files.iter().filter(|(p, _)| p.contains("/agents/")).count(), 1);
+    }
+
+    #[test]
     fn old_installs_are_flagged_outdated_by_their_marker() {
         // La versione dipende dal contenuto delle skill: il marcatore di un'installazione
         // con le vecchie skill (o senza marcatore) non coincide e `find_outdated` la segnala.
         let current = plugin_version_for("C:/a.exe");
-        let old = plugin_version(&hooks_json("C:/a.exe"), &mcp_json("C:/a.exe"), "orchestrate\nworkflow");
+        let old =
+            plugin_version(&hooks_json("C:/a.exe"), &mcp_json("C:/a.exe"), "orchestrate\nworkflow", &explorer_text());
         assert_ne!(current, old);
     }
 }

@@ -621,11 +621,14 @@ le servono.
     `~/.claude/skills`, dove le cartelle gestite portano il marcatore `.cli-companion-managed`) e
     `project-setup` (esplora il repository, legge la configurazione con `get_workspace_settings` e
     la propone con `propose_settings`: vedi [BOARD.MD](BOARD.MD));
+    Il plugin porta anche il sotto-agente `agents/explorer.md` (sorgente `agents/claude_code/explorer.md`, LF):
+    esploratore di sola lettura su Haiku (`tools: Read, Grep, Glob`, niente Bash apposta), che i worker
+    avviano con il tool Agent tramite il contratto `ExplorationDelegation` (vedi [BOARD.MD](BOARD.MD));
     aggiungere un preset = una voce in `PRESETS` + un file md. Le skill `orchestrate` e `workflow` non esistono piu': a ogni
     installazione `remove_obsolete_skills` toglie da `skills/` le cartelle che non sono
     preset. Passi: `plugin validate`,
     pulizia best-effort, `plugin marketplace add`, `plugin install --scope user`. La
-    versione del plugin (`<release>-h<hash>`) deriva da hook + `.mcp.json` + le skill dei preset
+    versione del plugin (`<release>-h<hash>`) deriva da hook + `.mcp.json` + le skill dei preset + il testo dell'esploratore
     (Claude cache per versione: exe spostato o skill cambiata = versione nuova; i plugin con
     una versione diversa da quella attesa sono segnalati da `agent_plugins_outdated` e
     reinstallati da `agent_plugins_update`). La cartella e' caricata sul posto e deve restare su disco.

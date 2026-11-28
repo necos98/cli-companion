@@ -8,12 +8,14 @@ use free::{free_delivery_steps, free_environment, FREE_CHANGES, FREE_DONE, FREE_
 use in_place::{in_place_description, root_planner_environment};
 use pr::pr_publish_steps;
 
+mod exploration;
 mod free;
 mod in_place;
 mod pr;
 mod skill;
 mod standard;
 
+pub use exploration::exploration_delegation;
 pub use skill::skill_instruction;
 pub use standard::{ENGINEERING_STANDARD, INTERACTIVE_STANDARD, WORKER_GUARDRAILS};
 

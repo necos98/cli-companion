@@ -157,7 +157,14 @@ fn get_task_of_a_review_has_reviewer_instructions_and_the_reports() {
     assert!(!instr.contains(worker_preamble), "{instr}");
     let rules = instr.find("Workspace rules (always apply").unwrap();
     assert!(instr.find(REVIEWER_INSTRUCTIONS.trim_end()).unwrap() < instr.find(&standard).unwrap());
-    assert!(instr.find(&standard).unwrap() < rules && instr.ends_with("never run e2e"));
+    assert!(
+        instr.find(&standard).unwrap() < rules
+            && instr.contains(
+                "never run e2e
+
+Exploration delegation."
+            )
+    );
     assert!(t["environment"].as_str().unwrap().contains("branch task/rev (created from main)"));
     let reviewed = t["reviewed_tasks"].as_array().unwrap();
     assert_eq!(reviewed.len(), 1);

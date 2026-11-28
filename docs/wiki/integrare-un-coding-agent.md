@@ -61,6 +61,7 @@ contratto); un contratto dichiarato ma fatto male è un difetto.
 | Effort | `effort` | `EffortLevels` | `contracts/effort.rs` |
 | Avvio interattivo dei Bot | `interactive_launch` | `InteractiveLauncher` | `contracts/interactive_launch.rs` |
 | Instradamento su un proxy | `proxy_routing` | `ProxyRouting` | `contracts/proxy_routing.rs` |
+| Delega dell'esplorazione | `exploration_delegation` | `ExplorationDelegation` | `contracts/exploration_delegation.rs` |
 
 Il frontend non conosce i contratti per nome di agente: riceve i dati
 dichiarativi (`agent_profiles`: contratti dichiarati, regole di input, dati di
@@ -107,6 +108,7 @@ vede e usa dipende da quattro passi, tutti nel core: nessuno è codice dell'inte
 | Suggerimenti di modello (form dei task, impostazioni dei worker, tool MCP), validazione del nome | `models` | nessun suggerimento; il nome vale solo come forma sicura |
 | Voci “Bot” del menu di avvio (`bot:<id>`) e relativo avvio | `interactive_launch` | la voce c'è ma è bloccata: `<nome> non supporta l'avvio dei Bot.` |
 | Sessioni dell'agente instradate dal proxy Headroom (Windows) | `proxy_routing` | l'agente parte sempre diretto, senza avvisi |
+| Paragrafo di delega dell'esplorazione in `get_task` (revisione, ricerca, correzione di bug, refactoring, lavoro generico) | `exploration_delegation` | nessun paragrafo: il worker esplora da solo |
 | Limiti di utilizzo, token per sessione, tasti propri | `usage_limits`, `session_usage`, `input_profile` | assenti |
 
 L'ordine delle voci nel registro è l'ordine in cui si mostrano le integrazioni e quello da cui si parte la
@@ -742,13 +744,50 @@ prefisso riservato `CLI_COMPANION_`) e un `Some` non è vuoto.
 **Claude Code.** `ANTHROPIC_BASE_URL=<base_url>`. **OpenCode.** Non dichiarato. **Pi.** Vedi
 l'integrazione di riferimento n. 3.
 
+### 15. Delega dell'esplorazione: `ExplorationDelegation`
+
+I worker automatici girano spesso su modelli costosi e sprecano token esplorando il repository.
+Se l'agente sa far partire un sotto-agente economico e di sola lettura, il core gli
+suggerisce di affidargli i giri larghi e di tenere nel proprio contesto solo le conclusioni.
+La politica (a quali task e con quali parole) sta nel core; all'integrazione resta la meccanica.
+
+**Firma** (`contracts/exploration_delegation.rs`).
+
+```rust
+pub trait ExplorationDelegation: Sync {
+    /// Come il worker avvia l'esploratore, come frase che completa "To delegate, ...".
+    fn explorer_invocation(&self) -> String;
+}
+```
+
+**Core.** `automation/exploration.rs` aggiunge in coda a `instructions` di `get_task` (dopo la riga
+della skill e dopo le regole del workspace) il paragrafo `board/prompts/exploration_delegation.md`
+(`texts::exploration_delegation`, con `{invocation}` sostituito), ma solo se il task ne ha bisogno e
+`registry::find(&task.agent)` dichiara il contratto. Ne hanno bisogno: i task `review` (sempre); i
+task `plan` senza skill o con la skill del plugin `code-research`; i task `work` senza skill o con
+`bug-fix` o `safe-refactor`. Ogni skill dell'utente e ogni altra skill del plugin (`code-answer`,
+`test-qa`, `docs-writer`, `git-ops`, `release-prep`, `task-intake`) esclude il paragrafo. In pratica ricevono
+il paragrafo i Bot Reviewer, Planner, Researcher, General, Bug Fixer e Refactorer. Il paragrafo dice di
+non delegare il giudizio che il task richiede (leggere i diff in revisione, trovare la causa, scegliere
+la modifica, scrivere specifica o codice) e di verificare le righe citate prima che una conclusione
+guidi una decisione.
+
+**Conformità** (`exploration_delegation`): l'invocazione non è vuota, è su una sola riga e senza `\r`.
+
+**Claude Code.** "call the Agent tool with subagent_type `cli-companion-notify:explorer`"
+(`claude_code/exploration.rs`). Il sotto-agente `explorer` è un file del plugin,
+`agents/explorer.md` (sorgente `claude_code/explorer.md`, in inglese, normalizzato a LF): modello `haiku`,
+strumenti `Read, Grep, Glob`. Niente Bash apposta: una chiamata a Bash potrebbe fermare un worker non
+presidiato su una richiesta di permesso. Il testo entra nella versione del plugin (`plugin_version`),
+altrimenti Claude Code terrebbe in cache il plugin vecchio. **OpenCode e Pi.** Non dichiarato.
+
 ## Procedura passo passo
 
 1. **Leggi l'integrazione di riferimento.** `agents/claude_code/` ha un file per
    contratto (`package.rs`, `hook_events.rs`, `resume.rs`, `automation.rs`,
    `permissions.rs`, `plugin_skills.rs`, `skills.rs`, `usage_limits.rs`,
    `session_usage.rs`, `input_profile.rs`, `models.rs`, `effort.rs`, `interactive_launch.rs`,
-   `proxy_routing.rs`) più il rilevamento in `mod.rs`.
+   `proxy_routing.rs`, `exploration.rs`) più il rilevamento in `mod.rs`.
    Copia la *struttura*, non i dettagli.
 2. **Studia l'agente.** Per ogni contratto che vuoi dichiarare, scrivi su carta come
    l'agente lo realizza e *dove lo hai letto* (documentazione ufficiale, non

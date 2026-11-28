@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(readiness_of(bare_info), vec![Readiness::Disabled, Readiness::Disabled]);
 
         assert!(full_info.enabled && full_info.is_default);
-        assert_eq!(full_info.capabilities.len(), 14);
+        assert_eq!(full_info.capabilities.len(), 15);
         let models: Vec<_> = full_info.models.iter().map(|m| m.id).collect();
         assert_eq!(models, vec![FAKE_MODEL_SMALL, FAKE_MODEL_LARGE]);
         assert_eq!(full_info.default_model.as_deref(), Some(FAKE_MODEL_SMALL));

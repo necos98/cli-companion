@@ -180,7 +180,13 @@ fn get_task_of_a_plan_has_planner_instructions_and_no_delivery() {
     ));
     assert!(instr.contains(PLANNER_INSTRUCTIONS.trim_end()));
     assert!(!instr.contains(WORKER_GUARDRAILS.trim_end()));
-    assert!(instr.ends_with("specs in Italian") && instr.contains("Workspace rules (always apply"));
+    assert!(
+        instr.contains(
+            "specs in Italian
+
+Exploration delegation."
+        ) && instr.contains("Workspace rules (always apply")
+    );
     let env = t["environment"].as_str().unwrap();
     assert!(env.contains("branch task/plan-dark-theme (created from main)"), "{env}");
     assert!(env.contains("C:\\p (the user's copy: never touch it)") && !env.contains("Delivery mode"), "{env}");

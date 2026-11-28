@@ -728,6 +728,12 @@ Worker:
   una skill (snapshot del Bot), `skill` è il nome da caricare con lo strumento skill dell'agente e `instructions`
   inizia con "Before starting, load the skill <skill> with your skill tool; the instructions of this task take
   precedence over the skill where they conflict." (stesso per i task `review` e `plan`). Senza skill l'output non cambia.
+  Se l'agente del task dichiara il contratto `ExplorationDelegation` (oggi solo Claude Code) e il task è di un Bot che
+  esplora il codice (`review`; `plan` senza skill o con `code-research`; `work` senza skill o con `bug-fix` o
+  `safe-refactor`: Reviewer, Planner, Researcher, General, Bug Fixer, Refactorer), in coda a `instructions` c'è il
+  paragrafo "Exploration delegation" (`board/prompts/exploration_delegation.md`, `automation/exploration.rs`): dice di
+  affidare i giri larghi in sola lettura al sotto-agente `cli-companion-notify:explorer` (Haiku, `Read`/`Grep`/`Glob`,
+  distribuito nel plugin) e di non delegare mai il giudizio del task. Gli altri Bot e le skill dell'utente non lo ricevono.
 - `complete_task { status: "completed" | "failed", summary, commit?, pr_url?,
   files_changed?, tests?, follow_ups? }` — `blocked` accettato come sinonimo di `failed`.
   Per i task con worktree l'app calcola il diffstat. Il tab si chiude dopo ~1,5 s.

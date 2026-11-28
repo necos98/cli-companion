@@ -104,6 +104,8 @@ impl AgentIntegration for OpenCode {
             interactive_launch: Some(self),
             // Nessun instradamento verificato su un proxy: parte sempre diretto.
             proxy_routing: None,
+            // Nessun sotto-agente esploratore: il worker esplora da solo.
+            exploration_delegation: None,
         }
     }
 }

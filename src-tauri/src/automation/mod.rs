@@ -59,6 +59,7 @@ mod boards;
 mod bridge;
 mod commands;
 mod e2e;
+mod exploration;
 mod hooks;
 mod host;
 mod planner;

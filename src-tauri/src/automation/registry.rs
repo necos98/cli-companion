@@ -301,6 +301,7 @@ impl Registry {
         };
         handoff.add_to(&mut out);
         task_skill::add_to_task_json(&mut out, t);
+        exploration::add_to_task_json(&mut out, t);
         if let Some(p) = t.previous_attempt() {
             out["previous_attempt"] = serde_json::to_value(p).unwrap_or(Value::Null);
         }

@@ -9,6 +9,7 @@
 mod automation;
 mod capabilities;
 mod effort;
+mod exploration_delegation;
 mod hook_events;
 mod input_profile;
 mod integration;
@@ -29,6 +30,7 @@ pub use automation::{
 };
 pub use capabilities::{Capabilities, Capability};
 pub use effort::{Effort, EffortLevels};
+pub use exploration_delegation::ExplorationDelegation;
 pub use hook_events::{HookEvent, HookEventKind, HookEvents, WaitKind};
 pub use input_profile::{InputEvent, InputProfile, InputProfileSource, InputRule};
 pub use integration::{AgentIntegration, Detection};

@@ -100,6 +100,8 @@ impl AgentIntegration for PiAgent {
             effort: Some(self),
             interactive_launch: Some(self),
             proxy_routing: Some(self),
+            // Nessun sotto-agente esploratore: il worker esplora da solo.
+            exploration_delegation: None,
         }
     }
 }

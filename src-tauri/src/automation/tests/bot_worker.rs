@@ -205,3 +205,102 @@ fn a_task_whose_agent_cannot_load_the_skill_fails_with_a_clear_note() {
     assert_eq!(t["note"], expected.as_str());
     assert!(h.spawns().is_empty());
 }
+
+const EXPLORER_INVOCATION: &str = "call the Agent tool with subagent_type `cli-companion-notify:explorer`";
+
+fn delegation_paragraph(invocation: &str) -> String {
+    crate::board::texts::exploration_delegation(invocation)
+}
+
+#[test]
+fn get_task_appends_the_exploration_delegation_for_the_bots_that_explore() {
+    for bot in ["general", "bug-fixer", "refactorer"] {
+        let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+        queue(&st, &h, vec![with_bot("a", bot)]);
+        let instructions = get_task(&st, &h, "a")["instructions"].as_str().unwrap().to_string();
+        let paragraph = delegation_paragraph(EXPLORER_INVOCATION);
+        assert!(instructions.ends_with(&format!("\n\n{paragraph}")), "{bot}: {instructions}");
+        assert!(paragraph.contains(&format!("to delegate, {EXPLORER_INVOCATION}.")));
+        assert!(!paragraph.contains("{invocation}"));
+    }
+}
+
+#[test]
+fn get_task_leaves_out_the_exploration_delegation_for_the_other_bots() {
+    for bot in ["intake", "quick-answer", "test-writer", "docs-writer"] {
+        let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+        queue(&st, &h, vec![with_bot("a", bot)]);
+        let instructions = get_task(&st, &h, "a")["instructions"].as_str().unwrap().to_string();
+        assert!(!instructions.contains("Exploration delegation."), "{bot}");
+    }
+}
+
+#[test]
+fn get_task_of_a_review_ends_with_the_exploration_delegation() {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let mut review = with_bot("rev", "general");
+    review["kind"] = json!("review");
+    review["depends_on"] = json!(["a"]);
+    queue(&st, &h, vec![with_bot("a", "general"), review]);
+    let a = session_of(&st, &h, "a");
+    call(&st, &h, &a, "get_task", json!({})).unwrap();
+    call(&st, &h, &a, "complete_task", json!({"status": "completed", "summary": "done a"})).unwrap();
+
+    let out = get_task(&st, &h, "rev");
+    let instructions = out["instructions"].as_str().unwrap();
+    assert!(instructions.ends_with(&delegation_paragraph(EXPLORER_INVOCATION)), "{instructions}");
+}
+
+#[test]
+fn the_exploration_delegation_follows_the_capability_of_the_agent() {
+    let _second = SecondIntegration::enabled(FakeIntegration::full(SECOND));
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let pinned = h.bot_for_agent(SECOND);
+    let mut t = with_bot("a", &pinned);
+    t["model"] = json!(FAKE_MODEL_LARGE);
+    queue(&st, &h, vec![t]);
+    let instructions = get_task(&st, &h, "a")["instructions"].as_str().unwrap().to_string();
+    let expected = delegation_paragraph(crate::agents::testing::FAKE_EXPLORER_INVOCATION);
+    assert!(instructions.ends_with(&format!("\n\n{expected}")), "{instructions}");
+    assert!(expected.contains("to delegate, spawn the fake explorer."));
+
+    drop(_second);
+    let _bare = SecondIntegration::enabled(
+        FakeIntegration::full(SECOND).without(crate::agents::Capability::ExplorationDelegation),
+    );
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    let pinned = h.bot_for_agent(SECOND);
+    let mut t = with_bot("b", &pinned);
+    t["model"] = json!(FAKE_MODEL_LARGE);
+    queue(&st, &h, vec![t]);
+    let instructions = get_task(&st, &h, "b")["instructions"].as_str().unwrap().to_string();
+    assert!(!instructions.contains("Exploration delegation."), "{instructions}");
+}
+
+/// Un task di pianificazione con la skill del plugin `skill` (nascono senza Bot): il suo `get_task`.
+fn plan_with_skill(skill: &str) -> Value {
+    let (st, h) = (AutomationState::default(), FakeHost::with_delivery(DeliveryMode::Commit, false));
+    boards::board_set(&st, &h, "ws-1", None, Some(true)).unwrap();
+    let request = PlanRequest {
+        title: "Plan dark theme".into(),
+        task: "Add a dark theme".into(),
+        model: None,
+        repo: None,
+        bot: None,
+    };
+    let id = create_plan_task(&st, &h, "ws-1", &request).unwrap();
+    st.run(&h, |r| {
+        let task = r.boards.get_mut("ws-1").unwrap().tasks.iter_mut().find(|t| t.id == id).unwrap();
+        task.skill = Some(SkillRef::Plugin(skill.into()));
+    });
+    boards::board_set(&st, &h, "ws-1", None, Some(false)).unwrap();
+    get_task(&st, &h, &id)
+}
+
+#[test]
+fn a_plan_task_gets_the_exploration_delegation_only_for_code_research() {
+    let research = plan_with_skill("code-research");
+    assert!(research["instructions"].as_str().unwrap().ends_with(&delegation_paragraph(EXPLORER_INVOCATION)));
+    let answer = plan_with_skill("code-answer");
+    assert!(!answer["instructions"].as_str().unwrap().contains("Exploration delegation."));
+}

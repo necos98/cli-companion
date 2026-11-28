@@ -45,7 +45,7 @@ const info = (id, over = {}) => ({
 
 describe("integrazioni: capability", () => {
   it("ogni contratto ha un'etichetta in italiano", () => {
-    assert.equal(Object.keys(CAPABILITY_LABELS).length, 14);
+    assert.equal(Object.keys(CAPABILITY_LABELS).length, 15);
     for (const label of Object.values(CAPABILITY_LABELS)) assert.ok(label.trim().length > 0);
   });
 

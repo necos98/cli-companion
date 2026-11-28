@@ -25,6 +25,8 @@ pub enum Flaw {
     AutomationInvalidEnv,
     /// Il comando dell'effort contiene un carattere non sicuro per la shell.
     EffortArgsUnsafe,
+    /// L'invocazione dell'esploratore va su piu' righe.
+    ExplorerInvocationMultiline,
     /// Il comando di ripristino riporta anche la skill.
     RestoreKeepsSkill,
     /// L'avvio interattivo accetta un nome di skill con `$`.
@@ -93,6 +95,7 @@ impl FakeIntegration {
             Capability::Effort,
             Capability::InteractiveLaunch,
             Capability::ProxyRouting,
+            Capability::ExplorationDelegation,
         ];
         Self { declares, ..Self::bare(id, "fake --yes") }
     }
@@ -156,6 +159,7 @@ impl AgentIntegration for FakeIntegration {
             effort: on(Capability::Effort).then_some(self as &dyn EffortLevels),
             interactive_launch: on(Capability::InteractiveLaunch).then_some(self as &dyn InteractiveLauncher),
             proxy_routing: on(Capability::ProxyRouting).then_some(self as &dyn ProxyRouting),
+            exploration_delegation: on(Capability::ExplorationDelegation).then_some(self as &dyn ExplorationDelegation),
         }
     }
 }
@@ -421,6 +425,18 @@ impl ProxyRouting for FakeIntegration {
     fn proxy_env(&self, proxy: &ProxyTarget) -> Option<Vec<(String, String)>> {
         let name = if self.flaw == Some(Flaw::ProxyInvalidEnv) { "fake-proxy" } else { FAKE_PROXY_ENV };
         Some(vec![(name.to_string(), proxy.base_url.clone())])
+    }
+}
+
+/// Invocazione dell'esploratore dell'agente finto.
+pub const FAKE_EXPLORER_INVOCATION: &str = "spawn the fake explorer";
+
+impl ExplorationDelegation for FakeIntegration {
+    fn explorer_invocation(&self) -> String {
+        if self.flaw == Some(Flaw::ExplorerInvocationMultiline) {
+            return format!("{FAKE_EXPLORER_INVOCATION}\nthen wait");
+        }
+        FAKE_EXPLORER_INVOCATION.to_string()
     }
 }
 

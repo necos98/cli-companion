@@ -1,8 +1,9 @@
 //! L'elenco dei contratti dichiarati da un'integrazione.
 
 use super::{
-    EffortLevels, HookEvents, InputProfileSource, IntegrationPackage, InteractiveLauncher, ModelCatalog, PluginSkills,
-    ProxyRouting, SessionResume, SessionUsageReader, UsageLimits, UserSkills, WorkerAutomation, WorkerPermissions,
+    EffortLevels, ExplorationDelegation, HookEvents, InputProfileSource, IntegrationPackage, InteractiveLauncher,
+    ModelCatalog, PluginSkills, ProxyRouting, SessionResume, SessionUsageReader, UsageLimits, UserSkills,
+    WorkerAutomation, WorkerPermissions,
 };
 use serde::Serialize;
 use ts_rs::TS;
@@ -26,6 +27,7 @@ pub struct Capabilities<'a> {
     pub effort: Option<&'a dyn EffortLevels>,
     pub interactive_launch: Option<&'a dyn InteractiveLauncher>,
     pub proxy_routing: Option<&'a dyn ProxyRouting>,
+    pub exploration_delegation: Option<&'a dyn ExplorationDelegation>,
 }
 
 /// Nome di un contratto, come lo vede il frontend (kebab-case).
@@ -47,6 +49,7 @@ pub enum Capability {
     Effort,
     InteractiveLaunch,
     ProxyRouting,
+    ExplorationDelegation,
 }
 
 impl Capabilities<'_> {
@@ -68,6 +71,7 @@ impl Capabilities<'_> {
             effort,
             interactive_launch,
             proxy_routing,
+            exploration_delegation,
         } = self;
         [
             (package.is_some(), Capability::Package),
@@ -84,6 +88,7 @@ impl Capabilities<'_> {
             (effort.is_some(), Capability::Effort),
             (interactive_launch.is_some(), Capability::InteractiveLaunch),
             (proxy_routing.is_some(), Capability::ProxyRouting),
+            (exploration_delegation.is_some(), Capability::ExplorationDelegation),
         ]
         .into_iter()
         .filter_map(|(on, capability)| on.then_some(capability))
@@ -112,6 +117,7 @@ mod tests {
         assert_eq!(json(Capability::Effort), "effort");
         assert_eq!(json(Capability::InteractiveLaunch), "interactive-launch");
         assert_eq!(json(Capability::ProxyRouting), "proxy-routing");
+        assert_eq!(json(Capability::ExplorationDelegation), "exploration-delegation");
     }
 
     #[test]
@@ -131,6 +137,7 @@ mod tests {
             effort: None,
             interactive_launch: None,
             proxy_routing: None,
+            exploration_delegation: None,
         };
         assert!(none.declared().is_empty());
     }

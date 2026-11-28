@@ -28,7 +28,14 @@ fn get_task_returns_task_instructions_environment_and_delivery() {
     assert!(instr[g..].starts_with(preamble), "{instr}");
     assert!(instr[g..].contains(ENGINEERING_STANDARD.trim_end()));
     let rules = instr.find("Workspace rules (always apply").unwrap();
-    assert!(g < rules && instr.ends_with("never run e2e"));
+    assert!(
+        g < rules
+            && instr.contains(
+                "never run e2e
+
+Exploration delegation."
+            )
+    );
     let env = t["environment"].as_str().unwrap();
     assert!(env.contains("branch task/a (created from main)") && env.contains("base branch: main"), "{env}");
     assert!(t["delivery"].as_str().unwrap().contains("gh pr create --base main --head task/a"));

@@ -75,6 +75,7 @@ fn core(i: &dyn AgentIntegration) -> Vec<String> {
         (caps.effort.is_some(), Capability::Effort),
         (caps.interactive_launch.is_some(), Capability::InteractiveLaunch),
         (caps.proxy_routing.is_some(), Capability::ProxyRouting),
+        (caps.exploration_delegation.is_some(), Capability::ExplorationDelegation),
     ];
     let expected: Vec<_> = present.into_iter().filter_map(|(on, c)| on.then_some(c)).collect();
     if caps.declared() != expected {
@@ -482,6 +483,19 @@ fn proxy_routing(routing: &dyn ProxyRouting) -> Vec<String> {
     }
 }
 
+/// L'invocazione dell'esploratore completa una frase del prompt: non vuota, su una sola riga.
+fn exploration_delegation(delegation: &dyn ExplorationDelegation) -> Vec<String> {
+    let invocation = delegation.explorer_invocation();
+    let mut v = Vec::new();
+    if invocation.trim().is_empty() {
+        v.push("exploration_delegation: invocazione dell'esploratore vuota".to_string());
+    }
+    if invocation.contains('\n') || invocation.contains('\r') {
+        v.push("exploration_delegation: l'invocazione dell'esploratore deve stare su una riga".to_string());
+    }
+    v
+}
+
 /// Tutte le violazioni dei contratti dichiarati da `i` (vuoto = conforme).
 fn violations(i: &dyn AgentIntegration) -> Vec<String> {
     let scratch = Scratch::new(i.id());
@@ -530,6 +544,9 @@ fn violations(i: &dyn AgentIntegration) -> Vec<String> {
     if let Some(c) = caps.proxy_routing {
         v.extend(proxy_routing(c));
     }
+    if let Some(c) = caps.exploration_delegation {
+        v.extend(exploration_delegation(c));
+    }
     v.into_iter().map(|m| format!("{}: {m}", i.id())).collect()
 }
 
@@ -571,6 +588,13 @@ fn an_invalid_proxy_env_is_reported() {
     let broken = FakeIntegration::full("broken-proxy").with_flaw(Flaw::ProxyInvalidEnv);
     let found = violations(&broken);
     assert!(found.iter().any(|m| m.contains("proxy_routing:") && m.contains("non valida")), "{found:?}");
+}
+
+#[test]
+fn a_multiline_explorer_invocation_is_reported() {
+    let broken = FakeIntegration::full("broken-explorer").with_flaw(Flaw::ExplorerInvocationMultiline);
+    let found = violations(&broken);
+    assert!(found.iter().any(|m| m.contains("exploration_delegation:") && m.contains("una riga")), "{found:?}");
 }
 
 #[test]

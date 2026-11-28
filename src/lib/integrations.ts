@@ -28,6 +28,7 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   effort: "Effort",
   "interactive-launch": "Avvio dei Bot",
   "proxy-routing": "Proxy Headroom",
+  "exploration-delegation": "Esplorazione delegata",
 };
 
 const CAPABILITY_ORDER = Object.keys(CAPABILITY_LABELS) as Capability[];
